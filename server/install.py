@@ -49,3 +49,6 @@ for relative in (
     "app/api/router.py", "app/workflows/workflow_registry.py",
 ):
     print(hashlib.sha256((args.target / relative).read_bytes()).hexdigest(), relative)
+
+print("Source installed only; production does not hot reload. Activate committed source with an API-only restart:")
+print("ssh clarity 'sudo docker restart --time 30 clarity_backend_api'")
