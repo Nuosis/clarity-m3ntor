@@ -36,6 +36,7 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
   }
 
   const retryDelays = new Map();
+  const retryTimers = new Map(); // one queued delivery retry per message
 
   // Returns 'pending' (job still running), 'done' (reply settled or waiting for a
   // repaired credential) or 'retry' (delivery failed; try again later).
@@ -56,8 +57,9 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
     } catch (error) {
       await writeLedger(entry.message_id, { ...entry, status: 'reply_failed', reply_error: error.message });
       console.error(`A2A reply for ${entry.message_id} failed:`, error.message);
-      // A rejected credential is not retried; the next connection after repair resumes it.
-      return /HTTP 40[13]/.test(error.message) ? 'done' : 'retry';
+      // Only transport failures and server errors are retried; a rejected credential
+      // resumes after repair on the next connection, and other 4xx answers are final.
+      return /request failed|HTTP 5\d\d/.test(error.message) ? 'retry' : 'done';
     }
   }
 
@@ -73,12 +75,16 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
       try {
         let outcome;
         do { again = false; outcome = await reply(entry); } while (outcome === 'pending' && again);
-        if (outcome === 'done') finish();
-        if (outcome === 'retry') {
+        if (outcome === 'done') { finish(); clearTimeout(retryTimers.get(entry.message_id)); retryTimers.delete(entry.message_id); }
+        if (outcome === 'retry' && !retryTimers.has(entry.message_id)) {
           finish();
           const wait = Math.min((retryDelays.get(entry.message_id) || 2500) * 2, 300000);
           retryDelays.set(entry.message_id, wait);
-          setTimeout(async () => follow((await readLedger(entry.message_id)) || entry), wait);
+          retryTimers.set(entry.message_id, setTimeout(async () => {
+            retryTimers.delete(entry.message_id);
+            const current = (await readLedger(entry.message_id)) || entry;
+            if (!String(current.status).startsWith('replied')) follow(current);
+          }, wait));
         }
       } finally { busy = false; }
     };
@@ -186,13 +192,15 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
     const directory = path.dirname(profilePath());
     await mkdir(directory, { recursive: true, mode: 0o700 });
     let opened = false;
-    const watcher = watch(directory, async () => {
+    const check = async () => {
       if (opened) return;
       try {
         const candidate = await loadProfile();
         if (!opened && accept(candidate)) { opened = true; watcher.close(); waiting = false; connect(); }
       } catch {}
-    });
+    };
+    const watcher = watch(directory, check);
+    check(); // a profile written before the watcher existed still counts
   }
 
   (async () => {
