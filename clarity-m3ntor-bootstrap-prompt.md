@@ -18,7 +18,7 @@ Use an installed compatible copy first. Otherwise clone the public source into a
 git clone https://github.com/Nuosis/clarity-m3ntor.git "$M3NTOR_SOURCE"
 ```
 
-Resolve `M3NTOR_SOURCE` to the actual installation directory before running the command. For an existing checkout inspect its branch and local edits before updating; preserve and finish unrelated work rather than resetting it. Read that checkout's README and use its supported Node.js version (currently Node.js 22 or newer). The current package has no dependency-install step.
+Resolve `M3NTOR_SOURCE` to the actual installation directory before running the command. For an existing checkout inspect its branch and local edits before updating; preserve and finish unrelated work rather than resetting it. Read that checkout's README and `ACCESS-PATTERN.md`; use its supported Node.js version (currently Node.js 22 or newer). The current package has no dependency-install step.
 
 Determine the current business workspace and harness CLI (`codex` or `claude`). Reuse a matching running service; otherwise choose an unused loopback port and start the package in a managed background process. For a shell-managed initial start, resolve the variables below from this environment:
 
@@ -45,27 +45,19 @@ claude mcp add --transport http --scope local clarity_m3ntor http://127.0.0.1:<p
 
 Use the current harness's supported MCP refresh/reconnect mechanism; if tool discovery requires a new session, preserve this task's continuation. A saved config entry alone does not prove tools are connected. Initialize the MCP, list its actual tools and record the working connection. Do not turn choosing another harness into a user journey.
 
-### Clarity access and A2A registration
+### Register and receive the Clarity token
 
-The public source does not provision Clarity access. Current coaching/reassessment jobs fetch server prompts through the provided SSH host configuration, default alias `clarity`; utility tools use the existing `~/.config/a2a-bridge/config.json` API URL and HMAC secret-command reference. Reuse the calling environment's provisioned access. Never copy another owner's configuration, SSH keys, operator secrets or identity. An organization API token for an A2A client is not a substitute for this MCP's HMAC configuration. If a required route is missing, identify that provisioning input and continue independent local setup rather than inventing credentials.
+Follow `ACCESS-PATTERN.md` for the registered-user HTTPS contract. The owner registers/signs in through Clarity's existing account flow, and Clarity associates their organization, assigns this installation's unique agent UUID/handle and issues a `clrtok_` token for A2A and MCP remote operations. Reuse an existing assigned identity on reconciliation; never copy another agent's identity.
 
-Reuse an existing supported A2A bridge and verify its actual service state separately from recorded health. Where the installed MCP exposes `check_bridge` and `establish_bridge`, use them as documented; those tools reuse an existing source/configuration and do not create missing registration credentials. Confirm availability from the actual tool list rather than assuming they are exposed on every MCP route.
+Users do not receive SSH access, server paths, operator HMAC secrets or database keys. Store the token through the owner's secret store and place only non-secret API/organization/agent metadata and the credential reference in the shared local connection profile. The MCP and A2A adapter use that same token as an HTTPS bearer credential. Existing local business-system access remains separate.
 
-For a newly provisioned Codex participant, the public client documentation is `https://github.com/Nuosis/a2a-connect`. Its documented installation and login-service steps are:
+Use the deployed registration response's endpoint/capability metadata. Verify authenticated identity, then initialize the current-harness A2A receiver and record live connection, message acceptance, delivery and completed response separately. Local `ask_m3ntor` is not proof of A2A delivery. Preserve other agents and established account/model/billing settings; no fallback to SSH or operator credentials.
 
-```sh
-pipx install "git+https://github.com/Nuosis/a2a-connect.git"
-a2a-connect init --handle <assigned-handle> --workdir <business-workspace>
-a2a-connect install-service
-```
-
-Before starting the service, obtain the agent's unique assigned network identity/handle through the organization's supported Clarity registration route and configure the organization's existing API-key secret reference using the client documentation. Do not start with an unregistered handle or an empty credential and call it connected. The current public client runs Codex; it is not proof of Claude inbound routing. For another harness reuse its supported provisioned bridge and report unsupported routing explicitly. Do not replace a working current harness or its authentication to force setup.
-
-Preserve other agents' identities/services. Verify the registered identity through an actual registry/registration result; a locally generated UUID is not network registration. Distinguish installed client, running process, authenticated connection, accepted message, delivery and completed response. Use the organization's documented round-trip check with an appropriate registered endpoint when available; retain its receipt and actual response. Do not invent a recipient or substitute M-CODEX for M3NT0R. Local `ask_m3ntor` is a separate coaching path, not proof of A2A delivery.
+Implementation status: the product's SSH/HMAC-to-token migration is not yet implemented. If registration or a required token-enabled capability is unavailable, report that specific gap and continue independent local context/assessment work. Do not attempt Clarity server administration, invent connectivity or substitute operator credentials.
 
 ### Verify utility access
 
-Call `search_utility` with query `starter flows turn low Process scores into usable business flow definitions`, `poma_labels: ["Process"]`, `tags: ["starter-flows"]` and a suitable result limit. Read the returned case whose `id` or `case_id` is exactly `0a4666fa-e567-4c14-93c2-11ae67a7682d`. Its flow list is discovery guidance, not proof of the owner's procedures. Record actual retrieval/embedding status and evidence limits. If the specified case is not returned, report that result instead of claiming it was read; use the collection's documented lookup route if one is available. This verifies utility reading only, not network registration or a write operation.
+Call `search_utility` with query `starter flows turn low Process scores into usable business flow definitions`, `poma_labels: ["Process"]`, `tags: ["starter-flows"]` and a suitable result limit. Read the returned case whose `id` or `case_id` is exactly `0a4666fa-e567-4c14-93c2-11ae67a7682d`. Its flow list is discovery guidance, not proof of the owner's procedures. Record actual retrieval/embedding status and evidence limits. If the specified case is not returned, report that result instead of claiming it was read; use the collection's documented lookup route if one is available. Make the remote call through the shared token-authenticated client once deployed. This verifies utility reading only, not network registration or a write operation.
 
 [INCLUDE FUTURE TROUBLESHOOTING GUIDE HERE. LEAVE AS IS UNTIL MARCUS SWIFT DIRECTS TO ADD GUIDANCE HERE]
 

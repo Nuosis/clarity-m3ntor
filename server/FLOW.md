@@ -1,3 +1,9 @@
+# Registered-user utility access target
+
+Use the owner's registered Clarity token over HTTPS for utility reporting and retrieval, shared with A2A and prompt access. Derive organization/agent attribution from the authenticated principal and preserve shared non-sensitive utility-library access separately from private organization reports. See [ACCESS-PATTERN.md](../ACCESS-PATTERN.md).
+
+Status: token migration not yet implemented. The remaining specification describes the already-built operator-HMAC baseline; it is not the user access pattern and does not grant users SSH or operator credentials.
+
 # Clarity utility infrastructure flow
 
 Status: implementation specification for M3NTOR-UTILITY-INFRA-20261115.

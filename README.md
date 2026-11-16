@@ -1,12 +1,15 @@
 # Clarity M3NT0R MCP
 
-Status: core Codex coaching transport, utility reporting/search and controlled recovery behavior independently assessed. The business-POMA/reassessment revision awaits independent review and assessment. Live Claude success, saved-assessment UI and positive degraded-search behavior remain unassessed.
+Status: registered-user token access is specified in [ACCESS-PATTERN.md](ACCESS-PATTERN.md), not yet implemented end to end. Earlier assessments cover the development SSH/operator-HMAC baseline and local persistence; they do not establish customer-token onboarding.
 
-Local HTTP MCP for an owner's agent to ask M3NT0R for coaching. It extends the
-existing Clarity Coach service and retains its assessment, journal and question
+Local HTTP MCP for an owner's agent to ask M3NT0R for coaching using the owner's
+Codex or Claude Code harness. It extends the Clarity Coach service and retains
+its POMA (Process, Observability, Measurement and Agency) assessment, journal and question
 tools. No dependency install is needed; use Node.js 22 or newer, an installed
-Codex or Claude Code CLI with its existing login, and the existing SSH route to
-the Clarity server.
+Codex or Claude Code CLI with its existing login. User-facing server access must
+use a registered Clarity token over HTTPS, shared by the local MCP and A2A client.
+Users will not have SSH access. The source below still contains development-only
+SSH/HMAC paths; migrate them as listed in ACCESS-PATTERN.md before user rollout.
 
 Start the bootstrap in the owner's already-chosen local harness and express the
 intent to connect to Clarity M3NT0R there. The bootstrap reuses that current
@@ -15,7 +18,13 @@ its processes and agent utilization; accessible, current business state; busines
 process efficiency/effectiveness measures; and actual triggered action backed by
 POM, direction/policies and durable execution infrastructure.
 
-## Start
+## User access
+
+Start in the chosen harness, register/sign in with Clarity, and obtain the installation's assigned agent identity and `clrtok_` token. Both A2A and MCP remote operations use that same credential source. Store only its secret reference plus API/organization/agent metadata in the local profile. Prompt retrieval, assessment reporting and utility reporting/search/read use HTTPS bearer authentication. Private business records and detailed calculations stay local.
+
+The [access contract](ACCESS-PATTERN.md) distinguishes existing account/token primitives from required product registration, authorization, HTTPS prompt delivery and client changes. No automatic public registration URL or completed user-token deployment is claimed. Do not use another user's SSH/HMAC configuration to bypass a missing product capability.
+
+## Start the local service
 
 For manual service setup, start this copy on an unused port and configure the
 current harness's CLI name. The original service may already use 4317.
@@ -157,7 +166,7 @@ The bootstrap describes one system-scheduled weekly reassessment that calls
 from the event/work-driven productivity-improvement loop. Starting this package
 or calling reassessment does not install a scheduler or new action worker.
 
-## Configuration
+## Current development configuration (migration required)
 
 Environment variables are read from the process; `.env` files are not loaded.
 
@@ -172,12 +181,15 @@ Environment variables are read from the process; `.env` files are not loaded.
 | `M3NTOR_JOB_DIR` | `.m3ntor-runtime/jobs` beside the source | Private durable job directory. Use an ignored or external location. |
 | `M3NTOR_WAIT_MS` | `1500` | Brief ask response wait; does not terminate a running job. |
 
+The following describes the current operator development implementation, not user setup.
 SSH uses the existing configuration with `BatchMode=yes`; no keys, users,
 credentials or alternative routes are installed. Fetch failure or an empty
 prompt fails that job. The bundled prompt is a publishing source, never a stale
 runtime fallback.
 
 ## Utility cases
+
+Target user authentication is the registered Clarity token for all three utility operations. The current HMAC-only client/API described below must be migrated; supplying an organization token to the old HMAC client does not implement that migration.
 
 `report_utility` sends a caller-prepared non-sensitive case to
 `POST /agent/utility/cases`. Required fields are `submission_id` (UUID), `title`,
@@ -207,7 +219,9 @@ follow redirects. Missing configuration, secret-command failure and upstream
 errors remain explicit failed tool calls. The separate Clarity server utility
 API/database must be deployed for these tools to return real stored results.
 
-## Publish the server prompts
+## Operator-only server prompt maintenance
+
+These are Clarity operator deployment instructions. End users fetch prompts over the token-authenticated HTTPS contract and receive no SSH access.
 
 `m3ntor_agent_prompt.md` and `poma_reassessment_prompt.md` are the sources to
 publish. Destination directories must be writable by the existing SSH account.
