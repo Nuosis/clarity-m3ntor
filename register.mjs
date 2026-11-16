@@ -114,11 +114,20 @@ if (!jwt && !password) {
   }
 }
 if (!jwt && opts['verify-url']) {
-  // Follow the emailed confirmation link over plain HTTPS; no browser is involved.
-  const link = new URL(opts['verify-url']);
-  const verified = await fetch(link, { redirect: 'manual', signal: AbortSignal.timeout(30000) });
-  const location = verified.headers.get('location') || '';
-  if (verified.status >= 400 || /error=/.test(location)) done(1, { status: 'error', step: 'email_verification', http_status: verified.status, detail: location.replace(/#.*/, '') || 'Confirmation link was rejected.' });
+  // Follow the emailed confirmation link over plain HTTPS, hop by hop through any
+  // click-tracking redirect, until the auth service's verify step answers.
+  let link = new URL(opts['verify-url']);
+  let verifiedAt = null;
+  for (let hop = 0; hop < 6 && !verifiedAt; hop++) {
+    const reply = await fetch(link, { redirect: 'manual', signal: AbortSignal.timeout(30000) });
+    const location = reply.headers.get('location');
+    if (link.pathname.endsWith('/auth/v1/verify')) {
+      if (reply.status >= 400 || /error/.test(location || '')) done(1, { status: 'error', step: 'email_verification', http_status: reply.status, detail: (location || '').replace(/#.*/, '').replace(/[?&](access|refresh)_token=[^&]*/g, '') || 'Confirmation link was rejected.' });
+      verifiedAt = link.origin;
+    } else if (location && reply.status >= 300 && reply.status < 400) link = new URL(location, link);
+    else break;
+  }
+  if (!verifiedAt) done(1, { status: 'error', step: 'email_verification', detail: 'The link did not lead to an /auth/v1/verify confirmation step.' });
   jwt = await login();
 }
 if (!jwt) {
