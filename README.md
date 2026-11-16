@@ -1,4 +1,4 @@
-Status: account signup/registration, identity, prompt delivery, assessment summary submission, utility cases and A2A messages use a registered Clarity `clrtok_` token over HTTPS (`register.mjs`). The service receives A2A messages over Clarity's push stream (`a2a-receiver.mjs`), and the interview UI submits its coach report as a token A2A message; no local a2a-bridge is used.
+Status: account signup/registration, identity, prompt delivery, assessment summary submission, utility cases and A2A messages use a registered Clarity `clrtok_` token over HTTPS (`register.mjs`). M3NT0R coaching and assessment run as local background jobs returned through the MCP tools; the service receives A2A requests (from M-CODEX only) over Clarity's push stream (`a2a-receiver.mjs`). There is no UI.
 
 Local HTTP MCP for an owner's agent to ask M3NT0R for coaching using the owner's
 Codex or Claude Code harness. It extends the Clarity Coach service and retains
@@ -34,12 +34,9 @@ export M3NTOR_HARNESS=codex
 npm start
 ```
 
-The MCP URL in this example is `http://127.0.0.1:4318/mcp/local`. It works with an
-empty `.data` directory and requires no interview or assessment. The existing UI
-remains at `http://127.0.0.1:4318/`; existing assessment connections remain at
-`/mcp/<assessment-id>`. When a saved assessment exists for the local workspace,
-`/mcp/local` continues to use its context and tools. Otherwise it exposes coaching,
-local context, journal and question tools without creating an assessment.
+The MCP URL in this example is `http://127.0.0.1:4318/mcp/local`, the service's
+only endpoint. It exposes coaching and assessment jobs, local context, journal,
+question, utility and `a2a_status` tools. There is no UI.
 
 To use a single Codex invocation with this MCP without changing global config:
 
@@ -147,8 +144,7 @@ local journal entry and writes `.clarity_coach/reports/<revision_id>.md`.
 per-artifact save receipts for reconciliation. Same-ID saves do not duplicate
 entries/sections; individual files are atomic and workspace writes serialized.
 Partial failures return the confirmed effects and actual error, with the same ID
-available to reconcile them. This route works outside an active interview and
-does not submit private assessment, context or financial data to a server.
+available to reconcile them. This route does not submit private assessment, context or financial data to a server.
 Model, authentication, account, billing, sandbox and existing approval settings
 remain inherited. Direct file operations remain a fallback when supported.
 
@@ -225,7 +221,7 @@ The private local `poma_initial_assessment_prompt.md` and
 `m3ntor_agent_prompt.md` publishing files are retained on the operator machine
 and explicitly ignored; they are absent from fresh checkouts. The obsolete
 `poma_reassessment_prompt.md` is deleted locally and from the tracked tree and
-ignored against accidental re-addition. `.data` holds private assessment state; `.clarity_coach` holds local
+ignored against accidental re-addition. `.clarity_coach` holds local
 business context/journals; `.m3ntor-runtime` holds private coaching requests,
 fetched prompts, harness input, command metadata, PIDs, stdout/stderr and results.
 Job files are owner-only, separate from the assessment JSON loader. These

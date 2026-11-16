@@ -28,8 +28,6 @@ job using `get_m3ntor_result`; retrieval never starts another harness. Job state
 and output survive an MCP server restart, and the detached worker can finish
 while the HTTP service is stopped. A launch receipt is not a coaching result.
 
-The existing assessment-scoped MCP and its journal, question, interview and
-report behavior remain available.
 
 ## Business POMA and reassessment flow
 
