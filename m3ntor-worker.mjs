@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { finished } from 'node:stream/promises';
 import { storeJson } from './m3ntor-jobs.mjs';
 
-// This worker is detached from the HTTP server. It owns one job and never retries it.
+// This worker owns one detached job; recovery inside the harness stays with it.
 process.umask(0o077);
 const directory = process.argv[2];
 let state;
@@ -49,31 +49,95 @@ async function runHarness(request, prompt) {
   await storeJson(path.join(directory, 'command.json'), { command: request.harness, args, cwd: request.cwd, model: 'Inherited from the existing harness configuration', authentication: 'Inherited; no credential or account override' });
   const stdoutLog = createWriteStream(path.join(directory, 'harness.stdout.jsonl'), { mode: 0o600 });
   const stderrLog = createWriteStream(path.join(directory, 'harness.stderr.log'), { mode: 0o600 });
+  const recoveryLog = createWriteStream(path.join(directory, 'harness.recovery.jsonl'), { mode: 0o600 });
   const child = spawn(request.harness, args, { cwd: request.cwd, env: process.env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-  let buffer = '', stderr = '', output = '', harnessError = '', stoppedFor = '', spawnError;
+  let buffer = '', stderrBuffer = '', stderr = '', output = '', harnessError = '', stoppedFor = '', spawnError;
+  let progressVersion = 0, retryProgressVersion = -1, lastRetry, messageId = '';
+  const seenProgress = new Set();
+  const retryAttempts = [];
+  const audit = (kind, detail) => recoveryLog.write(JSON.stringify({ at: new Date().toISOString(), kind, progress_version: progressVersion, ...detail }) + '\n');
   let killTimer;
   const stopWaste = reason => {
     if (stoppedFor) return;
     stoppedFor = reason;
-    // USER-AUTHORIZED — Marcus, November 4, 2026: stop rejected-call/retry
-    // loops immediately, retain evidence, and do not automatically restart.
+    // USER-AUTHORIZED — Marcus, November 4, 2026: stop hard rejections and
+    // demonstrated no-progress retry loops; preserve productive recovery.
+    audit('stop', { reason });
     try { process.kill(-child.pid, 'SIGTERM'); } catch {}
     killTimer = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }, 1000);
+  };
+  const progress = (kind, material) => {
+    if (!material || seenProgress.has(material)) return;
+    seenProgress.add(material);
+    progressVersion += 1;
+    audit('progress', { progress_kind: kind });
+  };
+  const hardRejection = text => /\b429\b|usage[ _-]?limit|rate[ _-]?limit|quota[ _-]?(?:exceed|exhaust)|insufficient[ _-]?quota/i.test(text);
+  const retryNotice = (source, text, incoming = {}) => {
+    const explicit = incoming.attempt ?? incoming.retry_attempt ?? incoming.attempt_number;
+    const match = text.match(/\battempt\s*[:#]?\s*(\d+)\b/i) || text.match(/\b(?:retrying|reconnecting)\b[\s.…:(#-]*(\d+)\b/i);
+    const attempt = explicit !== undefined && /^\d+$/.test(String(explicit)) ? String(Number(explicit)) : match ? String(Number(match[1])) : null;
+    const requestId = incoming.request_id || incoming.error?.request_id || null;
+    const current = { attempt, request_id: requestId };
+    // Ordinals shared by stderr and JSON describe the same attempt. A request
+    // ID distinguishes equal ordinals only when both notices supply one.
+    const same = retryAttempts.find(previous => (attempt !== null && attempt === previous.attempt && (!requestId || !previous.request_id || requestId === previous.request_id)) || (attempt === null && requestId && requestId === previous.request_id));
+    const distinct = lastRetry && !same && ((attempt !== null && lastRetry.attempt !== null) || (requestId && lastRetry.request_id));
+    audit('retry_notice', { source, ...current, duplicate: !!same, distinct: !!distinct });
+    if (same) {
+      if (!same.request_id && requestId) same.request_id = requestId;
+      return;
+    }
+    // An unnumbered repeated log line alone cannot establish another attempt.
+    if (attempt === null && !requestId) return;
+    if (distinct && retryProgressVersion === progressVersion) {
+      stopWaste('Distinct harness retry attempts made no intervening substantive progress. Stopped the wasting loop; evidence retained.');
+      return;
+    }
+    retryAttempts.push(current);
+    lastRetry = current;
+    retryProgressVersion = progressVersion;
   };
   const onEvent = incoming => {
     if (incoming.type === 'thread.started') state.harness_session_id = incoming.thread_id;
     if (incoming.session_id) state.harness_session_id = incoming.session_id;
-    if (incoming.type === 'item.completed' && incoming.item?.type === 'agent_message') output = incoming.item.text || output;
+    const item = incoming.item;
+    if (['item.completed', 'item.updated'].includes(incoming.type) && ['agent_message', 'reasoning'].includes(item?.type) && item.text?.trim()) progress('model_text', `text:${item.text}`);
+    if (incoming.type === 'item.completed' && item?.type === 'agent_message') output = item.text || output;
+    if (incoming.type === 'item.completed' && ['command_execution', 'mcp_tool_call', 'web_search', 'file_change'].includes(item?.type)) progress('work_item', `item:${JSON.stringify(item)}`);
+    if (incoming.type === 'stream_event') {
+      const event = incoming.event;
+      if (event?.type === 'message_start') messageId = event.message?.id || '';
+      if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text?.trim()) progress('model_text', `delta:${messageId}:${event.index}:${event.delta.text}`);
+    }
+    if (incoming.type === 'assistant' || incoming.type === 'user') {
+      for (const part of incoming.message?.content || []) {
+        if (part.type === 'text' && incoming.type === 'assistant' && part.text?.trim()) progress('model_text', `text:${part.text}`);
+        if (part.type === 'tool_result') progress('tool_result', `tool:${JSON.stringify(part)}`);
+      }
+    }
     if (incoming.type === 'result') {
       output = typeof incoming.result === 'string' ? incoming.result : output;
       if (incoming.is_error || (incoming.subtype && incoming.subtype !== 'success')) harnessError = incoming.result || incoming.subtype;
     }
     if (incoming.type === 'turn.failed') harnessError = incoming.error?.message || JSON.stringify(incoming.error || incoming);
     const isError = incoming.type === 'error' || incoming.type === 'turn.failed' || incoming.is_error;
-    if ((isError && /429|usage.?limit|rate.?limit|quota.?exceed|reconnecting|retrying/i.test(JSON.stringify(incoming))) || (incoming.type === 'system' && incoming.subtype === 'api_retry')) {
-      stopWaste('The harness reported a rejected call or retry. Stopped without an automatic retry.');
+    const isRetry = incoming.type === 'system' && incoming.subtype === 'api_retry';
+    const evidence = JSON.stringify(incoming);
+    if ((isError || isRetry) && hardRejection(evidence)) {
+      audit('hard_rejection', { source: 'stdout', event_type: incoming.type });
+      stopWaste('The harness reported a hard quota/usage rejection. Stopped immediately; evidence retained.');
+    } else if (isRetry || (isError && /\breconnecting\b|\bretrying\b/i.test(evidence))) {
+      retryNotice('stdout', evidence, incoming);
     }
+  };
+  const consumeStderr = line => {
+    const retry = /^\s*(?:error:\s*)?(?:reconnecting|retrying)\b/i.test(line);
+    if (hardRejection(line) && (retry || /^\s*(?:error\b|you(?:'ve| have)\b|usage[ _-]?limit|rate[ _-]?limit|quota\b|insufficient[ _-]?quota)/i.test(line))) {
+      audit('hard_rejection', { source: 'stderr' });
+      stopWaste('The harness reported a hard quota/usage rejection on stderr. Stopped immediately; evidence retained.');
+    } else if (retry) retryNotice('stderr', line);
   };
   const consumeLine = line => { try { onEvent(JSON.parse(line)); } catch {} };
   const result = new Promise(resolve => {
@@ -82,6 +146,7 @@ async function runHarness(request, prompt) {
   });
   stdoutLog.on('error', error => { harnessError = `Could not persist harness stdout: ${error.message}`; stopWaste(harnessError); });
   stderrLog.on('error', error => { harnessError = `Could not persist harness stderr: ${error.message}`; stopWaste(harnessError); });
+  recoveryLog.on('error', error => { harnessError = `Could not persist recovery evidence: ${error.message}`; stopWaste(harnessError); });
   child.stdout.on('data', chunk => {
     stdoutLog.write(chunk);
     buffer += chunk.toString();
@@ -91,7 +156,9 @@ async function runHarness(request, prompt) {
   child.stderr.on('data', chunk => {
     stderrLog.write(chunk);
     stderr = (stderr + chunk.toString()).slice(-12000);
-    if (/^(?:Error:\s*)?(?:Reconnecting|Retrying)\b/im.test(stderr) || /^error[^\n]*(?:429|usage.?limit|rate.?limit|quota.?exceed)/im.test(stderr)) stopWaste('The harness reported a rejected call or retry on stderr. Stopped without an automatic retry.');
+    stderrBuffer += chunk.toString();
+    let end;
+    while ((end = stderrBuffer.search(/[\r\n]/)) >= 0) { consumeStderr(stderrBuffer.slice(0, end)); stderrBuffer = stderrBuffer.slice(end + 1); }
   });
   child.stdin.on('error', error => { harnessError ||= `Harness stdin failed: ${error.message}`; });
   await save({ status: 'running', stage: 'harness', harness_pid: child.pid, harness_started_at: new Date().toISOString() });
@@ -99,8 +166,9 @@ async function runHarness(request, prompt) {
   const outcome = await result;
   if (killTimer) clearTimeout(killTimer);
   if (buffer.trim()) consumeLine(buffer);
-  stdoutLog.end(); stderrLog.end();
-  await Promise.all([finished(stdoutLog), finished(stderrLog)]);
+  if (stderrBuffer.trim()) consumeStderr(stderrBuffer);
+  stdoutLog.end(); stderrLog.end(); recoveryLog.end();
+  await Promise.all([finished(stdoutLog), finished(stderrLog), finished(recoveryLog)]);
   if (request.harness === 'codex') {
     try { output = await readFile(outputFile, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   }

@@ -89,9 +89,14 @@ success. Partial output and transcripts remain in the private job directory.
 
 The brief response wait does not limit execution time. A detached worker can
 finish after the HTTP server stops, and the same result is retrievable after a
-restart with the same job directory. There is no automatic model retry, restart
-or credential substitution. Actual provider rejection/retry events stop the
-wasting harness and preserve its evidence, per the owner's stop-spending rule.
+restart with the same job directory. The worker does not restart a job or
+substitute credentials. A first ordinary recoverable retry notice alone does
+not stop the harness. Hard quota/usage rejections stop immediately; distinct
+retry attempts without intervening new model text, tool results or completed
+work stop a demonstrated wasting loop. Duplicate JSON/stderr notices for the
+same attempt, heartbeat/session events and repeated logs do not establish new
+attempts or useful progress. Raw stdout/stderr and recovery/progress annotations
+are retained alongside final output.
 
 ## Configuration
 

@@ -12,8 +12,9 @@ SSH configuration, and records the source, fetch time and SHA-256. It supplies
 that exact prompt, question and context to the selected existing local Codex or
 Claude Code harness, using its existing authentication and model configuration.
 A detached local worker owns that run and writes the final output or actual
-failure to the job. It does not launch an automatic retry or substitute a model,
-provider, credential or stale bundled prompt.
+failure to the job. It does not restart the job or substitute a model, provider,
+credential or stale bundled prompt. Ordinary productive harness recovery remains
+with the running job; hard rejections and demonstrated no-progress loops stop.
 
 The ask call waits briefly. If the harness has finished, it returns the stored
 output. Otherwise it returns a running job ID. The agent retrieves that same
@@ -55,8 +56,14 @@ The separate infrastructure executor owns server storage and retrieval behavior.
    stored outcome before/after retrieval or restart.
 5. Missing/unreadable/empty remote prompt and missing/failing harness commands
    produce a retrievable failed job with actual error evidence, not fabricated
-   advice or completion. No automatic retry is started. Quota/retry events stop
-   the wasting harness and retain evidence. A nonexistent job is reported.
+   advice or completion. The worker does not restart failed jobs. A first
+   ordinary recoverable notice alone does not stop productive recovery. Actual
+   hard quota/usage rejection evidence stops immediately; distinct retry
+   attempts without intervening substantive model text, tool result or completed
+   work establish a wasting loop and stop it. Duplicate JSON/stderr notices of
+   one attempt, heartbeat/session initialization and repeated logs do not count
+   as distinct attempts or substantive progress. Raw error/retry/progress
+   evidence and final output remain available. A nonexistent job is reported.
 6. Supplied questions/context (including quotes and shell syntax) reach the
    harness as data via stdin/files. They are never interpolated into shell
    commands. Private inputs, outputs and logs use owner-only runtime files
