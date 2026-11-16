@@ -28,6 +28,21 @@ const contextPath = path.join(cwd, '.clarity_coach', 'CONTEXT.md');
 
 const a2aStatusTool = { name: 'a2a_status', description: 'Current state of this installation\'s Clarity A2A receiver: stream connection (connecting, connected, ready, reconnecting, rejected, not_registered), agent handle, pending messages replayed on connect, last message and last error. Each received message is run in the owner\'s harness and answered with an A2A reply; per-message records are in .clarity_coach/a2a/messages.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } };
 
+// Every saved assessment revision leaves one pending question asking the owner
+// whether it was useful; the answer is the owner testimony for utility reporting.
+async function askAssessmentUtility(input, receipt) {
+  const id = `poma-utility-${input.revision_id}`;
+  try {
+    const state = await questionState(cwd);
+    if (state.questions.some(question => question.id === id)) return { id, status: 'already_recorded' };
+    const scores = Object.entries(input.ratings || {}).map(([area, rating]) => `${area[0].toUpperCase()}${area.slice(1)} ${rating?.score}/10`).join(', ');
+    const question = `Your agent completed a business assessment on ${receipt.date || new Date().toISOString().slice(0, 10)}${scores ? ` (${scores})` : ''}. Was it useful to you, and what would make the next one more useful?`;
+    await setUserQuestions(cwd, { questions: [{ id, question, source: 'm3ntor_assessment' }] });
+    toolsChanged();
+    return { id, status: 'pending' };
+  } catch (error) { return { id, status: 'failed', error: error.message }; }
+}
+
 // Submit the separate non-sensitive summary to Clarity and keep the receipt beside the local one.
 async function submitAssessment(cwd, input, profile, assessedAt) {
   let submission;
@@ -104,6 +119,7 @@ async function mcp(req, res) {
         const receipt = await savePomaReassessment(cwd, localInput, { assessmentId: 'local', harness });
         if (receipt.saved) receipt.submission = await submitAssessment(cwd, input, coachingProfile, receipt.assessedAt);
         receipt.submitted = receipt.submission?.saved === true;
+        if (receipt.saved) receipt.utility_question = await askAssessmentUtility(input, receipt);
         result = { ...(!receipt.saved || !receipt.submitted ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(receipt) }] };
       } else if (taskTools.some(tool => tool.name === name)) {
         result = { content: [{ type: 'text', text: JSON.stringify(taskQueue.call(name, input)) }] };

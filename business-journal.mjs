@@ -82,7 +82,7 @@ export async function setUserQuestions(cwd,input,now=new Date()) {
         if (!item.question?.trim()) throw new Error('Question text is required.');
         const existing=state.questions.find(q=>item.id ? q.id===item.id : q.status==='pending' && q.question===item.question);
         if (existing) Object.assign(existing,{question:item.question,status:'pending',updatedAt:now.toISOString()});
-        else state.questions.push({id:randomUUID(),question:item.question,source:item.source || input.source || 'local_harness',status:'pending',createdAt:now.toISOString(),updatedAt:now.toISOString()});
+        else state.questions.push({id:item.id || randomUUID(),question:item.question,source:item.source || input.source || 'local_harness',status:'pending',createdAt:now.toISOString(),updatedAt:now.toISOString()});
       }
     } else if (action==='answer' || action==='dismiss') {
       const existing=state.questions.find(q=>q.id===input.question_id);
