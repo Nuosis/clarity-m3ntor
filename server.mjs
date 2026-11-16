@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { steps, scale, dimensions, promptFor, categoricalScale, ratingPromptFor } from './questions.mjs';
 import { coachReport, validateRatings } from './coach-report.mjs';
 import { inspectBridge, establishBridge } from './bridge.mjs';
-import { savePomaAssessment, savePomaReassessment } from './assessment-store.mjs';
+import { savePomaAssessment, savePomaReassessment, reconcileReassessmentContext } from './assessment-store.mjs';
 import { readJournal, addJournal, questionState, setUserQuestions, readUserQuestions, businessTools, serializeBusinessWrites } from './business-journal.mjs';
 import { coachIdentity } from './coach-identity.mjs';
 import { m3ntorTools, askM3ntor, reassessPoma, getM3ntorResult } from './m3ntor-jobs.mjs';
@@ -315,8 +315,11 @@ async function mcp(req, res, a) {
         const file = contextPath(a);
         await serializeBusinessWrites(a.cwd, async () => {
           await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+          let current = '';
+          try { current = await readFile(file, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+          const content = reconcileReassessmentContext(current, input.content);
           const temporary = file + '.' + randomUUID() + '.tmp';
-          await writeFile(temporary, input.content, { mode: 0o600 }); await rename(temporary, file);
+          await writeFile(temporary, content, { mode: 0o600 }); await rename(temporary, file);
         });
         a.context = { path: file, savedAt: new Date().toISOString(), runStartedAt: a.run.startedAt, localOnly: true };
         await save(a);

@@ -57,6 +57,23 @@ async function writePrivate(file, content) {
 }
 const writeJson = (file, value) => writePrivate(file, JSON.stringify(value, null, 2) + '\n');
 
+export function reconcileReassessmentContext(current, proposed) {
+  const sections = /<!-- clarity_m3ntor:poma:([0-9a-f-]{36}):start -->[\s\S]*?<!-- clarity_m3ntor:poma:\1:end -->/gi;
+  const latest = new Map([...current.matchAll(sections)].map(match => [match[1].toLowerCase(), match[0]]));
+  const retained = new Set();
+  // Keep the caller's general-context updates, with current service-managed
+  // sections replacing stale copies or being restored when absent.
+  let merged = proposed.replace(sections, (section, id) => {
+    const key = id.toLowerCase();
+    if (!latest.has(key)) return section;
+    if (retained.has(key)) return '';
+    retained.add(key);
+    return latest.get(key);
+  });
+  for (const [id, section] of latest) if (!retained.has(id)) merged += `${merged && !merged.endsWith('\n') ? '\n' : ''}\n${section}\n`;
+  return merged;
+}
+
 export function savePomaReassessment(cwd, input, { assessmentId, harness } = {}) {
   if (typeof input.revision_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.revision_id)) throw new Error('Provide the reassessment revision_id UUID supplied with the task.');
   validateRatings(input.ratings);
