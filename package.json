@@ -1,6 +1,6 @@
 {
   "name": "clarity-m3ntor",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "scripts": { "start": "node server.mjs" },

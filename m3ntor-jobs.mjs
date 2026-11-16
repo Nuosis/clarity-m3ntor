@@ -8,6 +8,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const terminal = new Set(['complete', 'failed', 'interrupted']);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 export const jobRoot = path.resolve(process.env.M3NTOR_JOB_DIR || path.join(root, '.m3ntor-runtime', 'jobs'));
+const assessmentInput = { type: 'object', properties: { context: { description: 'Optional existing business assessment context or local source references, as text or structured JSON.' }, harness: { type: 'string', enum: ['codex', 'claude'], description: 'Optional existing harness; otherwise uses the service or assessment selection.' } }, additionalProperties: false };
 
 export const m3ntorTools = [
   {
@@ -16,9 +17,14 @@ export const m3ntorTools = [
     inputSchema: { type: 'object', properties: { question: { type: 'string' }, context: { description: 'Non-sensitive context for the coach, as text or structured JSON.' }, harness: { type: 'string', enum: ['codex', 'claude'], description: 'Optional existing harness; otherwise uses the service or assessment selection.' } }, required: ['question'], additionalProperties: false },
   },
   {
+    name: 'assess_poma',
+    description: 'Assess the owner’s BUSINESS Process, Observability, Measurement and triggered Agency. Fetches the current unified assessment prompt from Clarity for both baseline and later/weekly assessments, and runs the existing local harness. Uses local evidence, independent category/1–10 ratings, source-supported sales per TOTAL human hour, stable revision identity and existing private save/result tools. No question required; returns output or a running job_id. Does not install a scheduler.',
+    inputSchema: assessmentInput,
+  },
+  {
     name: 'reassess_poma',
-    description: 'Reassess the owner’s BUSINESS Process, Observability, Measurement and triggered Agency using local context/current evidence, independent category and 1–10 ratings, source-supported sales per total human hour, and private dated revisions. Fetches the current standalone reassessment prompt from Clarity and runs the existing local harness. No question required. Returns output or a running job_id; retrieve that same job with get_m3ntor_result. Does not install a scheduler.',
-    inputSchema: { type: 'object', properties: { context: { description: 'Optional reassessment context or local business-source references, as text or structured JSON.' }, harness: { type: 'string', enum: ['codex', 'claude'], description: 'Optional existing harness; otherwise uses the service or assessment selection.' } }, additionalProperties: false },
+    description: 'Compatibility alias for assess_poma: uses the SAME current unified business assessment prompt, local harness, private save and result mechanics. No separate reassessment prompt or question required.',
+    inputSchema: assessmentInput,
   },
   {
     name: 'get_m3ntor_result',
@@ -71,12 +77,14 @@ export async function askM3ntor(input, environment) {
   });
 }
 
-export async function reassessPoma(input, environment) {
+export async function assessPoma(input, environment) {
+  const legacyPath = process.env.M3NTOR_REASSESSMENT_PROMPT_PATH;
   return createJob(input, environment, {
-    identity: 'poma_reassessment', question: 'Perform an evidence-based reassessment of the owner’s business POMA and source-supported productivity. Save private dated revisions and prepare a separate non-sensitive coaching summary.',
-    promptPath: process.env.M3NTOR_REASSESSMENT_PROMPT_PATH || '/opt/clarity-m3ntor/poma_reassessment_prompt.md',
+    identity: 'poma_assessment', question: 'Perform an evidence-based assessment of the owner’s business POMA and source-supported productivity. Establish a baseline when no prior assessment exists; otherwise compare business change and current evidence with prior valid findings. Save private dated revisions and a separate non-sensitive coaching summary.',
+    promptPath: process.env.M3NTOR_ASSESSMENT_PROMPT_PATH || (legacyPath && legacyPath !== '/opt/clarity-m3ntor/poma_reassessment_prompt.md' ? legacyPath : '/opt/clarity-m3ntor/poma_initial_assessment_prompt.md'),
   });
 }
+export const reassessPoma = assessPoma;
 
 async function createJob(input, { cwd, harness, mcpUrl }, task) {
   const selected = input.harness || process.env.M3NTOR_HARNESS || harness || 'codex';

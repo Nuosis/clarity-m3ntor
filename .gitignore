@@ -23,3 +23,6 @@ credentials.json
 *.key
 *.p12
 *.pfx
+/poma_initial_assessment_prompt.md
+/m3ntor_agent_prompt.md
+/poma_reassessment_prompt.md

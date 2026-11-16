@@ -6,7 +6,7 @@ The remaining sections record the existing development implementation and its ea
 
 # Ask M3NT0R backend flow
 
-Status: prior transport/utility/recovery scope independently assessed; the business-POMA and reassessment revision awaits independent assessment.
+Status: earlier local runner/persistence evidence is retained; unified assessment routing and private-source changes await independent assessment.
 
 An owner’s agent connects to the local `clarity_m3ntor` MCP. It asks M3NT0R a
 question and supplies the non-sensitive business/POMA context it wants the coach
@@ -33,6 +33,24 @@ report behavior remain available.
 
 ## Business POMA and reassessment flow
 
+The current harness invokes `assess_poma` without a question, optionally supplying
+existing context and harness selection. Each job freshly fetches the ONE
+server-owned assessment prompt, `poma_initial_assessment_prompt.md`, and runs it
+through the existing local harness with its current model/account/auth/sandbox.
+It receives a stable job/revision UUID and uses the unchanged
+`save_poma_reassessment` and `get_m3ntor_result` paths. With no prior assessment it
+establishes the baseline; later and weekly runs compare prior/current evidence
+and real business change, reusing valid findings rather than indiscriminately
+repeating discovery. `reassess_poma` remains an alias for this same task and prompt.
+
+Initial assessment and mentor publishing sources remain private local operator
+files, ignored and removed from the current Git tree; a fresh clone contains
+neither prompt. The obsolete `poma_reassessment_prompt.md` source is deleted and
+ignored. Bootstrap and weekly tasks call `assess_poma`, not a bundled document.
+Current runtime fetching/publishing remains the established operator SSH baseline;
+the HTTPS/token contract above still requires its separate migration. End users
+receive no SSH access. This revision does not implement token provisioning.
+
 The owner starts the bootstrap in their chosen local AI harness and asks it to
 connect to Clarity M3NT0R there. The current harness discovers and reuses the
 business workspace, MCP and existing access routes; selecting/connecting a
@@ -58,16 +76,12 @@ or AI usage. Missing evidence leads to a targeted question, or a verbal account
 with its basis if calculation remains impossible. An on-demand calculation does
 not establish ongoing process Measurement.
 
-Weekly POMA reassessment is a separate scheduled activity from the event/work
-productivity-improvement loop. The scheduler calls `reassess_poma` in the
-owner's configured local harness; no question is required. The existing shared
-job runner selects the current remote `poma_reassessment_prompt.md`, records
-task identity and prompt provenance, and uses the same durable jobs/results as
-coaching. `ask_m3ntor` continues to select only the mentor prompt. Neither tool
-accepts a caller-selected prompt path. Both fetch the current server source,
-without a bundled fallback or model/auth/permission substitution.
+Weekly assessment is a separate scheduled activity from the event/work
+productivity-improvement loop. It calls the same `assess_poma` tool and prompt as
+the baseline. `ask_m3ntor` continues to select only the mentor prompt; neither
+tool accepts a caller-selected prompt path or a bundled fallback.
 
-The standalone reassessment prompt directs the owner's local AI to read local
+The unified assessment prompt directs the owner's local AI to read local
 context, journals, current/prior dated assessments and changed relevant business
 sources. It reassesses the four business-linked areas with independent category
 and 1–10 ratings, evidence and uncertainty; distinguishes real business change
@@ -160,12 +174,15 @@ The separate infrastructure executor owns server storage and retrieval behavior.
     matching-scope/period calculation before requesting missing owner input,
     with total human-hour coverage and labelled estimates. Initial calculation
     and established active business-process scoring remain distinct.
-12. A fresh MCP lists `reassess_poma`; invoking it without a question fetches the
-    current distinct REMOTE reassessment prompt and records task identity,
-    path/hash, input and actual harness result or durable running/failure state.
-    `get_m3ntor_result` retrieves that same job without another launch. Ordinary
-    `ask_m3ntor` still fetches the mentor prompt. Readback: both remote prompt
-    files, per-job request/state/fetched prompt/hash, transcripts and final output.
+12. A fresh MCP lists `assess_poma` and compatibility alias `reassess_poma`.
+    Invoking either without a question fetches the SAME current REMOTE unified
+    assessment prompt, with baseline/later behavior from local prior evidence,
+    and records task identity, path/hash, input and actual harness result or
+    durable running/failure state. `get_m3ntor_result` retrieves that same job
+    without another launch. Ordinary `ask_m3ntor` still fetches the mentor prompt.
+    Readback: published assessment/mentor sources, per-job request/state/fetched
+    prompt/hash, transcripts, local save receipts and final output. No bundled
+    prompt fallback or second assessment prompt is used.
 13. The actual local AI calls `save_poma_reassessment` through HTTP MCP under its
     inherited read-only harness, and receives actual assessment/context/journal/
     summary paths and save receipts. Authoritative local readback shows a new

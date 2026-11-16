@@ -115,20 +115,24 @@ same attempt, heartbeat/session events and repeated logs do not establish new
 attempts or useful progress. Raw stdout/stderr and recovery/progress annotations
 are retained alongside final output.
 
-## Reassess the business separately
+## Assess the business: baseline and later runs
 
-Call `reassess_poma` with `{}` or optional `context`/`harness`. It requires no
-question and selects the fixed business-reassessment task and current remote
-`poma_reassessment_prompt.md`. The same detached runner, brief wait and
-`get_m3ntor_result` retrieve either kind of job; `task` distinguishes `coaching`
-from `poma_reassessment` in the durable request/state. The caller cannot choose a
-prompt path through tool input. `ask_m3ntor` keeps using the mentor prompt.
+Call `assess_poma` with `{}` or optional `context`/`harness`. No question is
+required. It selects the ONE current remote `poma_initial_assessment_prompt.md`
+for both the first baseline and later/weekly assessments. `reassess_poma` is a
+compatibility alias using the same prompt and task. The existing detached runner,
+brief wait and `get_m3ntor_result` retrieve either coaching or assessment jobs;
+new assessment requests use task identity `poma_assessment`, while existing
+`poma_reassessment` jobs remain supported. The caller cannot choose a prompt path
+through tool input. `ask_m3ntor` keeps using the mentor prompt.
 
-The standalone prompt directs the owner's local AI to read private context,
-journals, previous dated assessments and relevant current business sources;
-refresh affected evidence; assess Process, Observability, Measurement and Agency
-with independent category/1–10 ratings; distinguish business change from new
-evidence; and preserve private dated revisions. It calls the local MCP service's
+The unified prompt directs the owner's local AI to read private context,
+journals, previous dated assessments and relevant current business sources. It
+establishes a baseline when none exists; otherwise it reuses valid findings,
+refreshes affected evidence and compares business change with newly discovered
+evidence rather than indiscriminately rescanning. It assesses Process,
+Observability, Measurement and Agency with independent category/1–10 ratings and
+preserves private dated revisions. It calls the local MCP service's
 `save_poma_reassessment` with the task's job UUID as a stable `revision_id`, so
 an inherited read-only harness can save without broader filesystem permissions.
 A returned model response or successful CLI exit does not prove those files
@@ -161,8 +165,9 @@ follow source discovery. A first calculation does not establish ongoing business
 process Measurement. Detailed business records remain local; only a separate
 non-sensitive synthesis is eligible for coaching/report sharing.
 
-The bootstrap describes one system-scheduled weekly reassessment that calls
-`reassess_poma` and retrieves the same job. That scheduled assessment is separate
+The bootstrap describes one system-scheduled weekly assessment that calls
+`assess_poma` with the same prompt and retrieves the same job. The old
+`reassess_poma` name remains an alias. That scheduled assessment is separate
 from the event/work-driven productivity-improvement loop. Starting this package
 or calling reassessment does not install a scheduler or new action worker.
 
@@ -177,15 +182,16 @@ Environment variables are read from the process; `.env` files are not loaded.
 | `M3NTOR_HARNESS` | Assessment harness, then `codex` | Existing CLI to run; `codex` or `claude`. |
 | `M3NTOR_SSH_HOST` | `clarity` | Existing SSH alias/host used to read the prompt. |
 | `M3NTOR_PROMPT_PATH` | `/opt/clarity-m3ntor/m3ntor_agent_prompt.md` | Current server prompt; fetched for each new job. |
-| `M3NTOR_REASSESSMENT_PROMPT_PATH` | `/opt/clarity-m3ntor/poma_reassessment_prompt.md` | Current server reassessment prompt; selected only by `reassess_poma`. |
+| `M3NTOR_ASSESSMENT_PROMPT_PATH` | `/opt/clarity-m3ntor/poma_initial_assessment_prompt.md` | Unified server assessment prompt for `assess_poma` and its alias. |
+| `M3NTOR_REASSESSMENT_PROMPT_PATH` | Deprecated compatibility setting | A custom path is used only when the canonical setting is absent; the old standard reassessment path maps to the unified default. Both tool names use the same resolved path. |
 | `M3NTOR_JOB_DIR` | `.m3ntor-runtime/jobs` beside the source | Private durable job directory. Use an ignored or external location. |
 | `M3NTOR_WAIT_MS` | `1500` | Brief ask response wait; does not terminate a running job. |
 
 The following describes the current operator development implementation, not user setup.
 SSH uses the existing configuration with `BatchMode=yes`; no keys, users,
 credentials or alternative routes are installed. Fetch failure or an empty
-prompt fails that job. The bundled prompt is a publishing source, never a stale
-runtime fallback.
+prompt fails that job. Private local prompt files are operator publishing sources, never a stale
+runtime fallback; a fresh checkout does not contain them.
 
 ## Utility cases
 
@@ -221,10 +227,13 @@ API/database must be deployed for these tools to return real stored results.
 
 ## Operator-only server prompt maintenance
 
-These are Clarity operator deployment instructions. End users fetch prompts over the token-authenticated HTTPS contract and receive no SSH access.
+These are Clarity operator deployment instructions for the current SSH baseline. Target end-user access requires token-authenticated HTTPS and no SSH; that migration remains unimplemented.
 
-`m3ntor_agent_prompt.md` and `poma_reassessment_prompt.md` are the sources to
-publish. Destination directories must be writable by the existing SSH account.
+`m3ntor_agent_prompt.md` and the ONE assessment source,
+`poma_initial_assessment_prompt.md`, are private local operator publishing files.
+They are excluded from the current Git tree and absent from fresh clones; obtain
+the authorized private sources before operator maintenance. The obsolete separate
+`poma_reassessment_prompt.md` source is deleted and ignored. Destination directories must be writable by the existing SSH account.
 The following stages both files and atomically replaces each prompt using the
 same SSH alias, without changing services or auth:
 
@@ -233,11 +242,15 @@ python3 - <<'PY'
 from pathlib import Path
 import json, os, shlex, subprocess
 
+assessment_path = os.environ.get('M3NTOR_ASSESSMENT_PROMPT_PATH')
+if not assessment_path:
+    legacy = os.environ.get('M3NTOR_REASSESSMENT_PROMPT_PATH')
+    assessment_path = legacy if legacy and legacy != '/opt/clarity-m3ntor/poma_reassessment_prompt.md' else '/opt/clarity-m3ntor/poma_initial_assessment_prompt.md'
 prompts = [
     {'path': os.environ.get('M3NTOR_PROMPT_PATH', '/opt/clarity-m3ntor/m3ntor_agent_prompt.md'),
      'content': Path('m3ntor_agent_prompt.md').read_text()},
-    {'path': os.environ.get('M3NTOR_REASSESSMENT_PROMPT_PATH', '/opt/clarity-m3ntor/poma_reassessment_prompt.md'),
-     'content': Path('poma_reassessment_prompt.md').read_text()},
+    {'path': assessment_path,
+     'content': Path('poma_initial_assessment_prompt.md').read_text()},
 ]
 remote = '''import json, os, sys, tempfile
 from pathlib import Path
@@ -272,8 +285,12 @@ restart needed to select newly published prompt contents.
 
 ## Stored data and scope
 
-The repository contains source, the bootstrap, mentor and standalone reassessment
-prompts. `.data` holds private assessment state; `.clarity_coach` holds local
+The current Git tree contains source, bootstrap and access/flow documentation.
+The private local `poma_initial_assessment_prompt.md` and
+`m3ntor_agent_prompt.md` publishing files are retained on the operator machine
+and explicitly ignored; they are absent from fresh checkouts. The obsolete
+`poma_reassessment_prompt.md` is deleted locally and from the tracked tree and
+ignored against accidental re-addition. `.data` holds private assessment state; `.clarity_coach` holds local
 business context/journals; `.m3ntor-runtime` holds private coaching requests,
 fetched prompts, harness input, command metadata, PIDs, stdout/stderr and results.
 Job files are owner-only, separate from the assessment JSON loader. These

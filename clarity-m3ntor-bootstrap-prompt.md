@@ -70,6 +70,7 @@ Use the installed tools rather than rebuilding them:
 - `suser_question_set`: create/update, answer, dismiss or defer questions.
 - `user_question_read`: current pending questions and eligibility to offer them.
 - `save_poma_reassessment`: local dated assessment/context/journal/separate-summary persistence, including from a read-only harness.
+- `assess_poma`: baseline and later/weekly business assessments using one current server prompt; `reassess_poma` is its compatibility alias.
 - `ask_m3ntor`, `get_m3ntor_result`: coaching and same-job retrieval.
 - `report_utility`, `search_utility`: non-sensitive useful-process cases and retrieval.
 
@@ -79,7 +80,7 @@ Use owner feedback to mine relevant sessions/tool calls locally and prepare a us
 
 ## 2. Complete the initial business POMA assessment
 
-Read and execute `poma_initial_assessment_prompt.md` from this installation. It owns business/source/process discovery, vendors/partners/internal roles, usefulness feedback, source-supported sales-per-total-human-hour productivity, categorical and numeric POMA ratings, local save schema and submission of the non-sensitive summary through `ask_m3ntor`. Do not duplicate those instructions here or replace them with the periodic reassessment task.
+Call the connected `clarity_m3ntor.assess_poma` with no question, optionally supplying existing context or the current harness. It freshly fetches the ONE server-owned business assessment prompt and runs it locally. With no prior assessment it establishes the baseline; later runs compare current evidence and business change with valid prior findings. Retrieve the same running job through `get_m3ntor_result`, and retain actual `save_poma_reassessment` receipts. This process owns business/source/process discovery, vendors/partners/internal roles, usefulness feedback, source-supported sales-per-total-human-hour productivity, categorical and numeric ratings, local save schema and the separate non-sensitive coaching summary. Prompt publishing sources are private operator files absent from fresh clones; do not read a bundled prompt as a substitute for a failed server fetch. Required token-enabled access remains subject to the implementation status above.
 
 After discovery, complete the non-sensitive registration/coaching profile with industry, products/services, service area/location, condensed context, assessment summary and current ratings. Submit it through the supported coaching/registration route and retain actual receipts; keep private evidence local. Missing registration does not erase a completed local assessment.
 
@@ -91,7 +92,7 @@ Use the operating system's service manager for restart recovery. Extend the exis
 
 ## 4. Schedule weekly POMA reassessment separately
 
-Schedule one weekly task in the owner's local time, reusing a matching entry. Its configured execution owner calls `reassess_poma`, which fetches the current standalone assessment prompt from Clarity and runs the local harness. Retrieve a running result using the same job ID and `get_m3ntor_result`; record actual local save receipts and any failed effects. The system-scheduled review compares business evidence and saves dated revisions plus a separate non-sensitive summary. It is separate from the event/work-driven improvement loop.
+Schedule one weekly task in the owner's local time, reusing a matching entry. Its configured execution owner calls `assess_poma`, using the same current server assessment prompt as the baseline; `reassess_poma` remains a compatibility alias. Retrieve a running result using the same job ID and `get_m3ntor_result`; record actual local save receipts and any failed effects. Later assessments reuse valid findings and compare business change against newly discovered evidence without indiscriminate rescans. The system-scheduled assessment saves dated revisions plus a separate non-sensitive summary and is separate from the event/work-driven improvement loop.
 
 ## 5. Operate the business productivity-improvement loop
 
