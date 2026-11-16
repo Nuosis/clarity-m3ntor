@@ -16,7 +16,10 @@ const save = async patch => {
   await storeJson(path.join(directory, 'state.json'), state);
 };
 
+const A2A_INSTRUCTION = `You are the business owner's local AI agent, connected to Clarity M3NT0R. Another registered agent sent the message below to this installation through Clarity A2A. Act on it within the owner's existing authority, access and policies; keep private business records local and share only what the request needs. Your final response is sent back to that agent as the reply.`;
+
 async function fetchPrompt(source) {
+  if (source.local === 'a2a_message') return A2A_INSTRUCTION;
   let prompt;
   try { prompt = await clarityRequest('GET', `/agent/mentor/prompts/${encodeURIComponent(source.prompt_id)}`); }
   catch (error) {
@@ -37,7 +40,8 @@ async function runHarness(request, prompt) {
   const context = typeof request.context === 'string' ? request.context : JSON.stringify(request.context, null, 2);
   const assessment = ['poma_assessment', 'poma_reassessment'].includes(request.task);
   const persistence = assessment ? `\n## Local persistence identity\n\nUse revision_id ${request.job_id} with clarity_m3ntor.save_poma_reassessment for this task. Reuse that same ID when reconciling a save. The local service writes the authorized artifacts even if this harness filesystem is read-only; retain actual per-artifact receipts.\n` : '';
-  const input = `${prompt}\n\n## ${assessment ? 'Current business POMA assessment task' : 'Current coaching request'}\n\n${request.question}\n\n## Supplied context\n\n${context}\n${persistence}`;
+  const heading = assessment ? 'Current business POMA assessment task' : request.task === 'a2a_message' ? 'Incoming A2A message' : 'Current coaching request';
+  const input = `${prompt}\n\n## ${heading}\n\n${request.question}\n\n## Supplied context\n\n${context}\n${persistence}`;
   await writeFile(path.join(directory, 'harness-input.md'), input, { mode: 0o600 });
   await storeJson(path.join(directory, 'command.json'), { command: request.harness, args, cwd: request.cwd, model: 'Inherited from the existing harness configuration', authentication: 'Inherited; no credential or account override' });
   const stdoutLog = createWriteStream(path.join(directory, 'harness.stdout.jsonl'), { mode: 0o600 });

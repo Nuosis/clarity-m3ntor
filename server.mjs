@@ -14,6 +14,9 @@ import { coachIdentity } from './coach-identity.mjs';
 import { m3ntorTools, askM3ntor, assessPoma, getM3ntorResult } from './m3ntor-jobs.mjs';
 import { utilityTools, reportUtility, searchUtility } from './clarity-utility.mjs';
 import { clarityRequest } from './clarity-client.mjs';
+import { startA2AReceiver } from './a2a-receiver.mjs';
+
+const a2aStatusTool = { name: 'a2a_status', description: 'Current state of this installation\'s Clarity A2A receiver: stream connection (connecting, connected, ready, reconnecting, rejected, not_registered), agent handle, pending messages replayed on connect, last message and last error. Each received message is run in the owner\'s harness and answered with an A2A reply; per-message records are in .clarity_coach/a2a/messages.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } };
 
 // Submit the separate non-sensitive summary to Clarity and keep the receipt beside the local one.
 async function submitAssessment(cwd, input, profile, assessedAt) {
@@ -256,7 +259,7 @@ async function mcp(req, res, a) {
   }
   if (call.method !== 'ping' && (!session || session.cwd !== a.cwd)) return json(res,404,{error:'MCP session is missing or expired; initialize again.'});
   if (call.method === 'ping') result = {};
-  else if (call.method === 'tools/list') result = { tools: [...m3ntorTools, ...utilityTools, ...tools.filter(tool => !a.local || ['get_coaching_context','save_poma_reassessment'].includes(tool.name)), ...businessTools(await questionState(a.cwd))] };
+  else if (call.method === 'tools/list') result = { tools: [...m3ntorTools, ...utilityTools, a2aStatusTool, ...tools.filter(tool => !a.local || ['get_coaching_context','save_poma_reassessment'].includes(tool.name)), ...businessTools(await questionState(a.cwd))] };
   else if (call.method === 'tools/call') {
     try {
       const { name, arguments: input = {} } = call.params;
@@ -272,6 +275,8 @@ async function mcp(req, res, a) {
         if (receipt.saved) receipt.submission = await submitAssessment(a.cwd, input, coachingProfile, receipt.assessedAt);
         receipt.submitted = receipt.submission?.saved === true;
         result = { ...(!receipt.saved || !receipt.submitted ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(receipt) }] };
+      } else if (name === 'a2a_status') {
+        result = { content: [{ type: 'text', text: JSON.stringify(a2aReceiver.status()) }] };
       } else if (name === 'report_utility' || name === 'search_utility') {
         const response = await (name === 'report_utility' ? reportUtility(input) : searchUtility(input));
         result = { content: [{ type: 'text', text: JSON.stringify(response) }] };
@@ -477,6 +482,8 @@ const server = http.createServer(async (req, res) => {
     return json(res, 404, { error: 'Not found.' });
   } catch (e) { if (!res.headersSent) json(res, 400, { error: e.message }); }
 });
+// This service holds the installation's A2A stream for as long as it runs.
+const a2aReceiver = startA2AReceiver({ cwd: localCwd, harness: localWorkspace.harness, mcpUrl: `${base}/mcp/local` });
 server.listen(port, '127.0.0.1', () => console.log(`Clarity Coach → ${base}`));
 for (const signal of ['SIGTERM','SIGINT']) process.on(signal, async () => {
   await Promise.all([...records.values()].filter(a => jobs.has(a.id)).map(a => stop(a, 'Local service stopped. Saved answers retained.')));

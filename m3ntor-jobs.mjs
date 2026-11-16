@@ -85,6 +85,12 @@ export async function assessPoma(input, environment) {
 }
 export const reassessPoma = assessPoma;
 
+// An incoming A2A message for this installation's agent, run in the owner's harness.
+export async function startA2AJob(message, environment) {
+  const question = `From agent: ${message.from_agent}\nSession: ${message.session_id}\nMessage ID: ${message.id}\n\n${message.message}`;
+  return createJob({ context: message.payload && Object.keys(message.payload).length ? message.payload : '' }, environment, { identity: 'a2a_message', question, promptId: null });
+}
+
 async function createJob(input, { cwd, harness, mcpUrl }, task) {
   const selected = input.harness || process.env.M3NTOR_HARNESS || harness || 'codex';
   if (!['codex', 'claude'].includes(selected)) throw new Error('Select an existing codex or claude harness.');
@@ -96,7 +102,7 @@ async function createJob(input, { cwd, harness, mcpUrl }, task) {
   const request = {
     job_id: id, task: task.identity, question: task.question, context: input.context ?? '', harness: selected,
     cwd: path.resolve(process.env.M3NTOR_WORKSPACE || cwd), mcp_url: mcpUrl,
-    prompt_source: { prompt_id: task.promptId },
+    prompt_source: task.promptId ? { prompt_id: task.promptId } : { local: task.identity },
   };
   await storeJson(path.join(directory, 'request.json'), request);
   const state = { job_id: id, task: task.identity, status: 'queued', created_at: new Date().toISOString(), harness: selected, prompt_source: request.prompt_source };
