@@ -112,6 +112,36 @@ credentials or alternative routes are installed. Fetch failure or an empty
 prompt fails that job. The bundled prompt is a publishing source, never a stale
 runtime fallback.
 
+## Utility cases
+
+`report_utility` sends a caller-prepared non-sensitive case to
+`POST /agent/utility/cases`. Required fields are `submission_id` (UUID), `title`,
+`summary`, `process`, `prerequisites` (string array), `agent_actions` (string
+array), `outcome`, `poma_labels`, `tags`, `evidence` and `source_kind`. POMA labels
+are `Process`, `Observability`, `Measurement`, `Agency`. `evidence.kind` is
+`owner_reported`, `measured` or `demonstrated`; optional `limitations` and
+`source_refs` are string arrays. `source_kind` distinguishes `user_reported`
+from `web_documented`. Optional fields are `owner_feedback`, `productivity`
+(object), `business_context` (object), `source_url`, `source_date` and `agent_id`.
+Keep the same submission UUID when reconciling a submission. The API owns
+idempotent persistence; a network error is not a confirmed saved case.
+
+`search_utility` calls `POST /agent/utility/search` with `query`, optional
+`poma_labels`, `tags`, `source_kind` and `limit`. It returns the actual search
+response. These client tools do not mine raw local sessions or generate evidence
+on the owner's behalf; the local agent supplies the sanitized report.
+
+Both operations read the existing `~/.config/a2a-bridge/config.json` and use its
+`api_url` and `hmac_secret_command` argument array. The secret command runs
+without a shell; its output stays in memory. Requests use the bridge's existing
+HMAC-SHA256 `Authorization: Bearer <signature>.<timestamp>` signing over the
+exact JSON request body, preserving any configured API URL prefix. No alternate
+secret, account or auth configuration is installed. The client uses the existing
+transport's 30-second request convention and does not automatically retry or
+follow redirects. Missing configuration, secret-command failure and upstream
+errors remain explicit failed tool calls. The separate Clarity server utility
+API/database must be deployed for these tools to return real stored results.
+
 ## Publish the server prompt
 
 `m3ntor_agent_prompt.md` is the source to publish. The destination directory must
@@ -162,9 +192,9 @@ runtime locations.
 
 The source was copied from the tracked `clarity-coach` service. Its unrelated
 untracked action queue, business loop, service control and worker drafts are not
-part of this package. This change does not implement a utility database, semantic
-collection search or `report_utility`; the coach is told those tools are absent.
-The supplied bootstrap describes broader work and is not executed by startup.
+part of this package. The utility database/API is separately deployed on Clarity;
+this local package supplies its MCP client. The supplied bootstrap describes
+broader work and is not executed by startup.
 
 The backend flow and criteria for independent assessment are in
 [M3NTOR-FLOW.md](M3NTOR-FLOW.md). No repository test suite is added.

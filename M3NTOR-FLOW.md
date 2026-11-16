@@ -22,8 +22,18 @@ and output survive an MCP server restart, and the detached worker can finish
 while the HTTP service is stopped. A launch receipt is not a coaching result.
 
 The existing assessment-scoped MCP and its journal, question, interview and
-report behavior remain available. Utility-collection/reporting tools are not
-implemented by this package; the coach must state that limitation when relevant.
+report behavior remain available.
+
+## Authorized utility integration extension
+
+The local agent supplies a non-sensitive utility case using `report_utility`.
+The caller keeps its UUID submission ID for idempotent reconciliation. The MCP
+sends the case to the Clarity utility API through the existing bridge API URL
+and HMAC secret-command configuration; it does not mine raw local sessions or
+change authentication. `search_utility` sends a query and optional POMA/tag/source
+filters to that API and returns its actual results. API errors remain errors;
+an unavailable backend is not an empty collection or a successful submission.
+The separate infrastructure executor owns server storage and retrieval behavior.
 
 ## Acceptance criteria for independent assessment
 
@@ -54,8 +64,15 @@ implemented by this package; the coach must state that limitation when relevant.
    assessments. Readback: saved input, spawned argv, file modes and staged files.
 7. Existing assessment-scoped tools remain listed and usable for an existing
    assessment. Fresh local mode does not change the running old service, global
-   MCP configuration, authentication or billing route. Utility tools remain
-   explicitly unavailable rather than reporting an invented collection result.
+   MCP configuration, authentication or billing route.
+8. A supplied utility case is submitted through the existing A2A HMAC route with
+   its submission UUID and full typed fields. The API receipt and authoritative
+   stored case readback agree; repeating the same submission ID does not create
+   a second case. Raw session/history data are not loaded by this MCP client.
+9. Utility search returns actual API results and honors supplied query, POMA,
+   tag and source filters. Backend/network/auth errors produce explicit failed
+   tool calls. The HMAC secret is obtained via the established command argv and
+   is absent from tool output, logs, Git and runtime coaching files.
 
 This specification requires real-service backend assessment by the independent
 executor. The implementation executor does not claim any criterion passed.

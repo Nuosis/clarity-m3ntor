@@ -12,6 +12,7 @@ import { savePomaAssessment } from './assessment-store.mjs';
 import { readJournal, addJournal, questionState, setUserQuestions, readUserQuestions, businessTools } from './business-journal.mjs';
 import { coachIdentity } from './coach-identity.mjs';
 import { m3ntorTools, askM3ntor, getM3ntorResult } from './m3ntor-jobs.mjs';
+import { utilityTools, reportUtility, searchUtility } from './clarity-utility.mjs';
 
 const exec = promisify(execFile);
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -230,12 +231,12 @@ async function mcp(req, res, a) {
   if (call.method === 'initialize') {
     const id=randomUUID();mcpSessions.set(id,{cwd:a.cwd,createdAt:new Date().toISOString()});
     const assignment = a.run?.status === 'running' ? a.run.stage === 'ratings' ? 'Update only the existing POMA ratings from recorded findings, with both categorical and numeric assessments. Save the revision and return; do not repeat the interview.' : 'Complete the full interview assignment in one continuous session, saving local context and the separate non-sensitive report.' : 'Use the local business context and coaching tools to support your owner. Do not restart the interview without a request.';
-    result={protocolVersion:'2025-03-26',capabilities:{tools:{listChanged:true}},serverInfo:{name:'clarity_m3ntor',version:'0.4.0'},instructions:assignment+' '+questionInstructions+' Ask M3NT0R with ask_m3ntor and retrieve running jobs with get_m3ntor_result. Utility collection search and report_utility are not available in this package.'};
+    result={protocolVersion:'2025-03-26',capabilities:{tools:{listChanged:true}},serverInfo:{name:'clarity_m3ntor',version:'0.5.0'},instructions:assignment+' '+questionInstructions+' Ask M3NT0R with ask_m3ntor and retrieve running jobs with get_m3ntor_result.'};
     return json(res,200,{jsonrpc:'2.0',id:call.id,result},{'Mcp-Session-Id':id});
   }
   if (call.method !== 'ping' && (!session || session.cwd !== a.cwd)) return json(res,404,{error:'MCP session is missing or expired; initialize again.'});
   if (call.method === 'ping') result = {};
-  else if (call.method === 'tools/list') result = { tools: [...m3ntorTools, ...tools.filter(tool => !a.local || tool.name === 'get_coaching_context'), ...businessTools(await questionState(a.cwd))] };
+  else if (call.method === 'tools/list') result = { tools: [...m3ntorTools, ...utilityTools, ...tools.filter(tool => !a.local || tool.name === 'get_coaching_context'), ...businessTools(await questionState(a.cwd))] };
   else if (call.method === 'tools/call') {
     try {
       const { name, arguments: input = {} } = call.params;
@@ -245,6 +246,9 @@ async function mcp(req, res, a) {
       } else if (name === 'get_m3ntor_result') {
         const job = await getM3ntorResult(input.job_id);
         result = { ...(job.status === 'failed' || job.status === 'interrupted' ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(job) }] };
+      } else if (name === 'report_utility' || name === 'search_utility') {
+        const response = await (name === 'report_utility' ? reportUtility(input) : searchUtility(input));
+        result = { content: [{ type: 'text', text: JSON.stringify(response) }] };
       } else if (a.local && !['get_coaching_context', 'read_journal', 'add_journal', 'suser_question_set', 'user_question_read'].includes(name) && !/^user_questions_\d+$/.test(name)) {
         throw new Error('This tool requires an assessment-scoped MCP connection. Local coaching does not require an interview.');
       } else if (name === 'read_journal') {
