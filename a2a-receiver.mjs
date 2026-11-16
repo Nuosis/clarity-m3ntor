@@ -20,6 +20,8 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
   let delay = 1000;
   let profile;
   const watchers = new Map();
+  const inFlight = new Set(); // message ids being started in this process
+  let waiting = false;
 
   const setStatus = async patch => {
     status = { ...status, ...patch, updated_at: new Date().toISOString() };
@@ -66,7 +68,12 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
   }
 
   async function handle(message) {
-    if (!message?.id || message.status !== 'pending') return;
+    if (!message?.id || message.status !== 'pending' || inFlight.has(message.id)) return;
+    inFlight.add(message.id);
+    try { await start(message); } finally { inFlight.delete(message.id); }
+  }
+
+  async function start(message) {
     const existing = await readLedger(message.id);
     if (existing?.job_id) { if (!String(existing.status).startsWith('replied')) follow(existing); return; }
     const entry = { message_id: message.id, from_agent: message.from_agent, session_id: message.session_id, received_at: new Date().toISOString(), status: 'received' };
@@ -135,11 +142,19 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
 
   // Not registered yet: start as soon as register.mjs writes the profile.
   async function waitForRegistration() {
+    if (waiting) return;
+    waiting = true;
     await setStatus({ state: 'not_registered', profile: profilePath() });
     const directory = path.dirname(profilePath());
     await mkdir(directory, { recursive: true, mode: 0o700 });
+    // One profile write raises several file events; only the first ready one opens the stream.
+    let opened = false;
     const watcher = watch(directory, async () => {
-      try { const candidate = await loadProfile(); if (candidate.agent_handle && (candidate.token_command || candidate.token_env)) { watcher.close(); connect(); } } catch {}
+      if (opened) return;
+      try {
+        const candidate = await loadProfile();
+        if (!opened && candidate.agent_handle && (candidate.token_command || candidate.token_env)) { opened = true; watcher.close(); waiting = false; connect(); }
+      } catch {}
     });
   }
 
