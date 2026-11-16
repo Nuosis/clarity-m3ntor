@@ -161,8 +161,7 @@ non-sensitive synthesis is eligible for coaching/report sharing.
 The bootstrap describes one system-scheduled weekly assessment that calls
 `assess_poma` with the same prompt and retrieves the same job. The old
 `reassess_poma` name remains an alias. That scheduled assessment is separate
-from the event/work-driven productivity-improvement loop. Starting this package
-or calling reassessment does not install a scheduler or new action worker.
+from the event/work-driven productivity-improvement loop. The service's action queue (`set_task` with a `weekly` recurrence) runs it.
 
 ## Configuration
 

@@ -95,13 +95,13 @@ After discovery, `save_poma_reassessment` saves the private records locally and 
 
 ## 3. Establish the persistent local action system
 
-Build or reuse a SQLite queue and worker that serves immediate, delayed and recurring tasks to the current harness. Persist task IDs, schedules, safe claims, execution/results and recovery state. Distinguish queued, delivered, executing and completed work, require completion acknowledgement, and recover after crashes/restarts without duplicating completed side effects. Stop spending loops without progress while preserving state and productive recovery.
+The `clarity_m3ntor` service includes the action queue: `set_task`, `list_tasks`, `clear_task` (actions `done` and `delete`), `start_task_worker` and `stop_task_worker`. Tasks persist in `.clarity_coach/action.sqlite3` and run in the owner's harness, with the `clarity_m3ntor` tools, when due: immediately, at `run_at`, or on a `weekly` or `interval_minutes` recurrence. States are queued, delivered, executing, completed, failed, paused and done; each run's result or error is recorded. A task's job is linked before it is marked executing, so a restart follows the same job and never repeats completed work, and three consecutive failed runs pause a task with its state kept. The service manager that keeps this service running provides restart recovery.
 
-Use the operating system's service manager for restart recovery. Extend the existing `clarity_m3ntor` where the following tools are missing: `set_task`, `list_tasks`, `clear_task` (actions `done` and `delete`), `start_task_worker`, `stop_task_worker`. These are bootstrap work to establish, not a claim they already ship in this package. Reuse compatible installed infrastructure and record the worker's actual status and result-return path.
+Call `start_task_worker` (the setting persists) and record its state, then confirm with `list_tasks`.
 
 ## 4. Schedule weekly POMA reassessment separately
 
-Schedule one weekly task in the owner's local time, reusing a matching entry. Its configured execution owner calls `assess_poma`, using the same current server assessment prompt as the baseline; `reassess_poma` remains a compatibility alias. Retrieve a running result using the same job ID and `get_m3ntor_result`; record actual local save receipts and any failed effects. Later assessments reuse valid findings and compare business change against newly discovered evidence without indiscriminate rescans. The system-scheduled assessment saves dated revisions plus a separate non-sensitive summary and is separate from the event/work-driven improvement loop.
+Check `list_tasks` for an existing weekly reassessment and reuse it by `task_id`; otherwise call `set_task` once with a `weekly` recurrence in the owner's local time and an instruction to call `assess_poma` with `{}`, retrieve the same job with `get_m3ntor_result` until it finishes, and report the job ID, status, the `save_poma_reassessment` receipt (local artifacts and Clarity submission) and any failed effect. Record the task ID and its next run time. Later assessments reuse valid findings and compare business change against newly discovered evidence without indiscriminate rescans. This scheduled assessment is separate from the event/work-driven improvement loop.
 
 ## 5. Operate the business productivity-improvement loop
 
