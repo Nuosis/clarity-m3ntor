@@ -162,7 +162,7 @@ Expose an MCP `report_utility` tool. Use the owner's usefulness feedback to exam
 
 Prepare a non-sensitive utility case separating the owner's account, observed actions, tools used, resulting outcomes and supporting evidence. Include measured productivity or the owner's verbal description with its stated basis. Do not infer causation, savings or revenue unsupported by the evidence.
 
-Mine sessions and review tool calls locally; do not share raw transcripts or private information. A2A submission of utility cases is future development. Prepare and retain the local case, but do not build or claim the future submission capability as part of this bootstrap.
+Mine sessions and review tool calls locally; do not share raw transcripts or private information. Use the existing clarity_m3ntor report_utility tool to submit the non-sensitive case to the Clarity utility collection. Retain its submission UUID and receipt for idempotent reconciliation. Use search_utility to retrieve relevant cases with POMA, tag and source filters. Distinguish a prepared local case from confirmed server persistence; if the tools or connection are unavailable, retain the case and report the specific gap.
 
 ## 8. Build the persistent local action system
 
@@ -188,7 +188,7 @@ Schedule one recurring weekly POMA review in the owner's local time. Reuse or up
 
 Use business context and owner feedback to identify useful work, prioritize it, queue and carry it out through the owner's agent, observe outcomes, journal learnings and reassess POMA weekly.
 
-Receive coach questions and recommendations through the reporting connection, retain them locally and route owner questions through the question mechanism. Recommendations are not proof of an adopted plan; preserve the distinction between proposed, authorized, attempted and completed work and the owner's existing authority boundaries.
+Use clarity_m3ntor ask_m3ntor to supply a question and non-sensitive business/POMA context. It fetches the current coach prompt from Clarity and runs a local background harness; if it returns a running job ID, retrieve the same job with get_m3ntor_result until its output or failure is available. M3NT0R uses relevant utility cases and documented web examples to inform its recommendations. Retain coach questions and recommendations locally and route owner questions through the question mechanism. Recommendations are not proof of an adopted plan; preserve the distinction between proposed, authorized, attempted and completed work and the owner's existing authority boundaries.
 
 ## 10. Report the bootstrap result
 

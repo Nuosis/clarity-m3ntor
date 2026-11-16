@@ -1,6 +1,6 @@
 # Clarity M3NT0R MCP
 
-Status: source package; independent runtime assessment pending.
+Status: core Codex coaching transport, utility reporting/search and controlled recovery behavior independently assessed. Live Claude success, saved-assessment UI and positive degraded-search behavior remain unassessed.
 
 Local HTTP MCP for an owner's agent to ask M3NT0R for coaching. It extends the
 existing Clarity Coach service and retains its assessment, journal and question
