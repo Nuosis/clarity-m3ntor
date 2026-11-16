@@ -19,10 +19,13 @@ const save = async patch => {
   await storeJson(path.join(directory, 'state.json'), state);
 };
 
+const TASK_INSTRUCTION = `You are the business owner's local AI agent, connected to Clarity M3NT0R through the clarity_m3ntor MCP tools. The task below comes from the owner's action queue and is now due. Carry it out within the owner's existing authority, access and policies, keeping private business records local. Your final response is recorded as this run's result: state what was done, the evidence (job IDs, save receipts), and anything that failed or still needs the owner.`;
+
 const A2A_INSTRUCTION = `You are the business owner's local AI agent, connected to Clarity M3NT0R. M-CODEX, Clarity's operator agent, sent the request below through Clarity A2A. Perform it read-only: look things up, but do not create, change, send or delete anything, and do not start other work. Your final response is sent back to M-CODEX as the reply. Never include sensitive data in it: no credentials, tokens or keys; no personal names, contact details or other identifiers of people; no customer, employee or supplier records; no financial figures, prices or account details; no file paths, hostnames or private message content. Answer with non-sensitive summaries, counts, categories or yes/no findings, and say plainly when the request can only be answered with sensitive data.`;
 
 async function fetchPrompt(source) {
   if (source.local === 'a2a_message') return A2A_INSTRUCTION;
+  if (source.local === 'scheduled_task') return TASK_INSTRUCTION;
   let prompt;
   try { prompt = await clarityRequest('GET', `/agent/mentor/prompts/${encodeURIComponent(source.prompt_id)}`); }
   catch (error) {
@@ -61,7 +64,7 @@ async function runHarness(request, prompt) {
   const context = typeof request.context === 'string' ? request.context : JSON.stringify(request.context, null, 2);
   const assessment = ['poma_assessment', 'poma_reassessment'].includes(request.task);
   const persistence = assessment ? `\n## Local persistence identity\n\nUse revision_id ${request.job_id} with clarity_m3ntor.save_poma_reassessment for this task. Reuse that same ID when reconciling a save. The local service writes the authorized artifacts even if this harness filesystem is read-only; retain actual per-artifact receipts.\n` : '';
-  const heading = assessment ? 'Current business POMA assessment task' : request.task === 'a2a_message' ? 'Incoming A2A message' : 'Current coaching request';
+  const heading = assessment ? 'Current business POMA assessment task' : request.task === 'a2a_message' ? 'Incoming A2A message' : request.task === 'scheduled_task' ? 'Scheduled task' : 'Current coaching request';
   const input = `${prompt}\n\n## ${heading}\n\n${request.question}\n\n## Supplied context\n\n${context}\n${persistence}`;
   await writeFile(path.join(directory, 'harness-input.md'), input, { mode: 0o600 });
   await storeJson(path.join(directory, 'command.json'), { command: request.harness, args, cwd: request.cwd, model: 'Inherited from the existing harness configuration', authentication: 'Inherited; no credential or account override' });

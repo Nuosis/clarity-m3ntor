@@ -85,6 +85,11 @@ export async function assessPoma(input, environment) {
 }
 export const reassessPoma = assessPoma;
 
+// A task from the owner's action queue, run in the owner's harness with this MCP.
+export async function startTaskJob(task, environment) {
+  return createJob({ context: { task_id: task.id, title: task.title } }, environment, { identity: 'scheduled_task', question: task.instruction, promptId: null });
+}
+
 // An incoming A2A message for this installation's agent, run in the owner's harness.
 export async function startA2AJob(message, environment) {
   const question = `From agent: ${message.from_agent}\nSession: ${message.session_id}\nMessage ID: ${message.id}\n\n${message.message}`;

@@ -11,6 +11,7 @@ import { m3ntorTools, askM3ntor, assessPoma, getM3ntorResult } from './m3ntor-jo
 import { utilityTools, reportUtility, searchUtility } from './clarity-utility.mjs';
 import { clarityRequest } from './clarity-client.mjs';
 import { startA2AReceiver } from './a2a-receiver.mjs';
+import { taskTools, startTaskQueue } from './task-queue.mjs';
 
 // Local loopback MCP for the owner's harness: M3NT0R coaching and business
 // assessment (run as local background jobs), private records, utility cases,
@@ -88,7 +89,7 @@ async function mcp(req, res) {
   }
   if (call.method !== 'ping' && !session) return json(res,404,{error:'MCP session is missing or expired; initialize again.'});
   if (call.method === 'ping') result = {};
-  else if (call.method === 'tools/list') result = { tools: [...m3ntorTools, ...utilityTools, a2aStatusTool, ...tools, ...businessTools(await questionState(cwd))] };
+  else if (call.method === 'tools/list') result = { tools: [...m3ntorTools, ...utilityTools, a2aStatusTool, ...taskTools, ...tools, ...businessTools(await questionState(cwd))] };
   else if (call.method === 'tools/call') {
     try {
       const { name, arguments: input = {} } = call.params;
@@ -104,6 +105,8 @@ async function mcp(req, res) {
         if (receipt.saved) receipt.submission = await submitAssessment(cwd, input, coachingProfile, receipt.assessedAt);
         receipt.submitted = receipt.submission?.saved === true;
         result = { ...(!receipt.saved || !receipt.submitted ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(receipt) }] };
+      } else if (taskTools.some(tool => tool.name === name)) {
+        result = { content: [{ type: 'text', text: JSON.stringify(taskQueue.call(name, input)) }] };
       } else if (name === 'a2a_status') {
         result = { content: [{ type: 'text', text: JSON.stringify(a2aReceiver.status()) }] };
       } else if (name === 'report_utility' || name === 'search_utility') {
@@ -144,6 +147,8 @@ const server = http.createServer(async (req, res) => {
 });
 // This service holds the installation's A2A stream for as long as it runs.
 const a2aReceiver = startA2AReceiver({ cwd, harness, mcpUrl });
+// The owner's action queue runs due tasks for as long as this service runs.
+const taskQueue = startTaskQueue({ cwd, harness, mcpUrl });
 server.listen(port, '127.0.0.1', () => console.log(`Clarity M3NT0R MCP → ${mcpUrl}`));
 for (const signal of ['SIGTERM','SIGINT']) process.on(signal, () => {
   for (const stream of mcpStreams) stream.res.end();
