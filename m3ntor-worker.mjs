@@ -1,12 +1,14 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { finished } from 'node:stream/promises';
 import { storeJson } from './m3ntor-jobs.mjs';
 import { clarityRequest } from './clarity-client.mjs';
+
+const execFileAsync = promisify(execFile);
 
 // This worker owns one detached job; recovery inside the harness stays with it.
 process.umask(0o077);
@@ -33,13 +35,12 @@ async function fetchPrompt(source) {
   return prompt.content;
 }
 
-// --ignore-user-config also skips the owner's model choice; keep it (top-level `model` only).
-async function codexModel() {
-  try {
-    const config = await readFile(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'config.toml'), 'utf8');
-    const model = /^model\s*=\s*"([^"]+)"/m.exec(config.split(/^\[/m)[0])?.[1];
-    return model ? ['-m', model] : [];
-  } catch { return []; }
+// Disables every MCP server Codex would load (configured or plugin-provided)
+// while keeping the owner's config, provider, model and login. A listing
+// failure fails the job so a request never runs without this guarantee.
+async function codexMcpOff() {
+  const { stdout } = await execFileAsync('codex', ['mcp', 'list', '--json'], { timeout: 30000, maxBuffer: 2_000_000 });
+  return JSON.parse(stdout).flatMap(server => ['-c', `mcp_servers.${server.name}=${server.transport?.type === 'stdio' ? '{command="/usr/bin/true",enabled=false}' : '{url="http://127.0.0.1:9/",enabled=false}'}`]);
 }
 
 async function runHarness(request, prompt) {
@@ -49,7 +50,7 @@ async function runHarness(request, prompt) {
   const readOnly = request.task === 'a2a_message';
   const args = request.harness === 'codex'
     ? (readOnly
-      ? ['exec', '--ignore-user-config', '--disable', 'apps', ...(await codexModel()), '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
+      ? [...(await codexMcpOff()), 'exec', '--disable', 'apps', '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
       : ['-c', `mcp_servers.clarity_m3ntor.url=${JSON.stringify(request.mcp_url)}`, 'exec', '--json', '--skip-git-repo-check', '-o', outputFile, '-'])
     : (readOnly
       ? ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: {} }), '--permission-mode', 'plan', '--disallowedTools', 'Edit,Write,NotebookEdit']
