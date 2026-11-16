@@ -1,4 +1,4 @@
-Status: registration, identity, prompt delivery and utility cases use a registered Clarity `clrtok_` token over HTTPS (`register.mjs`). A2A through that token is not yet implemented.
+Status: account signup/registration, identity, prompt delivery, assessment summary submission, utility cases and A2A message routes use a registered Clarity `clrtok_` token over HTTPS (`register.mjs`). The package's local A2A receiver still uses the a2a-bridge CLI.
 
 Local HTTP MCP for an owner's agent to ask M3NT0R for coaching using the owner's
 Codex or Claude Code harness. It extends the Clarity Coach service and retains

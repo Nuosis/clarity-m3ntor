@@ -1,6 +1,6 @@
 # Registered-user Clarity access
 
-Status: deployed November 16, 2026 (clarity-backend 2ffb1e27): `POST /agent/mentor/registrations`, `GET /agent/mentor/me`, `GET /agent/mentor/prompts/{coach,poma-assessment}` and token access to `/agent/utility/*`; signup returns `verification_pending` when email confirmation is required. `register.mjs` implements the headless sequence. A2A token use and `/agent/mentor/assessments` remain proposed.
+Status: deployed November 16, 2026 (clarity-backend d04d3070): `POST /agent/mentor/signup` (new confirmed account plus registration in one call, no email access), `POST /agent/mentor/registrations` (existing account session), `GET /agent/mentor/me`, `GET /agent/mentor/prompts/{coach,poma-assessment}`, `POST/GET /agent/mentor/assessments`, and token access to `/agent/utility/*` and `/agent/agent_messages`. `register.mjs` implements the client sequence. The package's local A2A receiver is not yet migrated to the token.
 
 ## User and agent flow
 

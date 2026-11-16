@@ -116,53 +116,26 @@ if (!existing?.installation_id || existing?.email !== email) await saveProfile({
 if (password) jwt = await login();
 // A supplied password that signs in is kept for later token recovery.
 if (jwt && suppliedPassword) await secretPut(ACCOUNT_SERVICE, email, password);
-// Sign up when no account password exists, or retry a signup whose outcome was
-// never confirmed. The generated password is stored first and the profile marks
-// the signup pending, so a lost response is retried with the same password.
-if (!jwt && !suppliedPassword && (!password || profile.pending_signup)) {
+const registrationFields = { installation_id, harness: opts.harness || null, company_name: opts.company || null, username: opts.username || null };
+let registration;
+if (jwt) {
+  registration = await httpJson('POST', `${apiUrl}/agent/mentor/registrations`, { bearer: jwt, data: registrationFields });
+} else if (!suppliedPassword && (!password || profile.pending_signup)) {
+  // New account: one call creates the confirmed account and registers this
+  // installation; no email access is needed. The generated password is stored
+  // (and the signup marked pending) first, so a lost response is retried with it.
   if (!password) {
     password = randomBytes(24).toString('base64url');
     await saveProfile({ pending_signup: true });
     await secretPut(ACCOUNT_SERVICE, email, password);
   }
-  const signup = await httpJson('POST', `${apiUrl}/auth/signup`, { data: { email, password, company_name: opts.company || null, username: opts.username || null } });
-  if (!signup.ok) done(1, { status: 'error', step: 'signup', http_status: signup.status, error: signup.payload?.error?.message || signup.payload, retry: 'Rerun the same command; the generated password is kept for this signup.' });
-  await saveProfile({ pending_signup: false });
-  created_account = true;
-  jwt = signup.payload.authenticated ? sessionJwt(signup.response) : null;
-  if (!jwt && signup.payload.verification_pending && !opts['verify-url']) {
-    done(2, { status: 'verification_pending', email, account_password_stored: `${ACCOUNT_SERVICE}/${email}`, next: 'Read the Clarity confirmation email in the owner\'s inbox and rerun with --verify-url "<confirmation link>".' });
-  }
+  registration = await httpJson('POST', `${apiUrl}/agent/mentor/signup`, { data: { email, password, ...registrationFields } });
+  if (registration.status === 409) done(1, { status: 'error', step: 'signup', http_status: 409, detail: 'A Clarity account already exists for this email. Supply its password with --password-stdin.' });
+  if (registration.ok) { await saveProfile({ pending_signup: false }); created_account = true; }
+} else {
+  done(1, { status: 'error', step: 'signin', login_error: loginError, detail: 'Sign-in failed with the stored or supplied password. Supply the account password with --password-stdin.' });
 }
-if (!jwt && opts['verify-url']) {
-  // Follow the emailed confirmation link over plain HTTPS, hop by hop through any
-  // click-tracking redirect, until the auth service's verify step answers.
-  let link = new URL(opts['verify-url']);
-  let verifiedAt = null;
-  for (let hop = 0; hop < 6 && !verifiedAt; hop++) {
-    const reply = await fetch(link, { redirect: 'manual', signal: AbortSignal.timeout(30000) });
-    const location = reply.headers.get('location');
-    if (link.pathname.endsWith('/auth/v1/verify')) {
-      if (reply.status >= 400 || /error/.test(location || '')) done(1, { status: 'error', step: 'email_verification', http_status: reply.status, detail: (location || '').replace(/#.*/, '').replace(/[?&](access|refresh)_token=[^&]*/g, '') || 'Confirmation link was rejected.' });
-      verifiedAt = link.origin;
-    } else if (location && reply.status >= 300 && reply.status < 400) link = new URL(location, link);
-    else break;
-  }
-  if (!verifiedAt) done(1, { status: 'error', step: 'email_verification', detail: 'The link did not lead to an /auth/v1/verify confirmation step.' });
-  jwt = await login();
-  if (jwt && suppliedPassword) await secretPut(ACCOUNT_SERVICE, email, password);
-}
-if (!jwt) {
-  done(1, created_account
-    ? { status: 'error', step: 'signin', detail: 'Signup was accepted but sign-in failed. If this email already had a Clarity account, supply its password with --password-stdin.' }
-    : { status: 'error', step: 'signin', login_error: loginError, detail: 'Sign-in failed with the stored or supplied password. If the error says the email is not confirmed, rerun with --verify-url "<confirmation link>"; otherwise supply the account password with --password-stdin.' });
-}
-
-const registration = await httpJson('POST', `${apiUrl}/agent/mentor/registrations`, {
-  bearer: jwt,
-  data: { installation_id, harness: opts.harness || null, company_name: opts.company || null, username: opts.username || null },
-});
-if (!registration.ok) done(1, { status: 'error', step: 'registration', http_status: registration.status, error: registration.payload?.error?.message || registration.payload });
+if (!registration.ok) done(1, { status: 'error', step: 'registration', http_status: registration.status, error: registration.payload?.error?.message || registration.payload, retry: 'Rerun the same command; the installation and any generated password are kept.' });
 const { token, ...identity } = registration.payload;
 const token_command = await secretPut(TOKEN_SERVICE, identity.agent_id, token);
 delete profile.token_env; // the stored token command replaces any rejected injected token

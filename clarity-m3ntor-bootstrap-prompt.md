@@ -53,15 +53,12 @@ Register and sign in on the owner's behalf with the package's headless client; n
 node "$M3NTOR_SOURCE/register.mjs" --email "<owner's email>" --company "<business name>" --harness "$M3NTOR_HARNESS"
 ```
 
-Use the owner's established email; never fabricate one. It prints one JSON status:
+Use the owner's established email; never fabricate one. No email access is needed: for a new account one call creates the confirmed account, registers this installation and returns its token. It prints one JSON status:
 
 - `registered` or `signed_in`: the profile `~/.config/clarity_m3ntor/config.json` holds non-secret API, organization, agent and installation metadata plus a `token_command`; the `clrtok_` token is in the owner's secret store (macOS Keychain, otherwise an owner-only file). Record the returned `organization_id`, `agent_id` and `agent_handle`.
-- `verification_pending`: Clarity emailed a confirmation link. Read it through the owner's authorized email access and rerun the same command with `--verify-url "<link>"`. If you have no email access, report that gap and continue local work.
-- `missing_input` or `error`: report the named step. For an existing Clarity account, supply its password on stdin with `--password-stdin`; an email address alone does not prove ownership.
+- `missing_input` or `error`: report the named step. If a Clarity account already exists for the email, supply its password on stdin with `--password-stdin`; an email address alone does not prove ownership.
 
-Rerunning the command reuses the stored token; a rejected token re-registers the same installation and agent with a rotated token. The local MCP reads this profile for prompt retrieval and utility operations over HTTPS. Never copy another agent's identity, and do not substitute SSH or operator credentials.
-
-Implementation status: registration, identity, prompts and utility operations use the token. A2A delivery through the token is not yet implemented; report it as an open gap.
+Rerunning the command reuses the stored token; a rejected token re-registers the same installation and agent with a rotated token. The same token authenticates prompts, assessment submission, utility cases and A2A messages (`/agent/agent_messages`) over HTTPS. Never copy another agent's identity, and do not substitute operator credentials.
 
 ### Verify utility access
 
@@ -90,7 +87,7 @@ Use owner feedback to mine relevant sessions/tool calls locally and prepare a us
 
 Call the connected `clarity_m3ntor.assess_poma` with no question, optionally supplying existing context or the current harness. It freshly fetches the ONE server-owned business assessment prompt and runs it locally. With no prior assessment it establishes the baseline; later runs compare current evidence and business change with valid prior findings. Retrieve the same running job through `get_m3ntor_result`, and retain actual `save_poma_reassessment` receipts. This process owns business/source/process discovery, vendors/partners/internal roles, usefulness feedback, source-supported sales-per-total-human-hour productivity, categorical and numeric ratings, local save schema and the separate non-sensitive coaching summary. Prompt publishing sources are private operator files absent from fresh clones; do not read a bundled prompt as a substitute for a failed server fetch.
 
-After discovery, complete the non-sensitive registration/coaching profile with industry, products/services, service area/location, condensed context, assessment summary and current ratings. Submit it through the supported coaching/registration route and retain actual receipts; keep private evidence local. Missing registration does not erase a completed local assessment.
+After discovery, `save_poma_reassessment` saves the private records locally and then submits only the non-sensitive coaching summary, ratings and `coaching_profile` (industry, products/services, service area/location, condensed context) to Clarity with the installation token. Retain its `submission` receipt; a failed submission is a failed save to report and retry with the same `revision_id`. Keep private evidence local.
 
 ## 3. Establish the persistent local action system
 
