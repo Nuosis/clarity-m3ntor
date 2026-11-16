@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Clarity Coach</title>
+  <link rel="icon" type="image/svg+xml" href="/logo.svg">
+  <link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Clarity Coach home"><svg class="target-logo" viewBox="0 0 48 48" fill="none" aria-hidden="true"><circle cx="24" cy="24" r="21"/><circle cx="24" cy="24" r="14"/><circle cx="24" cy="24" r="7"/></svg><span>clarity<span class="brand-coach">coach</span></span></a>
+    <div class="top-actions"><span id="service-status" class="service-status"><i></i> Local</span><button id="connections" class="quiet-button">Connections <span>↗</span></button><button id="theme-toggle" class="icon-button" title="Switch theme" aria-label="Switch theme">◐</button></div>
+  </header>
+  <main>
+    <section class="dashboard-heading"><div><div class="eyebrow">YOUR BUSINESS IN PRACTICE</div><h1>Make more of your AI.</h1></div><div class="assessment-controls"><span id="draft-badge" class="badge">DRAFT ASSESSMENT</span><select id="assessment-picker" aria-label="View a harness assessment" hidden></select></div></section>
+    <section id="pom-cards" class="pom-cards" aria-label="Process observability measurement and Agency ratings"></section>
+    <section class="working-panel" aria-label="Current work"><div id="work-indicator" class="work-indicator"><svg viewBox="0 0 48 48" fill="none" aria-hidden="true"><circle cx="24" cy="24" r="20"/><circle cx="24" cy="24" r="12"/><circle cx="24" cy="24" r="4"/></svg></div><div class="work-copy"><div class="eyebrow">WHAT WE’RE WORKING ON</div><h2 id="work-title">Getting to know your business</h2><p id="work-detail">Connect your local agent to get started.</p></div><div id="work-actions" class="work-actions"></div></section>
+    <section class="conversation-panel"><div class="conversation-heading"><div><h2>Conversation</h2><span id="conversation-caption">Clarity Coach & your local agents</span></div><div class="stream-actions"><span id="stream-status" class="stream-status">Ready when you are</span><button id="jump-live" class="quiet-button" hidden>Jump to live ↓</button></div></div><div id="conversation" class="conversation" role="log" aria-label="Live coaching conversation" aria-live="polite" aria-relevant="additions text"></div></section>
+    <section id="followup-panel" class="followup-panel" hidden></section>
+    <footer><span>Processes. Observability. Measurement. Agency.</span><details class="scale-disclosure"><summary>Rating guide <span class="badge small">DRAFT</span></summary><div id="scale-list"></div></details><span id="save-status">Saved on this device</span></footer>
+  </main>
+  <dialog id="welcome-dialog" class="welcome-dialog" aria-labelledby="welcome-title">
+    <div class="welcome-top"><svg class="welcome-logo target-logo" viewBox="0 0 48 48" fill="none" aria-hidden="true"><circle cx="24" cy="24" r="21"/><circle cx="24" cy="24" r="14"/><circle cx="24" cy="24" r="7"/></svg><button id="close-welcome" class="icon-button" aria-label="Close introduction">✕</button></div>
+    <div class="eyebrow">MEET YOUR BUSINESS COACH</div><h1 id="welcome-title">A little clarity.<br>A lot more possibility.</h1>
+    <p class="welcome-purpose">Clarity Coach helps you maximize the AI potential in your day-to-day business operations.</p>
+    <p class="welcome-description">We’ll ask your local agent what it knows about your business, which processes it can observe, and what it’s actively measuring. Then we’ll assess Process, Observability, Measurement, and Agency: knowing what to do, when, and how.</p>
+    <div class="connect-label">Connect your local harnesses</div>
+    <div class="harness-options">
+      <label class="harness-option"><span class="harness-glyph">⌘</span><span class="harness-copy"><strong>Codex</strong><small id="codex-status">Checking installation…</small></span><input type="checkbox" name="harness" value="codex" checked><span class="checkmark"></span></label>
+      <label class="harness-option"><span class="harness-glyph claude-glyph">✳</span><span class="harness-copy"><strong>Claude Code</strong><small id="claude-status">Checking installation…</small></span><input type="checkbox" name="harness" value="claude"><span class="checkmark"></span></label>
+    </div>
+    <details class="workspace-disclosure"><summary>Business workspace</summary><label for="workspace">Folder your agent should work from</label><input id="workspace" type="text" autocomplete="off" spellcheck="false"></details>
+    <p class="consent-copy">By connecting, you allow Coach to initiate questions through the selected harnesses using their existing sign-ins and available business context, with the clarity_m3ntor MCP available in future sessions. The full interview runs automatically, maintains a local .clarity_coach/CONTEXT.md, and establishes or reuses the A2A bridge for coaching. Only a separate non-sensitive report is shared when you submit it.</p>
+    <p id="welcome-error" class="inline-error" hidden></p><button id="consent-connect" class="primary connect-button">Connect & get started <span>→</span></button><div class="welcome-footnote">Your agents do the thinking. Coach keeps the conversation moving.</div>
+  </dialog>
+  <dialog id="report-dialog" class="report-dialog"><div class="report-heading"><div><div class="eyebrow">YOUR BUSINESS IN PRACTICE</div><h2>Your POM + Agency report <span id="report-badge" class="badge">DRAFT</span></h2></div><button id="close-report" class="icon-button" aria-label="Close report">✕</button></div><div id="report-body"></div><div class="report-actions"><span>Recipient <strong id="coach-recipient">M3NT0R</strong></span><button id="confirm-submit" class="primary">Submit report <span>↗</span></button></div></dialog>
+  <div id="toast" role="status" hidden></div>
+</body>
+</html>
