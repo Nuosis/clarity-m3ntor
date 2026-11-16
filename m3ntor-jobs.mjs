@@ -12,12 +12,17 @@ export const jobRoot = path.resolve(process.env.M3NTOR_JOB_DIR || path.join(root
 export const m3ntorTools = [
   {
     name: 'ask_m3ntor',
-    description: 'Ask M3NT0R to coach your agent. Supply a question and any non-sensitive business/POMA context. Fetches the current prompt from the Clarity server and starts the selected existing local harness. Returns its output when ready or a running job_id; retrieve that job with get_m3ntor_result rather than asking again.',
+    description: 'Ask M3NT0R to coach your local AI on the owner’s business productivity. Supply a question and non-sensitive business-linked POMA context. Fetches the current mentor prompt from Clarity and starts the selected existing local harness. Returns output or a running job_id; retrieve that same job with get_m3ntor_result.',
     inputSchema: { type: 'object', properties: { question: { type: 'string' }, context: { description: 'Non-sensitive context for the coach, as text or structured JSON.' }, harness: { type: 'string', enum: ['codex', 'claude'], description: 'Optional existing harness; otherwise uses the service or assessment selection.' } }, required: ['question'], additionalProperties: false },
   },
   {
+    name: 'reassess_poma',
+    description: 'Reassess the owner’s BUSINESS Process, Observability, Measurement and triggered Agency using local context/current evidence, independent category and 1–10 ratings, source-supported sales per total human hour, and private dated revisions. Fetches the current standalone reassessment prompt from Clarity and runs the existing local harness. No question required. Returns output or a running job_id; retrieve that same job with get_m3ntor_result. Does not install a scheduler.',
+    inputSchema: { type: 'object', properties: { context: { description: 'Optional reassessment context or local business-source references, as text or structured JSON.' }, harness: { type: 'string', enum: ['codex', 'claude'], description: 'Optional existing harness; otherwise uses the service or assessment selection.' } }, additionalProperties: false },
+  },
+  {
     name: 'get_m3ntor_result',
-    description: 'Retrieve an existing M3NT0R job, its prompt provenance and completed output or actual failure. Does not launch or retry work. A queued/running status is not a completed coaching response.',
+    description: 'Retrieve an existing coaching or business-POMA reassessment job, its task identity, prompt provenance and completed output or actual failure. Does not launch or retry work. Harness completion alone does not prove local assessment saving; use the returned save evidence and local artifact readback.',
     inputSchema: { type: 'object', properties: { job_id: { type: 'string' } }, required: ['job_id'], additionalProperties: false },
     annotations: { readOnlyHint: true },
   },
@@ -58,8 +63,22 @@ export async function getM3ntorResult(id) {
   return result;
 }
 
-export async function askM3ntor(input, { cwd, harness, mcpUrl }) {
+export async function askM3ntor(input, environment) {
   if (typeof input.question !== 'string' || !input.question.trim()) throw new Error('A M3NT0R question is required.');
+  return createJob(input, environment, {
+    identity: 'coaching', question: input.question,
+    promptPath: process.env.M3NTOR_PROMPT_PATH || '/opt/clarity-m3ntor/m3ntor_agent_prompt.md',
+  });
+}
+
+export async function reassessPoma(input, environment) {
+  return createJob(input, environment, {
+    identity: 'poma_reassessment', question: 'Perform an evidence-based reassessment of the owner’s business POMA and source-supported productivity. Save private dated revisions and prepare a separate non-sensitive coaching summary.',
+    promptPath: process.env.M3NTOR_REASSESSMENT_PROMPT_PATH || '/opt/clarity-m3ntor/poma_reassessment_prompt.md',
+  });
+}
+
+async function createJob(input, { cwd, harness, mcpUrl }, task) {
   const selected = input.harness || process.env.M3NTOR_HARNESS || harness || 'codex';
   if (!['codex', 'claude'].includes(selected)) throw new Error('Select an existing codex or claude harness.');
   const waitMs = Number(process.env.M3NTOR_WAIT_MS ?? 1500);
@@ -68,12 +87,12 @@ export async function askM3ntor(input, { cwd, harness, mcpUrl }) {
   const directory = jobDirectory(id);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const request = {
-    job_id: id, question: input.question, context: input.context ?? '', harness: selected,
+    job_id: id, task: task.identity, question: task.question, context: input.context ?? '', harness: selected,
     cwd: path.resolve(process.env.M3NTOR_WORKSPACE || cwd), mcp_url: mcpUrl,
-    prompt_source: { ssh_host: process.env.M3NTOR_SSH_HOST || 'clarity', path: process.env.M3NTOR_PROMPT_PATH || '/opt/clarity-m3ntor/m3ntor_agent_prompt.md' },
+    prompt_source: { ssh_host: process.env.M3NTOR_SSH_HOST || 'clarity', path: task.promptPath },
   };
   await storeJson(path.join(directory, 'request.json'), request);
-  const state = { job_id: id, status: 'queued', created_at: new Date().toISOString(), harness: selected, prompt_source: request.prompt_source };
+  const state = { job_id: id, task: task.identity, status: 'queued', created_at: new Date().toISOString(), harness: selected, prompt_source: request.prompt_source };
   await storeJson(path.join(directory, 'state.json'), state);
   const log = await open(path.join(directory, 'worker.log'), 'a', 0o600);
   try {

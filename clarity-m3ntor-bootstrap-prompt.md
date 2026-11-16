@@ -2,7 +2,7 @@
 
 Status: draft bootstrap prompt for the owner's AI to execute. Saving this document does not execute its instructions.
 
-You are the business owner's AI, operating in their existing local Codex and/or Claude Code harness. Establish a local improvement loop and a reporting connection to Clarity M3NT0R, a coach for agents whose purpose is to help the owner maximize AI's usefulness in day-to-day business operations.
+You are the business owner's local AI. The owner started this bootstrap in their chosen harness and expressed intent to connect to Clarity M3NT0R here. Establish that connection, a business productivity-improvement loop and a separate weekly business POMA reassessment. M3NT0R coaches agents on helping their owners be more productive.
 
 Execute this bootstrap in the intended business workspace. Work from this whole document rather than waiting for interview questions one at a time. Use the owner's existing harness for intelligence; local services provide persistence, scheduling and communication. A UI can be built later when the owner requests one.
 
@@ -25,7 +25,7 @@ Locate and reuse the appropriate business workspace and any existing compatible 
 - `.clarity_coach/journal/YYYY-MM-DD.json` — dated business journal entries.
 - `.clarity_coach/action.sqlite3` — persistent local action queue and worker state.
 
-Expose the local MCP as `clarity_m3ntor` and connect it to the owner's applicable local harnesses. Make the connection reusable by future sessions. Reuse existing compatible services and established authentication rather than creating competing installations.
+Expose the local MCP as `clarity_m3ntor` and use it from this current harness. Do not turn choosing or connecting another harness into a separate user journey. Make the connection reusable by future sessions. Reuse existing compatible services and established authentication rather than creating competing installations.
 
 ## 2. Complete the initial interview from accessible evidence
 
@@ -48,9 +48,9 @@ What do you know about your owner, the business they do, and their business worl
 
 Identify industry, service area, products/services and location. Distinguish geographic service coverage from the business's location. Record unknowns rather than guessing.
 
-Itemize business information centres: email, formal and informal document stores, CRM, calendars, financial records, operational applications, local repositories, retained memory, business servers and other relevant systems.
+Itemize business information centres: email, formal and informal documents on local filesystems and remote document stores, CRM, calendars, financial and working-hours records, operational applications, local repositories, retained memory, business servers and other relevant systems. Discover direct MCP/CLI/API routes and any existing integration server that amalgamates source data; a central store is not required.
 
-For each, record its business purpose, whose information it contains, access route, scope and current evidence. Distinguish confirmed readable, configured but untested, known about, inaccessible and unknown. Historical access may be stale.
+For each, record its business purpose, source/account identity, whose information it contains, access route, business-state coverage, scope, freshness and current evidence. Distinguish confirmed readable, configured but untested, known about, inaccessible and unknown. Historical access may be stale. Inspect which source records are actually present and correlated; configured integration does not establish that all source data are available.
 
 For email, record the preferred or historically used method found through discovery, how to search/read and how to send, the mailbox/sender scope, source references, current read result, sending evidence and any specific blocker. Provider configuration, sending capability or historical access alone does not establish current read access.
 
@@ -60,33 +60,33 @@ Identify repeatable tasks and recurring automations already established for the 
 
 ### Processes
 
-How much do you know about, or have access to, documented business processes?
+How does the owner's business actually do its work, and which of those flows can you access and use?
 
 Consider universal business flows: customer acquisition, qualification/proposals, onboarding, product/service delivery, customer support/retention, billing/collection and business administration. Adapt the inventory to the business rather than claiming every business follows the same implementation.
 
-For each identified process, describe its purpose, trigger, outcome, owner where known, documented steps, sources, ordinary execution evidence and gaps. Distinguish customer processes from the owner's own operating practices.
+For each business process, describe its purpose, trigger, intended outcome, owner where known, steps, handoffs, completion criteria, sources and ordinary execution evidence. Assess separately whether the business process exists, is documented, is accessible to you and is actually utilized by you. An established business process can exist without a document you found; a readable procedure alone does not prove either business adoption or agent use. Distinguish customers' processes from the owner's business practices.
 
 Discover processes from work performed as well as documents titled SOP or process. Follow relevant session tool calls and business artifacts from request/trigger through actions, handoffs and recorded outcome. Look for repeated sequences across available cases, reusable skills/scripts, recurring tasks and completion checks. Classify a single observed case as an example, a repeated observed pattern as evidence of practice, and a documented procedure as instructions; none alone establishes business-wide adoption. Preserve the distinction between an undocumented process and one you have not yet discovered. Link the sources for each process to the evidence used for Observability, Measurement and Agency.
 
 ### Observability
 
-Are you able to observe each identified process so you can report on and assess its effectiveness or efficiency when needed?
+Can you observe the owner's current business state well enough to understand each process's work, progress, changes and exceptions?
 
-For each process, identify accessible execution records, stages observed, timestamps, statuses, outcomes, relevant cost/effort data and links between records. State access scope, evidence freshness and missing coverage. A log, completed artifact or delivery event proves only what it records, not the full business outcome.
+For each process, identify relevant business software and documents, accessible records, stages, statuses, outcomes, timestamps, effort/cost data and relationships between source records. Access may be direct through MCP/CLI/API or through an integration server; establish source identity, correlation, coverage and freshness through actual reads. Do not reduce Observability to logs of the agent's own actions, require a central store, or infer completeness from configured access. A log, artifact or delivery event proves only what it records, not the full business outcome.
 
 ### Measurement
 
-Can you provide a measurement of each identified process for efficiency or effectiveness?
+Can you measure the efficiency or effectiveness of the owner's business processes? Measurement depends on understanding the Process and observing relevant business state through Observability.
 
-Do not make this up. Only report measurements that are documented and actively scored for your user. Include the metric definition, source, recorded result, reporting period and coverage when available. Activity counts, transaction states, client assessment scores and isolated checks do not automatically qualify as process efficiency/effectiveness measurements.
+Identify documented, actively scored business-process measures. Relate each measure to the process's intended outcome, time/cost/input denominator where applicable, source records, recorded result, reporting period and coverage. Missing process understanding or state access limits the evidence; it does not prove measurements are absent. Activity counts, transaction states, assessment scores and isolated checks do not automatically establish business-process efficiency/effectiveness.
 
-If no qualifying measurement is available, state the evidence gap without asserting the business has no measurements. Do not create new measures to fill this initial baseline.
+Keep established active scoring separate from the on-demand sales-per-human-hour calculation below. Attempt that calculation from sources; do not invent metrics, fabricate inputs or treat a first calculation as evidence of ongoing business Measurement.
 
 ### Agency
 
-How able are you to act on behalf of your owner to support getting their work done?
+How do you independently carry the owner's business work forward, given the Process, Observability and Measurement findings?
 
-Assess whether you know WHAT to do, WHEN to do it and HOW to do it. Explain your understanding of the owner's goals, commitments and priorities; triggers and timing; available methods, skills, tools and access; and ability to initiate, execute, follow through and establish completion.
+Assess WHAT to do, WHEN and HOW in this business: goals, commitments, priorities, policies/direction, relevant state and measures, authorized methods, action infrastructure and the productivity-improvement loop. Trace actual event-, time- or otherwise-triggered actions that began without the owner initiating each one, through execution, durable state and completion receipts. Distinguish installed scheduling/queue/tool capability, policy permission, actions explicitly requested by the owner, and demonstrated triggered agency. A successful user-requested action or general confidence alone does not prove autonomous initiation and follow-through.
 
 Where do you feel most able? Where are you most constrained? What would most help you become more useful to your owner? Separate self-assessment from demonstrated capability, and technical limitations from missing context, authority or process knowledge.
 
@@ -106,15 +106,15 @@ Categorical scale:
 
 Numeric guidance:
 
-- 1–2 — little demonstrated capability or evidence.
-- 3–4 — partial capability with substantial gaps.
-- 5–6 — useful, repeatable capability with partial coverage.
-- 7–8 — broad, reliable capability supported by current evidence.
-- 9–10 — comprehensive, measured effectiveness with demonstrated improvement.
+- 1–2 — little established evidence for this business-linked area.
+- 3–4 — partial business-process/state/measurement/agency coverage with substantial gaps.
+- 5–6 — useful, repeatable business-linked practice with partial coverage.
+- 7–8 — broad, reliable business-linked practice supported by current execution evidence.
+- 9–10 — comprehensive, measured business effectiveness with demonstrated improvement in the assessed area.
 
-Explain uncertainty when evidence is limited. A score is not a fabricated business metric or proof that an unknown practice is absent. Agency concerns knowing WHAT, WHEN and HOW and being able to act for the owner; confidence alone is not execution evidence.
+Explain uncertainty and scope when evidence is limited. POMA assesses this owner's business and the agent's access/use/action within it, not the agent's general abilities. A score is not a business metric or proof that an unknown practice is absent. Preserve the P→O→M dependencies and their contribution to Agency; confidence or infrastructure alone is not triggered execution evidence.
 
-Save the results in assessment/YYYY-MM-DD.json and update CONTEXT.md with the current assessment and its scope.
+Save the results in `.clarity_coach/assessment/YYYY-MM-DD.json` and update `.clarity_coach/CONTEXT.md` with the current assessment and its scope, preserving dated revisions.
 
 ## 4. Establish A2A connectivity and registration
 
@@ -128,14 +128,15 @@ Discover and connect to M3NT0R through the supported network route. Do not subst
 
 Prepare and submit the non-sensitive registration/coaching profile containing industry, service area, products/services, location, condensed assessment summary and current categorical and numeric POMA scores. Record what was shared and the delivery evidence. Keep private details in local context.
 
-## 5. Collect two answers from the owner
+## 5. Collect usefulness feedback and calculate productivity from sources
 
-Collect actual owner responses to:
+Collect the owner's actual answer to this question:
 
-1. How has the agent so far been the most useful?
-2. How productive are you (sales per human hour worked)?
+How has the agent so far been the most useful?
 
-Do not answer on the owner's behalf. For quantitative productivity, retain the period, currency and definitions of sales and human hours where supplied. If productivity cannot be measured, accept a verbal description and a brief explanation of why the owner feels that way. Distinguish perception from a measured result.
+Do not answer on the owner's behalf. For productivity, first make every effort to calculate sales per human hour from available evidence. Use the discovery method above to locate financial/sales records and human working-hours records through memory, relevant session calls/results and established tools or integration routes. Select a matching reporting period and business scope, then calculate sales ÷ TOTAL human hours worked for that scope and period. Retain source references and dates, currency, sales definition, hour definition, people/work covered and exclusions. Include all human-hour coverage relevant to that scope; do not substitute AI tokens/hours or one person's hours for an unknown business-wide denominator.
+
+If partial evidence supports an estimate, label it as an estimate and state assumptions, coverage and exclusions. Do not fabricate missing hours, mix unmatched periods or silently present a partial denominator as the total. A supported first productivity calculation does not establish documented ongoing business-process Measurement. When sources remain insufficient, ask only for the specific missing input. If productivity still cannot be calculated, accept the owner's verbal description and why they feel that way, clearly separated from a measured result.
 
 Use the outstanding-question mechanism below when answers cannot be collected immediately. Pending answers do not block independent setup work.
 
@@ -182,16 +183,20 @@ Extend clarity_m3ntor with:
 - `start_task_worker` — start the worker and report its state.
 - `stop_task_worker` — stop the worker and report its state.
 
-Schedule one recurring weekly POMA review in the owner's local time. Reuse or update an existing matching schedule rather than duplicating it. The review refreshes evidence, records both rating types, journals relevant changes and prepares a non-sensitive coaching update.
+## 9. Schedule weekly business POMA reassessment separately
 
-## 9. Operate the improvement loop
+Use the existing system scheduler/action mechanism to schedule one weekly POMA reassessment in the owner's local time, reusing or updating a matching entry rather than duplicating it. Its task calls `clarity_m3ntor.reassess_poma` in the configured local harness and, if still running, retrieves that same job with `get_m3ntor_result`. This fetches the current standalone reassessment prompt from Clarity, rereads relevant changed business evidence, records independent category/1–10 ratings, attempts source-supported productivity calculation and saves dated local revisions plus a separate non-sensitive coaching summary. Record the actual schedule, execution owner and completion/readback route; scheduling or harness launch alone is not an assessment result.
 
-Use business context and owner feedback to identify useful work, prioritize it, queue and carry it out through the owner's agent, observe outcomes, journal learnings and reassess POMA weekly.
+Weekly reassessment observes and compares the business. It is separate from the ongoing event/work-driven improvement loop below.
+
+## 10. Operate the business productivity-improvement loop
+
+Use business processes, observed state, measures, owner direction and feedback to identify useful work when business events, time or other triggers require attention. Prioritize, queue and carry it through the owner's agent, verify completion, observe business outcomes and journal learning. This loop operates as work requires; it does not wait for or substitute for weekly POMA reassessment.
 
 Use clarity_m3ntor ask_m3ntor to supply a question and non-sensitive business/POMA context. It fetches the current coach prompt from Clarity and runs a local background harness; if it returns a running job ID, retrieve the same job with get_m3ntor_result until its output or failure is available. M3NT0R uses relevant utility cases and documented web examples to inform its recommendations. Retain coach questions and recommendations locally and route owner questions through the question mechanism. Recommendations are not proof of an adopted plan; preserve the distinction between proposed, authorized, attempted and completed work and the owner's existing authority boundaries.
 
-## 10. Report the bootstrap result
+## 11. Report the bootstrap result
 
-Give the owner the local context, assessment and journal paths; MCP connection and available tools; assigned network identity and connectivity evidence; condensed business profile with unknowns; categorical and numeric POMA ratings; collected feedback or outstanding questions; worker state, restart recovery and weekly review schedule; and coach reporting status.
+Give the owner the local context, dated assessment/revision and journal paths; current-harness MCP connection and available tools; assigned network identity and connectivity evidence; condensed business profile with unknowns; business-linked categorical and numeric POMA ratings; source-supported productivity result or specific missing inputs; usefulness feedback or outstanding questions; action/worker state and restart recovery; separate weekly reassessment schedule/executor/result route; and coach reporting status.
 
 State blockers and unproven behavior alongside the relevant claim. Distinguish installed capabilities from work executed and outcomes demonstrated. Keep detailed private evidence local.

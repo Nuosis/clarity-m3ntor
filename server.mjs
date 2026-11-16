@@ -11,7 +11,7 @@ import { inspectBridge, establishBridge } from './bridge.mjs';
 import { savePomaAssessment } from './assessment-store.mjs';
 import { readJournal, addJournal, questionState, setUserQuestions, readUserQuestions, businessTools } from './business-journal.mjs';
 import { coachIdentity } from './coach-identity.mjs';
-import { m3ntorTools, askM3ntor, getM3ntorResult } from './m3ntor-jobs.mjs';
+import { m3ntorTools, askM3ntor, reassessPoma, getM3ntorResult } from './m3ntor-jobs.mjs';
 import { utilityTools, reportUtility, searchUtility } from './clarity-utility.mjs';
 
 const exec = promisify(execFile);
@@ -231,7 +231,7 @@ async function mcp(req, res, a) {
   if (call.method === 'initialize') {
     const id=randomUUID();mcpSessions.set(id,{cwd:a.cwd,createdAt:new Date().toISOString()});
     const assignment = a.run?.status === 'running' ? a.run.stage === 'ratings' ? 'Update only the existing POMA ratings from recorded findings, with both categorical and numeric assessments. Save the revision and return; do not repeat the interview.' : 'Complete the full interview assignment in one continuous session, saving local context and the separate non-sensitive report.' : 'Use the local business context and coaching tools to support your owner. Do not restart the interview without a request.';
-    result={protocolVersion:'2025-03-26',capabilities:{tools:{listChanged:true}},serverInfo:{name:'clarity_m3ntor',version:'0.5.0'},instructions:assignment+' '+questionInstructions+' Ask M3NT0R with ask_m3ntor and retrieve running jobs with get_m3ntor_result.'};
+    result={protocolVersion:'2025-03-26',capabilities:{tools:{listChanged:true}},serverInfo:{name:'clarity_m3ntor',version:'0.6.0'},instructions:assignment+' '+questionInstructions+' Ask M3NT0R with ask_m3ntor or reassess the owner’s business with reassess_poma. Retrieve either running job with get_m3ntor_result.'};
     return json(res,200,{jsonrpc:'2.0',id:call.id,result},{'Mcp-Session-Id':id});
   }
   if (call.method !== 'ping' && (!session || session.cwd !== a.cwd)) return json(res,404,{error:'MCP session is missing or expired; initialize again.'});
@@ -240,8 +240,8 @@ async function mcp(req, res, a) {
   else if (call.method === 'tools/call') {
     try {
       const { name, arguments: input = {} } = call.params;
-      if (name === 'ask_m3ntor') {
-        const job = await askM3ntor(input, { cwd: a.cwd, harness: a.harness, mcpUrl: `${base}/mcp/${a.id}` });
+      if (name === 'ask_m3ntor' || name === 'reassess_poma') {
+        const job = await (name === 'ask_m3ntor' ? askM3ntor : reassessPoma)(input, { cwd: a.cwd, harness: a.harness, mcpUrl: `${base}/mcp/${a.id}` });
         result = { ...(job.status === 'failed' || job.status === 'interrupted' ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(job) }] };
       } else if (name === 'get_m3ntor_result') {
         const job = await getM3ntorResult(input.job_id);

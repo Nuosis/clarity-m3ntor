@@ -1,6 +1,6 @@
 # Clarity M3NT0R MCP
 
-Status: core Codex coaching transport, utility reporting/search and controlled recovery behavior independently assessed. Live Claude success, saved-assessment UI and positive degraded-search behavior remain unassessed.
+Status: core Codex coaching transport, utility reporting/search and controlled recovery behavior independently assessed. The business-POMA/reassessment revision awaits independent review and assessment. Live Claude success, saved-assessment UI and positive degraded-search behavior remain unassessed.
 
 Local HTTP MCP for an owner's agent to ask M3NT0R for coaching. It extends the
 existing Clarity Coach service and retains its assessment, journal and question
@@ -8,9 +8,17 @@ tools. No dependency install is needed; use Node.js 22 or newer, an installed
 Codex or Claude Code CLI with its existing login, and the existing SSH route to
 the Clarity server.
 
+Start the bootstrap in the owner's already-chosen local harness and express the
+intent to connect to Clarity M3NT0R there. The bootstrap reuses that current
+harness, workspace and established access. POMA concerns the owner's business:
+its processes and agent utilization; accessible, current business state; business
+process efficiency/effectiveness measures; and actual triggered action backed by
+POM, direction/policies and durable execution infrastructure.
+
 ## Start
 
-Start this copy on an unused port. The original service may already use 4317.
+For manual service setup, start this copy on an unused port and configure the
+current harness's CLI name. The original service may already use 4317.
 
 ```sh
 cd /path/to/clartityM3NTOR
@@ -98,6 +106,39 @@ same attempt, heartbeat/session events and repeated logs do not establish new
 attempts or useful progress. Raw stdout/stderr and recovery/progress annotations
 are retained alongside final output.
 
+## Reassess the business separately
+
+Call `reassess_poma` with `{}` or optional `context`/`harness`. It requires no
+question and selects the fixed business-reassessment task and current remote
+`poma_reassessment_prompt.md`. The same detached runner, brief wait and
+`get_m3ntor_result` retrieve either kind of job; `task` distinguishes `coaching`
+from `poma_reassessment` in the durable request/state. The caller cannot choose a
+prompt path through tool input. `ask_m3ntor` keeps using the mentor prompt.
+
+The standalone prompt directs the owner's local AI to read private context,
+journals, previous dated assessments and relevant current business sources;
+refresh affected evidence; assess Process, Observability, Measurement and Agency
+with independent category/1–10 ratings; distinguish business change from new
+evidence; and preserve private dated revisions. Existing save/report routes are
+reused where applicable, with local file operations for standalone saving. A
+returned model response or successful CLI exit does not prove those files saved;
+use the actual local artifact/readback evidence and separate coaching summary.
+
+For productivity the local AI first searches established financial/sales and
+human working-hours evidence and attempts `sales / TOTAL human hours` for a
+matching reporting period and business scope. It retains sources/dates, currency,
+definitions, people/work coverage and exclusions locally. Supported partial
+estimates name assumptions; missing hours are not replaced with AI usage or one
+person's hours. Targeted missing-input questions and verbal-feedback fallback
+follow source discovery. A first calculation does not establish ongoing business
+process Measurement. Detailed business records remain local; only a separate
+non-sensitive synthesis is eligible for coaching/report sharing.
+
+The bootstrap describes one system-scheduled weekly reassessment that calls
+`reassess_poma` and retrieves the same job. That scheduled assessment is separate
+from the event/work-driven productivity-improvement loop. Starting this package
+or calling reassessment does not install a scheduler or new action worker.
+
 ## Configuration
 
 Environment variables are read from the process; `.env` files are not loaded.
@@ -109,6 +150,7 @@ Environment variables are read from the process; `.env` files are not loaded.
 | `M3NTOR_HARNESS` | Assessment harness, then `codex` | Existing CLI to run; `codex` or `claude`. |
 | `M3NTOR_SSH_HOST` | `clarity` | Existing SSH alias/host used to read the prompt. |
 | `M3NTOR_PROMPT_PATH` | `/opt/clarity-m3ntor/m3ntor_agent_prompt.md` | Current server prompt; fetched for each new job. |
+| `M3NTOR_REASSESSMENT_PROMPT_PATH` | `/opt/clarity-m3ntor/poma_reassessment_prompt.md` | Current server reassessment prompt; selected only by `reassess_poma`. |
 | `M3NTOR_JOB_DIR` | `.m3ntor-runtime/jobs` beside the source | Private durable job directory. Use an ignored or external location. |
 | `M3NTOR_WAIT_MS` | `1500` | Brief ask response wait; does not terminate a running job. |
 
@@ -147,47 +189,59 @@ follow redirects. Missing configuration, secret-command failure and upstream
 errors remain explicit failed tool calls. The separate Clarity server utility
 API/database must be deployed for these tools to return real stored results.
 
-## Publish the server prompt
+## Publish the server prompts
 
-`m3ntor_agent_prompt.md` is the source to publish. The destination directory must
-be writable by the existing SSH account. The following uses the same SSH alias
-and atomically replaces only that prompt, without changing services or auth:
+`m3ntor_agent_prompt.md` and `poma_reassessment_prompt.md` are the sources to
+publish. Destination directories must be writable by the existing SSH account.
+The following stages both files and atomically replaces each prompt using the
+same SSH alias, without changing services or auth:
 
 ```sh
 python3 - <<'PY'
 from pathlib import Path
-import os, shlex, subprocess
+import json, os, shlex, subprocess
 
-source = Path('m3ntor_agent_prompt.md').read_bytes()
-destination = os.environ.get('M3NTOR_PROMPT_PATH', '/opt/clarity-m3ntor/m3ntor_agent_prompt.md')
-remote = '''import os, sys, tempfile
+prompts = [
+    {'path': os.environ.get('M3NTOR_PROMPT_PATH', '/opt/clarity-m3ntor/m3ntor_agent_prompt.md'),
+     'content': Path('m3ntor_agent_prompt.md').read_text()},
+    {'path': os.environ.get('M3NTOR_REASSESSMENT_PROMPT_PATH', '/opt/clarity-m3ntor/poma_reassessment_prompt.md'),
+     'content': Path('poma_reassessment_prompt.md').read_text()},
+]
+remote = '''import json, os, sys, tempfile
 from pathlib import Path
-target = Path(sys.argv[1])
-target.parent.mkdir(parents=True, exist_ok=True)
-fd, temporary = tempfile.mkstemp(prefix='.m3ntor_agent_prompt.', dir=target.parent)
+staged = []
 try:
-    with os.fdopen(fd, 'wb') as stream:
-        stream.write(sys.stdin.buffer.read())
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, target)
+    for item in json.load(sys.stdin):
+        target = Path(item['path'])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix='.' + target.name + '.', dir=target.parent)
+        staged.append((temporary, target))
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(item['content'].encode('utf-8'))
+            stream.flush()
+            os.fsync(stream.fileno())
+    for temporary, target in staged:
+        os.replace(temporary, target)
 finally:
-    if os.path.exists(temporary): os.unlink(temporary)
+    for temporary, target in staged:
+        if os.path.exists(temporary): os.unlink(temporary)
 '''
 subprocess.run(
     ['ssh', '-T', '-o', 'BatchMode=yes', '--', os.environ.get('M3NTOR_SSH_HOST', 'clarity'),
-     'python3 -c ' + shlex.quote(remote) + ' ' + shlex.quote(destination)],
-    input=source, check=True)
+     'python3 -c ' + shlex.quote(remote)],
+    input=json.dumps(prompts).encode('utf-8'), check=True)
 PY
 ```
 
-Publish failure leaves the previous prompt in place. The next ask reads the
-server again and records its fetch time, path and SHA-256 in private job state.
+Each rename replaces a complete prompt; a publication error must be reconciled
+per file. The next job reads its selected server prompt and records fetch time,
+path and SHA-256 in private job state. There is no bundled fallback or service
+restart needed to select newly published prompt contents.
 
 ## Stored data and scope
 
-The repository contains source, the supplied bootstrap document and the coach
-prompt. `.data` holds private assessment state; `.clarity_coach` holds local
+The repository contains source, the bootstrap, mentor and standalone reassessment
+prompts. `.data` holds private assessment state; `.clarity_coach` holds local
 business context/journals; `.m3ntor-runtime` holds private coaching requests,
 fetched prompts, harness input, command metadata, PIDs, stdout/stderr and results.
 Job files are owner-only, separate from the assessment JSON loader. These

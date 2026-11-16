@@ -1,6 +1,6 @@
 # Ask M3NT0R backend flow
 
-Status: implementation acceptance specification; runtime assessment pending.
+Status: prior transport/utility/recovery scope independently assessed; the business-POMA and reassessment revision awaits independent assessment.
 
 An owner’s agent connects to the local `clarity_m3ntor` MCP. It asks M3NT0R a
 question and supplies the non-sensitive business/POMA context it wants the coach
@@ -25,6 +25,54 @@ while the HTTP service is stopped. A launch receipt is not a coaching result.
 The existing assessment-scoped MCP and its journal, question, interview and
 report behavior remain available.
 
+## Business POMA and reassessment flow
+
+The owner starts the bootstrap in their chosen local AI harness and asks it to
+connect to Clarity M3NT0R there. The current harness discovers and reuses the
+business workspace, MCP and existing access routes; selecting/connecting a
+different harness is not a separate onboarding journey.
+
+The initial assessment concerns the owner's business. Process describes how
+that business actually does work, and whether its flows are accessible and used
+by the agent. Observability describes current business-state coverage through
+software and documents, directly or through an integration server; configuration
+alone does not prove access, freshness or completeness. Measurement concerns
+business-process efficiency/effectiveness and depends on understood processes
+and observed state. Agency depends on those three, business direction/policies
+and durable action infrastructure: evidence of work initiated by event/time/other
+triggers and completed without the owner requesting each action is distinct from
+general capability or user-requested execution.
+
+Before asking the owner for a productivity number, the local AI searches the
+available financial and working-hours routes and attempts sales divided by total
+human hours for matching business scope and period. It retains the sales/hour
+definitions, sources, currency and coverage. A supported partial estimate names
+its assumptions; unknown hours are not silently replaced by one person's hours
+or AI usage. Missing evidence leads to a targeted question, or a verbal account
+with its basis if calculation remains impossible. An on-demand calculation does
+not establish ongoing process Measurement.
+
+Weekly POMA reassessment is a separate scheduled activity from the event/work
+productivity-improvement loop. The scheduler calls `reassess_poma` in the
+owner's configured local harness; no question is required. The existing shared
+job runner selects the current remote `poma_reassessment_prompt.md`, records
+task identity and prompt provenance, and uses the same durable jobs/results as
+coaching. `ask_m3ntor` continues to select only the mentor prompt. Neither tool
+accepts a caller-selected prompt path. Both fetch the current server source,
+without a bundled fallback or model/auth/permission substitution.
+
+The standalone reassessment prompt directs the owner's local AI to read local
+context, journals, current/prior dated assessments and changed relevant business
+sources. It reassesses the four business-linked areas with independent category
+and 1–10 ratings, evidence and uncertainty; distinguishes real business change
+from newly discovered evidence; and attempts supported productivity calculation.
+Private dated revisions and detailed context remain local. A separately prepared
+non-sensitive coaching summary uses existing save/report routes where applicable.
+Harness completion alone does not prove an assessment file was saved.
+
+This revision adds no actual scheduler installation, action worker, financial-data
+mining by the implementer or utility-backend change.
+
 ## Authorized utility integration extension
 
 The local agent supplies a non-sensitive utility case using `report_utility`.
@@ -39,8 +87,9 @@ The separate infrastructure executor owns server storage and retrieval behavior.
 ## Acceptance criteria for independent assessment
 
 1. A clean source checkout can start on an available local port with empty
-   runtime/assessment directories. `/mcp/local` initializes, lists both new
-   tools, and accepts a question without creating or requiring an interview.
+   runtime/assessment directories. `/mcp/local` initializes, lists coaching,
+   reassessment and result tools, and accepts a question without creating or
+   requiring an interview.
    Readback: MCP responses and durable job metadata under the configured job root.
 2. A real request through `ask_m3ntor` fetches the current server prompt using the
    established `clarity` SSH alias (or explicitly configured target), launches
@@ -80,6 +129,29 @@ The separate infrastructure executor owns server storage and retrieval behavior.
    tag and source filters. Backend/network/auth errors produce explicit failed
    tool calls. The HMAC secret is obtained via the established command argv and
    is absent from tool output, logs, Git and runtime coaching files.
+10. Bootstrap, coach, factual interview and rating/reassessment instructions use
+    the business-linked POMA definitions above, preserve existing category enums
+    and independent scores, and start from the owner's current harness. They do
+    not turn a particular customer's systems into universal prompt examples.
+11. Productivity instructions require evidence discovery and a supported
+    matching-scope/period calculation before requesting missing owner input,
+    with total human-hour coverage and labelled estimates. Initial calculation
+    and established active business-process scoring remain distinct.
+12. A fresh MCP lists `reassess_poma`; invoking it without a question fetches the
+    current distinct REMOTE reassessment prompt and records task identity,
+    path/hash, input and actual harness result or durable running/failure state.
+    `get_m3ntor_result` retrieves that same job without another launch. Ordinary
+    `ask_m3ntor` still fetches the mentor prompt. Readback: both remote prompt
+    files, per-job request/state/fetched prompt/hash, transcripts and final output.
+13. Reassessment instructions save private context/dated assessment revisions
+    and prepare only a separate non-sensitive coaching summary. Actual local
+    saving/reporting is proven through local artifact/API readback, not merely
+    the harness exit code. No live owner-business records are needed to assess
+    the routing or instructions; isolated assessor evidence can cover saving.
+14. Weekly scheduled reassessment is described separately from triggered
+    improvement work. This source revision does not install a scheduler or
+    modify the original service, global config, private assessments, utility
+    backend, authentication, model route or already-assessed retry machinery.
 
 This specification requires real-service backend assessment by the independent
 executor. The implementation executor does not claim any criterion passed.
