@@ -78,12 +78,16 @@ export async function setUserQuestions(cwd,input,now=new Date()) {
     if (action==='set') {
       const incoming=input.questions || (input.question ? [{question:input.question,id:input.question_id}] : []);
       if (!incoming.length) throw new Error('Provide at least one business-related question.');
+      let skipped=0;
       for (const item of incoming) {
         if (!item.question?.trim()) throw new Error('Question text is required.');
         const existing=state.questions.find(q=>item.id ? q.id===item.id : q.status==='pending' && q.question===item.question);
+        // only_if_absent: an existing question (answered or not) is kept unchanged.
+        if (existing && input.only_if_absent) { skipped++; continue; }
         if (existing) Object.assign(existing,{question:item.question,status:'pending',updatedAt:now.toISOString()});
         else state.questions.push({id:item.id || randomUUID(),question:item.question,source:item.source || input.source || 'local_harness',status:'pending',createdAt:now.toISOString(),updatedAt:now.toISOString()});
       }
+      if (skipped===incoming.length) return questionState(cwd,now); // nothing changed: no write or journal entry
     } else if (action==='answer' || action==='dismiss') {
       const existing=state.questions.find(q=>q.id===input.question_id);
       if (!existing) throw new Error('The question was not found.');

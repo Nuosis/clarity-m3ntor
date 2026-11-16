@@ -31,15 +31,15 @@ const a2aStatusTool = { name: 'a2a_status', description: 'Current state of this 
 // Every saved assessment revision leaves one pending question asking the owner
 // whether it was useful; the answer is the owner testimony for utility reporting.
 async function askAssessmentUtility(input, receipt) {
-  const id = `poma-utility-${input.revision_id}`;
+  const id = `poma-utility-${String(receipt.revisionId || input.revision_id).toLowerCase()}`;
   try {
-    const state = await questionState(cwd);
-    if (state.questions.some(question => question.id === id)) return { id, status: 'already_recorded' };
     const scores = Object.entries(input.ratings || {}).map(([area, rating]) => `${area[0].toUpperCase()}${area.slice(1)} ${rating?.score}/10`).join(', ');
-    const question = `Your agent completed a business assessment on ${receipt.date || new Date().toISOString().slice(0, 10)}${scores ? ` (${scores})` : ''}. Was it useful to you, and what would make the next one more useful?`;
-    await setUserQuestions(cwd, { questions: [{ id, question, source: 'm3ntor_assessment' }] });
+    const status = input.status || 'draft';
+    const question = `Your agent saved a ${status} business assessment on ${receipt.date || new Date().toISOString().slice(0, 10)}${scores ? ` (${scores})` : ''}. Was it useful to you, and what would make the next one more useful?`;
+    // Checked and added inside one serialized write: an existing question keeps its status.
+    const state = await setUserQuestions(cwd, { questions: [{ id, question, source: 'm3ntor_assessment' }], only_if_absent: true });
     toolsChanged();
-    return { id, status: 'pending' };
+    return { id, status: state.questions.find(item => item.id === id)?.status || 'unknown' };
   } catch (error) { return { id, status: 'failed', error: error.message }; }
 }
 
