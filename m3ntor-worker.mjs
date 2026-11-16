@@ -53,8 +53,10 @@ async function runHarness(request, prompt) {
   const child = spawn(request.harness, args, { cwd: request.cwd, env: process.env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   let buffer = '', stderrBuffer = '', stderr = '', output = '', harnessError = '', stoppedFor = '', spawnError;
-  let progressVersion = 0, retryProgressVersion = -1, lastRetry, messageId = '';
+  let progressVersion = 0, retryProgressVersion = -1, lastRetry;
   const seenProgress = new Set();
+  const seenModelText = new Set();
+  const streamedText = new Map();
   const retryAttempts = [];
   const audit = (kind, detail) => recoveryLog.write(JSON.stringify({ at: new Date().toISOString(), kind, progress_version: progressVersion, ...detail }) + '\n');
   let killTimer;
@@ -67,13 +69,29 @@ async function runHarness(request, prompt) {
     try { process.kill(-child.pid, 'SIGTERM'); } catch {}
     killTimer = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }, 1000);
   };
+  const normalized = value => {
+    if (typeof value === 'string') return value.replace(/\r\n?/g, '\n').trim();
+    if (Array.isArray(value)) return value.map(normalized);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, normalized(value[key])]));
+    return value;
+  };
   const progress = (kind, material) => {
-    if (!material || seenProgress.has(material)) return;
-    seenProgress.add(material);
+    const key = JSON.stringify(normalized({ kind, material }));
+    if (seenProgress.has(key)) return;
+    seenProgress.add(key);
     progressVersion += 1;
     audit('progress', { progress_kind: kind });
   };
-  const hardRejection = text => /\b429\b|usage[ _-]?limit|rate[ _-]?limit|quota[ _-]?(?:exceed|exhaust)|insufficient[ _-]?quota/i.test(text);
+  const modelText = value => {
+    const text = normalized(value);
+    // Replayed text and its streamed prefixes are the same information,
+    // regardless of message identity or how the transport chunks it.
+    if (!text || [...seenModelText].some(previous => previous.startsWith(text))) return;
+    seenModelText.add(text);
+    progress('model_text', { type: 'text', text });
+  };
+  const errorContent = error => error && typeof error === 'object' ? { type: error.type, code: error.code, message: error.message, status: error.status, details: error.details } : error;
+  const hardRejection = text => /\b429\b|usage[ _-]?limit|rate[ _-]?limit|quota[ _-]?(?:exceed|exhaust)|insufficient[ _-]?quota|\bexceeded(?:\s+(?:your|the|current|available))*\s+quota\b/i.test(text);
   const retryNotice = (source, text, incoming = {}) => {
     const explicit = incoming.attempt ?? incoming.retry_attempt ?? incoming.attempt_number;
     const match = text.match(/\battempt\s*[:#]?\s*(\d+)\b/i) || text.match(/\b(?:retrying|reconnecting)\b[\s.…:(#-]*(\d+)\b/i);
@@ -103,18 +121,28 @@ async function runHarness(request, prompt) {
     if (incoming.type === 'thread.started') state.harness_session_id = incoming.thread_id;
     if (incoming.session_id) state.harness_session_id = incoming.session_id;
     const item = incoming.item;
-    if (['item.completed', 'item.updated'].includes(incoming.type) && ['agent_message', 'reasoning'].includes(item?.type) && item.text?.trim()) progress('model_text', `text:${item.text}`);
+    if (['item.completed', 'item.updated'].includes(incoming.type) && ['agent_message', 'reasoning'].includes(item?.type) && item.text?.trim()) modelText(item.text);
     if (incoming.type === 'item.completed' && item?.type === 'agent_message') output = item.text || output;
-    if (incoming.type === 'item.completed' && ['command_execution', 'mcp_tool_call', 'web_search', 'file_change'].includes(item?.type)) progress('work_item', `item:${JSON.stringify(item)}`);
+    if (incoming.type === 'item.completed') {
+      // Only operation/result content defines progress, not envelope IDs,
+      // timestamps or execution duration. Business result data stays intact.
+      if (item?.type === 'command_execution') progress('work_item', { type: item.type, command: item.command, status: item.status, exit_code: item.exit_code, output: item.aggregated_output ?? item.output });
+      if (item?.type === 'mcp_tool_call') progress('work_item', { type: item.type, server: item.server, tool: item.tool, arguments: item.arguments, status: item.status, result: item.result, error: errorContent(item.error) });
+      if (item?.type === 'web_search') progress('work_item', { type: item.type, status: item.status, query: item.query, action: item.action, result: item.result, results: item.results });
+      if (item?.type === 'file_change') progress('work_item', { type: item.type, status: item.status, changes: item.changes });
+    }
     if (incoming.type === 'stream_event') {
       const event = incoming.event;
-      if (event?.type === 'message_start') messageId = event.message?.id || '';
-      if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text?.trim()) progress('model_text', `delta:${messageId}:${event.index}:${event.delta.text}`);
+      if (event?.type === 'message_start') streamedText.clear();
+      if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+        streamedText.set(event.index, (streamedText.get(event.index) || '') + event.delta.text);
+        modelText([...streamedText].sort(([left], [right]) => left - right).map(([, text]) => text).join(''));
+      }
     }
     if (incoming.type === 'assistant' || incoming.type === 'user') {
+      if (incoming.type === 'assistant') modelText((incoming.message?.content || []).filter(part => part.type === 'text').map(part => part.text || '').join(''));
       for (const part of incoming.message?.content || []) {
-        if (part.type === 'text' && incoming.type === 'assistant' && part.text?.trim()) progress('model_text', `text:${part.text}`);
-        if (part.type === 'tool_result') progress('tool_result', `tool:${JSON.stringify(part)}`);
+        if (part.type === 'tool_result') progress('tool_result', { type: part.type, content: part.content, is_error: part.is_error });
       }
     }
     if (incoming.type === 'result') {
