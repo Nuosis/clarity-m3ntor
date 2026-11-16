@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { finished } from 'node:stream/promises';
@@ -32,16 +33,26 @@ async function fetchPrompt(source) {
   return prompt.content;
 }
 
+// --ignore-user-config also skips the owner's model choice; keep it (top-level `model` only).
+async function codexModel() {
+  try {
+    const config = await readFile(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'config.toml'), 'utf8');
+    const model = /^model\s*=\s*"([^"]+)"/m.exec(config.split(/^\[/m)[0])?.[1];
+    return model ? ['-m', model] : [];
+  } catch { return []; }
+}
+
 async function runHarness(request, prompt) {
   const outputFile = path.join(directory, 'output.txt');
-  // A2A requests run read-only without the clarity_m3ntor tools (several of which write).
+  // A2A requests run read-only with NO MCP servers: the harness would otherwise
+  // inherit every configured server (clarity_m3ntor and others), several of which write.
   const readOnly = request.task === 'a2a_message';
   const args = request.harness === 'codex'
     ? (readOnly
-      ? ['exec', '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
+      ? ['exec', '--ignore-user-config', '--disable', 'apps', ...(await codexModel()), '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
       : ['-c', `mcp_servers.clarity_m3ntor.url=${JSON.stringify(request.mcp_url)}`, 'exec', '--json', '--skip-git-repo-check', '-o', outputFile, '-'])
     : (readOnly
-      ? ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--permission-mode', 'plan', '--disallowedTools', 'Edit,Write,NotebookEdit']
+      ? ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: {} }), '--permission-mode', 'plan', '--disallowedTools', 'Edit,Write,NotebookEdit']
       : ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } })]);
   const context = typeof request.context === 'string' ? request.context : JSON.stringify(request.context, null, 2);
   const assessment = ['poma_assessment', 'poma_reassessment'].includes(request.task);

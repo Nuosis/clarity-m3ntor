@@ -115,9 +115,9 @@ export function startA2AReceiver({ cwd, harness, mcpUrl, onResponse }) {
   }
 
   // Not from M-CODEX: record it and mark it handled so it is not replayed; no job, no reply.
+  // A redelivered ignored message repeats the idempotent acknowledgment, so a failed one recovers.
   async function ignore(message) {
-    if ((await readLedger(message.id))?.status === 'ignored') return;
-    await writeLedger(message.id, { message_id: message.id, from_agent: message.from_agent, sender_organization_id: message.metadata?.sender_organization_id ?? null, session_id: message.session_id, received_at: new Date().toISOString(), status: 'ignored' });
+    if ((await readLedger(message.id))?.status !== 'ignored') await writeLedger(message.id, { message_id: message.id, from_agent: message.from_agent, sender_organization_id: message.metadata?.sender_organization_id ?? null, session_id: message.session_id, received_at: new Date().toISOString(), status: 'ignored' });
     await setRemoteStatus(message.id, 'ignored', 'delivered');
     await setStatus({ last_ignored_id: message.id, last_ignored_from: message.from_agent });
   }
