@@ -35,11 +35,14 @@ async function fetchPrompt(source) {
   return prompt.content;
 }
 
-// Disables every MCP server Codex would load (configured or plugin-provided)
-// while keeping the owner's config, provider, model and login. A listing
-// failure fails the job so a request never runs without this guarantee.
-async function codexMcpOff() {
-  const { stdout } = await execFileAsync('codex', ['mcp', 'list', '--json'], { timeout: 30000, maxBuffer: 2_000_000 });
+// Codex for A2A jobs: the apps, plugins and remote_plugin features are turned
+// off (removing connector and plugin-provided MCP servers), and every remaining
+// server, listed from the job's own working directory so workspace config is
+// included, is disabled. The owner's config, provider, model and login stay.
+// A listing failure fails the job so a request never runs without this.
+const CODEX_FEATURES_OFF = ['--disable', 'apps', '--disable', 'plugins', '--disable', 'remote_plugin'];
+async function codexMcpOff(cwd) {
+  const { stdout } = await execFileAsync('codex', [...CODEX_FEATURES_OFF, 'mcp', 'list', '--json'], { cwd, timeout: 30000, maxBuffer: 2_000_000 });
   return JSON.parse(stdout).flatMap(server => ['-c', `mcp_servers.${server.name}=${server.transport?.type === 'stdio' ? '{command="/usr/bin/true",enabled=false}' : '{url="http://127.0.0.1:9/",enabled=false}'}`]);
 }
 
@@ -50,7 +53,7 @@ async function runHarness(request, prompt) {
   const readOnly = request.task === 'a2a_message';
   const args = request.harness === 'codex'
     ? (readOnly
-      ? [...(await codexMcpOff()), 'exec', '--disable', 'apps', '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
+      ? [...(await codexMcpOff(request.cwd)), 'exec', ...CODEX_FEATURES_OFF, '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
       : ['-c', `mcp_servers.clarity_m3ntor.url=${JSON.stringify(request.mcp_url)}`, 'exec', '--json', '--skip-git-repo-check', '-o', outputFile, '-'])
     : (readOnly
       ? ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: {} }), '--permission-mode', 'plan', '--disallowedTools', 'Edit,Write,NotebookEdit']
