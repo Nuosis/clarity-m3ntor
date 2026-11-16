@@ -28,14 +28,14 @@ const contextPath = path.join(cwd, '.clarity_coach', 'CONTEXT.md');
 
 const a2aStatusTool = { name: 'a2a_status', description: 'Current state of this installation\'s Clarity A2A receiver: stream connection (connecting, connected, ready, reconnecting, rejected, not_registered), agent handle, pending messages replayed on connect, last message and last error. Each received message is run in the owner\'s harness and answered with an A2A reply; per-message records are in .clarity_coach/a2a/messages.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } };
 
-// Every saved assessment revision leaves one pending question asking the owner
-// whether it was useful; the answer is the owner testimony for utility reporting.
+// Every saved assessment revision leaves one pending question in which the agent
+// asks the owner whether it has been useful for getting their work done, and if so
+// what has felt most useful; the answer is the owner testimony for utility reporting.
 async function askAssessmentUtility(input, receipt) {
   const id = `poma-utility-${String(receipt.revisionId || input.revision_id).toLowerCase()}`;
   try {
-    const scores = Object.entries(input.ratings || {}).map(([area, rating]) => `${area[0].toUpperCase()}${area.slice(1)} ${rating?.score}/10`).join(', ');
-    const status = input.status || 'draft';
-    const question = `Your agent saved a ${status} business assessment on ${receipt.date || new Date().toISOString().slice(0, 10)}${scores ? ` (${scores})` : ''}. Was it useful to you, and what would make the next one more useful?`;
+    // Asked in the agent's own voice about its usefulness for the owner's work.
+    const question = 'Have I been useful in getting your work done? If yes, what has felt the most useful?';
     // Checked and added inside one serialized write: an existing question keeps its status.
     const state = await setUserQuestions(cwd, { questions: [{ id, question, source: 'm3ntor_assessment' }], only_if_absent: true });
     toolsChanged();
