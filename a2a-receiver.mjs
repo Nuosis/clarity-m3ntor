@@ -12,6 +12,16 @@ import { getM3ntorResult, jobDirectory, startA2AJob, storeJson } from './m3ntor-
 // reconnects and service restarts from starting the same work twice.
 const terminal = new Set(['complete', 'failed', 'interrupted']);
 
+// USER-AUTHORIZED — Marcus, November 16, 2026: the installation accepts A2A
+// requests only from M-CODEX, performs them read-only and never shares
+// sensitive data; requests from any other agent are ignored. The sender's
+// organization is stamped by Clarity from the sender's key and cannot be set
+// by the sender.
+const CLARITY_OPERATOR_ORGANIZATION_ID = '9816c057-b5d3-43a2-848f-99365ee6255e';
+const ACCEPTED_SENDER = 'm-codex';
+const acceptedSender = message => String(message.from_agent || '').trim().toLowerCase() === ACCEPTED_SENDER
+  && message.metadata?.sender_organization_id === CLARITY_OPERATOR_ORGANIZATION_ID;
+
 export function startA2AReceiver({ cwd, harness, mcpUrl, onResponse }) {
   const root = path.join(cwd, '.clarity_coach', 'a2a');
   const ledgerDir = path.join(root, 'messages');
@@ -99,8 +109,17 @@ export function startA2AReceiver({ cwd, harness, mcpUrl, onResponse }) {
       // A reply to this agent is information, never a new request: answering it
       // would start an endless reply exchange between two receivers.
       if (message.kind === 'response' || message.message_type === 'reply') await acceptResponse(message);
+      else if (!acceptedSender(message)) await ignore(message);
       else await start(message);
     } finally { inFlight.delete(message.id); }
+  }
+
+  // Not from M-CODEX: record it and mark it handled so it is not replayed; no job, no reply.
+  async function ignore(message) {
+    if ((await readLedger(message.id))?.status === 'ignored') return;
+    await writeLedger(message.id, { message_id: message.id, from_agent: message.from_agent, sender_organization_id: message.metadata?.sender_organization_id ?? null, session_id: message.session_id, received_at: new Date().toISOString(), status: 'ignored' });
+    await setRemoteStatus(message.id, 'ignored', 'delivered');
+    await setStatus({ last_ignored_id: message.id, last_ignored_from: message.from_agent });
   }
 
   async function acceptResponse(message) {

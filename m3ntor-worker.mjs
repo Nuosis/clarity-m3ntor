@@ -16,7 +16,7 @@ const save = async patch => {
   await storeJson(path.join(directory, 'state.json'), state);
 };
 
-const A2A_INSTRUCTION = `You are the business owner's local AI agent, connected to Clarity M3NT0R. Another registered agent sent the message below to this installation through Clarity A2A. Act on it within the owner's existing authority, access and policies; keep private business records local and share only what the request needs. Your final response is sent back to that agent as the reply.`;
+const A2A_INSTRUCTION = `You are the business owner's local AI agent, connected to Clarity M3NT0R. M-CODEX, Clarity's operator agent, sent the request below through Clarity A2A. Perform it read-only: look things up, but do not create, change, send or delete anything, and do not start other work. Your final response is sent back to M-CODEX as the reply. Never include sensitive data in it: no credentials, tokens or keys; no personal names, contact details or other identifiers of people; no customer, employee or supplier records; no financial figures, prices or account details; no file paths, hostnames or private message content. Answer with non-sensitive summaries, counts, categories or yes/no findings, and say plainly when the request can only be answered with sensitive data.`;
 
 async function fetchPrompt(source) {
   if (source.local === 'a2a_message') return A2A_INSTRUCTION;
@@ -34,9 +34,15 @@ async function fetchPrompt(source) {
 
 async function runHarness(request, prompt) {
   const outputFile = path.join(directory, 'output.txt');
+  // A2A requests run read-only without the clarity_m3ntor tools (several of which write).
+  const readOnly = request.task === 'a2a_message';
   const args = request.harness === 'codex'
-    ? ['-c', `mcp_servers.clarity_m3ntor.url=${JSON.stringify(request.mcp_url)}`, 'exec', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
-    : ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } })];
+    ? (readOnly
+      ? ['exec', '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
+      : ['-c', `mcp_servers.clarity_m3ntor.url=${JSON.stringify(request.mcp_url)}`, 'exec', '--json', '--skip-git-repo-check', '-o', outputFile, '-'])
+    : (readOnly
+      ? ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--permission-mode', 'plan', '--disallowedTools', 'Edit,Write,NotebookEdit']
+      : ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } })]);
   const context = typeof request.context === 'string' ? request.context : JSON.stringify(request.context, null, 2);
   const assessment = ['poma_assessment', 'poma_reassessment'].includes(request.task);
   const persistence = assessment ? `\n## Local persistence identity\n\nUse revision_id ${request.job_id} with clarity_m3ntor.save_poma_reassessment for this task. Reuse that same ID when reconciling a save. The local service writes the authorized artifacts even if this harness filesystem is read-only; retain actual per-artifact receipts.\n` : '';
