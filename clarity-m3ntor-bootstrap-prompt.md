@@ -101,7 +101,7 @@ Call `start_task_worker` (the setting persists) and record its state, then confi
 
 ## 4. Schedule weekly POMA reassessment separately
 
-Check `list_tasks` for an existing weekly reassessment and reuse it by `task_id`; otherwise call `set_task` once with a `weekly` recurrence in the owner's local time and an instruction to call `assess_poma` with `{}`, retrieve the same job with `get_m3ntor_result` until it finishes, and report the job ID, status, the `save_poma_reassessment` receipt (local artifacts and Clarity submission) and any failed effect. Record the task ID and its next run time. Later assessments reuse valid findings and compare business change against newly discovered evidence without indiscriminate rescans. This scheduled assessment is separate from the event/work-driven improvement loop.
+Check `list_tasks` for an existing weekly reassessment and reuse it by `task_id`; otherwise call `set_task` once with a `weekly` recurrence of Monday 08:00 in the owner's local time (`{"weekly":{"day":"monday","time":"08:00"}}`) unless the owner has named another time and an instruction to call `assess_poma` with `{}`, retrieve the same job with `get_m3ntor_result` until it finishes, and report the job ID, status, the `save_poma_reassessment` receipt (local artifacts and Clarity submission) and any failed effect. Record the task ID and its next run time. Later assessments reuse valid findings and compare business change against newly discovered evidence without indiscriminate rescans. This scheduled assessment is separate from the event/work-driven improvement loop.
 
 ## 5. Operate the business productivity-improvement loop
 
