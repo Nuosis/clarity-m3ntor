@@ -122,8 +122,8 @@ if (jwt && suppliedPassword) await secretPut(ACCOUNT_SERVICE, email, password);
 if (!jwt && !suppliedPassword && (!password || profile.pending_signup)) {
   if (!password) {
     password = randomBytes(24).toString('base64url');
-    await secretPut(ACCOUNT_SERVICE, email, password);
     await saveProfile({ pending_signup: true });
+    await secretPut(ACCOUNT_SERVICE, email, password);
   }
   const signup = await httpJson('POST', `${apiUrl}/auth/signup`, { data: { email, password, company_name: opts.company || null, username: opts.username || null } });
   if (!signup.ok) done(1, { status: 'error', step: 'signup', http_status: signup.status, error: signup.payload?.error?.message || signup.payload, retry: 'Rerun the same command; the generated password is kept for this signup.' });
@@ -165,6 +165,7 @@ const registration = await httpJson('POST', `${apiUrl}/agent/mentor/registration
 if (!registration.ok) done(1, { status: 'error', step: 'registration', http_status: registration.status, error: registration.payload?.error?.message || registration.payload });
 const { token, ...identity } = registration.payload;
 const token_command = await secretPut(TOKEN_SERVICE, identity.agent_id, token);
+delete profile.token_env; // the stored token command replaces any rejected injected token
 await saveProfile({
   organization_id: identity.organization_id, agent_id: identity.agent_id, agent_handle: identity.agent_handle,
   capabilities: identity.capabilities, token_command, registered_at: new Date().toISOString(),
