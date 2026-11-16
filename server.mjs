@@ -7,7 +7,6 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { steps, scale, dimensions, promptFor, categoricalScale, ratingPromptFor } from './questions.mjs';
 import { coachReport, validateRatings } from './coach-report.mjs';
-import { inspectBridge, establishBridge } from './bridge.mjs';
 import { savePomaAssessment, savePomaReassessment, reconcileReassessmentContext } from './assessment-store.mjs';
 import { readJournal, addJournal, questionState, setUserQuestions, readUserQuestions, businessTools, serializeBusinessWrites } from './business-journal.mjs';
 import { coachIdentity } from './coach-identity.mjs';
@@ -41,7 +40,6 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const data = path.join(root, '.data');
 const port = Number(process.env.PORT || 4317);
 const base = `http://127.0.0.1:${port}`;
-const parentThread = process.env.CODEX_THREAD_ID || '';
 const records = new Map();
 const localCwd = path.resolve(process.env.M3NTOR_WORKSPACE || process.env.HOME || root);
 const localWorkspace = { id: 'local', local: true, cwd: localCwd, harness: process.env.M3NTOR_HARNESS || 'codex', status: 'draft', answers: {} };
@@ -133,7 +131,7 @@ async function run(a, stage) {
     // USER-AUTHORIZED — Marcus, November 15, 2026: connect the harness so Coach
     // can initiate these questions and persist the answers through its local MCP.
     args = ['-c', `mcp_servers.clarity_m3ntor.url=${JSON.stringify(mcp)}`, '-c', 'mcp_servers.clarity_m3ntor.required=true', '-c', 'mcp_servers.clarity_m3ntor.tools.get_coaching_context.approval_mode="approve"', '-c', 'mcp_servers.clarity_m3ntor.tools.record_answer.approval_mode="approve"', 'exec'];
-    for (const name of ['save_context','finish_interview','check_bridge','establish_bridge','revise_ratings','read_journal','add_journal','suser_question_set','user_question_read']) args.unshift('-c', `mcp_servers.clarity_m3ntor.tools.${name}.approval_mode="approve"`);
+    for (const name of ['save_context','finish_interview','a2a_status','revise_ratings','read_journal','add_journal','suser_question_set','user_question_read']) args.unshift('-c', `mcp_servers.clarity_m3ntor.tools.${name}.approval_mode="approve"`);
     if (a.sessionId) args.push('resume');
     args.push('--json', '--skip-git-repo-check');
     if (a.sessionId) args.push(a.sessionId);
@@ -223,8 +221,6 @@ const tools = [
   { name: 'get_coaching_context', description: 'Retrieve local business context, previous findings, Coach identity, and any active interview assignment. With no active interview, support the owner’s current work using the journal and outstanding-question tools.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'record_answer', description: 'Save a non-sensitive progress summary for one interview section. Publish sections progressively during the continuous interview. Keep detailed or sensitive context in local CONTEXT.md. Each POMA area has a categorical assessment and a 1–10 score, with a rationale supporting both.', inputSchema: { type: 'object', properties: { stage: { type: 'string', enum: steps.map(s => s.id) }, answer: { type: 'string' }, ratings: ratingsSchema }, required: ['stage', 'answer'], additionalProperties: false } },
   { name: 'save_context', description: 'Create or update the owner’s private .clarity_coach/CONTEXT.md beneath the selected business workspace. Supply the complete merged Markdown, preserving useful existing context. This content stays local and is never included in the Coach export. Store detailed findings here; exclude credentials and keys.', inputSchema: { type: 'object', properties: { content: { type: 'string' } }, required: ['content'], additionalProperties: false } },
-  { name: 'check_bridge', description: 'Inspect the existing A2A bridge installation and current service state. Returns bounded last-observed health separately from current service state. Does not prove a fresh communication round trip.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
-  { name: 'establish_bridge', description: 'Reuse an existing running A2A bridge or apply its documented installation using the established local source and configuration. Preserves existing identity/authentication and returns missing setup inputs when unavailable. Do not repeat an unsuccessful setup blindly.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'finish_interview', description: 'Finish after all interview sections and local CONTEXT.md are saved. Prepare a separate non-sensitive Coach report with a summary, each section, and both categorical and 1–10 ratings/rationales for all four POMA areas. Review all supplied text for sensitivity and set privacyReviewed true only after that review. Exclude private messages, identities, financial details, internal identifiers and paths. This report alone is eligible for sharing; submission remains a separate user action.', inputSchema: { type: 'object', properties: { summary: { type: 'string' }, sections: sectionsSchema, ratings: ratingsSchema, privacyReviewed: { type: 'boolean' } }, required: ['summary','sections','ratings','privacyReviewed'], additionalProperties: false } },
 ];
 function toolsChanged(cwd) {
@@ -351,10 +347,6 @@ async function mcp(req, res, a) {
         a.context = { path: file, savedAt: new Date().toISOString(), runStartedAt: a.run.startedAt, localOnly: true };
         await save(a);
         result = { content: [{ type: 'text', text: JSON.stringify({ saved: true, path: file, localOnly: true }) }] };
-      } else if (name === 'check_bridge' || name === 'establish_bridge') {
-        a.bridge = await (name === 'check_bridge' ? inspectBridge() : establishBridge());
-        await save(a);
-        result = { content: [{ type: 'text', text: JSON.stringify(a.bridge) }] };
       } else if (name === 'finish_interview') {
         if (a.run?.status !== 'running') throw new Error('Finish the running interview.');
         if (steps.some(step => a.answers[step.id]?.runStartedAt !== a.run.startedAt)) throw new Error('Record the findings for all interview sections before finishing.');
@@ -374,29 +366,39 @@ async function mcp(req, res, a) {
   else return json(res, 200, { jsonrpc: '2.0', id: call.id, error: { code: -32601, message: 'Method not found' } });
   json(res, 200, { jsonrpc: '2.0', id: call.id, result });
 }
+async function addFollowup(a, input) {
+  if (!['question','recommendation'].includes(input.kind) || !input.text?.trim()) throw new Error('Provide a question or recommendation.');
+  a.followups ||= [];
+  a.followups.push({ id: randomUUID(), from: input.from || coachIdentity.name, kind: input.kind, text: input.text, createdAt: new Date().toISOString(), ...(input.messageId ? { messageId: input.messageId } : {}) });
+  if (input.kind === 'question') { await setUserQuestions(a.cwd,{question:input.text,source:input.from || coachIdentity.name}); toolsChanged(a.cwd); }
+  await save(a);
+}
+// A coach reply to a submitted report arrives over the A2A stream in that report's session.
+async function coachReply(message) {
+  const id = /^clarity-coach-(.+)$/.exec(message.session_id || '')?.[1];
+  const a = id && records.get(id);
+  if (!a || a.followups?.some(item => item.messageId === message.id)) return;
+  const kind = message.payload?.kind === 'question' ? 'question' : 'recommendation';
+  await addFollowup(a, { kind, text: message.message, from: message.from_agent, messageId: message.id });
+}
 async function submit(a) {
   if (a.submission) return a.submission;
   // USER-AUTHORIZED — Marcus, November 15, 2026: only the separately prepared
   // non-sensitive report may leave this local service; never export raw state.
   const exported = coachReport(a);
-  const followupUrl = `${base}/api/assessments/${a.id}/followups`;
-  const payload = { ...exported, followupUrl };
-  const payloadFile = path.join(data, `${a.id}.submission.payload`);
-  const messageFile = path.join(data, `${a.id}.submission.message`);
-  await writeFile(payloadFile, JSON.stringify(payload), { mode: 0o600 });
-  const text = `Clarity Coach POM + Agency report — submitted for coaching. Recommendations are draft.\n\n${exported.summary}\n\n${exported.sections.map(section => section.title.toUpperCase() + '\n' + section.text).join('\n\n')}\n\nRATINGS\n${dimensions.map(key => `${key}: ${exported.ratings[key].category} · ${exported.ratings[key].score}/10 — ${exported.ratings[key].rationale}`).join('\n')}\n\n${coachIdentity.name}: review this non-sensitive report and issue follow-up questions or recommendations. Deliver your response to the report UI with HTTP POST ${followupUrl}, JSON {"kind":"question" or "recommendation","text":"your response"}. Assessment ID: ${a.id}. Detailed CONTEXT.md and the local transcript are not shared. Do not repeat the interview or create a separate implementation task.`;
-  await writeFile(messageFile, text, { mode: 0o600 });
+  const text = `Clarity Coach POM + Agency report — submitted for coaching. Recommendations are draft.\n\n${exported.summary}\n\n${exported.sections.map(section => section.title.toUpperCase() + '\n' + section.text).join('\n\n')}\n\nRATINGS\n${dimensions.map(key => `${key}: ${exported.ratings[key].category} · ${exported.ratings[key].score}/10 — ${exported.ratings[key].rationale}`).join('\n')}\n\n${coachIdentity.name}: review this non-sensitive report and issue follow-up questions or recommendations as an A2A reply to this message, with payload {"kind":"question" or "recommendation"}. Assessment ID: ${a.id}. Detailed CONTEXT.md and the local transcript are not shared. Do not repeat the interview or create a separate implementation task.`;
   a.submission = { status: 'sending', requestedAt: new Date().toISOString(), recipient: coachIdentity.name, idempotencyKey: `clarity-coach-${a.id}-${exported.revisionId}`, nonSensitiveOnly: true };
   await save(a);
   try {
-    const args = ['send', '--to', coachIdentity.name, '--message-file', messageFile, '--payload-file', payloadFile, '--idempotency-key', a.submission.idempotencyKey];
-    if (parentThread) args.push('--thread', parentThread);
-    const result = await exec('a2a-bridge', args, { cwd: root, timeout: 30000, maxBuffer: 2_000_000 });
-    let receipt; try { receipt = JSON.parse(result.stdout); } catch { receipt = { output: result.stdout }; }
-    a.submission = { ...a.submission, status: 'submitted', receipt, submittedAt: new Date().toISOString() };
+    const me = await clarityRequest('GET', '/agent/mentor/me');
+    const sent = await clarityRequest('POST', '/agent/agent_messages', {
+      session_id: `clarity-coach-${a.id}`, from_agent: me.agent_handle, from_agent_id: me.agent_id, to_agent: coachIdentity.name,
+      message: text, payload: exported, metadata: { assessment_id: a.id, revision_id: exported.revisionId }, idempotency_key: a.submission.idempotencyKey,
+    });
+    a.submission = { ...a.submission, status: 'submitted', receipt: { message_id: sent.id, message_status: sent.status, from_agent: me.agent_handle }, submittedAt: new Date().toISOString() };
     a.status = 'submitted';
   } catch (e) {
-    a.submission = { ...a.submission, status: 'delivery_uncertain', detail: 'Delivery could not be confirmed. The report is saved. Reconcile the receipt before retrying.' };
+    a.submission = { ...a.submission, status: 'delivery_uncertain', detail: `Delivery could not be confirmed (${e.message}). The report is saved; resubmitting reuses the same idempotency key.` };
   }
   await save(a); return a.submission;
 }
@@ -442,7 +444,7 @@ const server = http.createServer(async (req, res) => {
       for (const a of assessments) void advance(a);
       return;
     }
-    if (url.pathname === '/api/bridge') return json(res, 200, await inspectBridge());
+    if (url.pathname === '/api/bridge') return json(res, 200, a2aReceiver.status());
     if (url.pathname === '/api/harnesses') {
       const [codex, claude] = await Promise.all([availability('codex'), availability('claude')]);
       return json(res, 200, { codex, claude });
@@ -469,10 +471,8 @@ const server = http.createServer(async (req, res) => {
         if (parts[3] === 'submit') { await submit(a); return json(res, 200, summary(a)); }
         if (parts[3] === 'snapshot') { a.assessmentFile = await savePomaAssessment(a); await save(a); return json(res, 200, summary(a)); }
         if (parts[3] === 'followups') {
-          if (!['question','recommendation'].includes(input.kind) || !input.text?.trim()) throw new Error('Provide a question or recommendation.');
-          a.followups.push({ id: randomUUID(), from: input.from || coachIdentity.name, kind: input.kind, text: input.text, createdAt: new Date().toISOString() });
-          if (input.kind === 'question') { await setUserQuestions(a.cwd,{question:input.text,source:input.from || coachIdentity.name}); toolsChanged(a.cwd); }
-          await save(a); return json(res, 201, summary(a));
+          await addFollowup(a, input);
+          return json(res, 201, summary(a));
         }
       }
     }
@@ -483,7 +483,7 @@ const server = http.createServer(async (req, res) => {
   } catch (e) { if (!res.headersSent) json(res, 400, { error: e.message }); }
 });
 // This service holds the installation's A2A stream for as long as it runs.
-const a2aReceiver = startA2AReceiver({ cwd: localCwd, harness: localWorkspace.harness, mcpUrl: `${base}/mcp/local` });
+const a2aReceiver = startA2AReceiver({ cwd: localCwd, harness: localWorkspace.harness, mcpUrl: `${base}/mcp/local`, onResponse: coachReply });
 server.listen(port, '127.0.0.1', () => console.log(`Clarity Coach → ${base}`));
 for (const signal of ['SIGTERM','SIGINT']) process.on(signal, async () => {
   await Promise.all([...records.values()].filter(a => jobs.has(a.id)).map(a => stop(a, 'Local service stopped. Saved answers retained.')));

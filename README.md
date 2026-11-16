@@ -1,4 +1,4 @@
-Status: account signup/registration, identity, prompt delivery, assessment summary submission, utility cases and A2A messages use a registered Clarity `clrtok_` token over HTTPS (`register.mjs`). The service receives A2A messages over Clarity's push stream (`a2a-receiver.mjs`); the legacy interview UI's report submission still uses the a2a-bridge CLI.
+Status: account signup/registration, identity, prompt delivery, assessment summary submission, utility cases and A2A messages use a registered Clarity `clrtok_` token over HTTPS (`register.mjs`). The service receives A2A messages over Clarity's push stream (`a2a-receiver.mjs`), and the interview UI submits its coach report as a token A2A message; no local a2a-bridge is used.
 
 Local HTTP MCP for an owner's agent to ask M3NT0R for coaching using the owner's
 Codex or Claude Code harness. It extends the Clarity Coach service and retains

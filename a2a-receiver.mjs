@@ -12,7 +12,7 @@ import { getM3ntorResult, jobDirectory, startA2AJob, storeJson } from './m3ntor-
 // reconnects and service restarts from starting the same work twice.
 const terminal = new Set(['complete', 'failed', 'interrupted']);
 
-export function startA2AReceiver({ cwd, harness, mcpUrl }) {
+export function startA2AReceiver({ cwd, harness, mcpUrl, onResponse }) {
   const root = path.join(cwd, '.clarity_coach', 'a2a');
   const ledgerDir = path.join(root, 'messages');
   const statusFile = path.join(root, 'receiver.json');
@@ -107,6 +107,7 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
     await writeLedger(message.id, { message_id: message.id, kind: 'response', from_agent: message.from_agent, parent_message_id: message.parent_message_id, session_id: message.session_id, message: message.message, received_at: new Date().toISOString(), status: 'response_received' });
     await setRemoteStatus(message.id, 'completed', 'delivered');
     await setStatus({ last_response_id: message.id, last_response_at: new Date().toISOString() });
+    if (onResponse) { try { await onResponse(message); } catch (error) { console.error('A2A response handler failed:', error.message); } }
   }
 
   async function start(message) {
