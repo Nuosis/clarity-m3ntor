@@ -104,10 +104,20 @@ export function startA2AReceiver({ cwd, harness, mcpUrl, onResponse }) {
   }
 
   async function acceptResponse(message) {
-    await writeLedger(message.id, { message_id: message.id, kind: 'response', from_agent: message.from_agent, parent_message_id: message.parent_message_id, session_id: message.session_id, message: message.message, received_at: new Date().toISOString(), status: 'response_received' });
+    const entry = { message_id: message.id, kind: 'response', from_agent: message.from_agent, parent_message_id: message.parent_message_id, session_id: message.session_id, message: message.message, received_at: new Date().toISOString() };
+    // Store the response locally first; it is acknowledged on Clarity only after
+    // that succeeds, so a failure leaves it pending for replay on reconnect.
+    if (onResponse) {
+      try { await onResponse(message); }
+      catch (error) {
+        await writeLedger(message.id, { ...entry, status: 'response_store_failed', error: error.message });
+        console.error('A2A response handler failed:', error.message);
+        return;
+      }
+    }
+    await writeLedger(message.id, { ...entry, status: 'response_received' });
     await setRemoteStatus(message.id, 'completed', 'delivered');
     await setStatus({ last_response_id: message.id, last_response_at: new Date().toISOString() });
-    if (onResponse) { try { await onResponse(message); } catch (error) { console.error('A2A response handler failed:', error.message); } }
   }
 
   async function start(message) {

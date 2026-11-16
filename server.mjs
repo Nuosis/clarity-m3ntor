@@ -137,7 +137,7 @@ async function run(a, stage) {
     if (a.sessionId) args.push(a.sessionId);
     args.push('-');
   } else {
-    args = ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: mcp } } }), '--allowedTools', 'mcp__clarity_m3ntor__get_coaching_context,mcp__clarity_m3ntor__record_answer,mcp__clarity_m3ntor__save_context,mcp__clarity_m3ntor__finish_interview,mcp__clarity_m3ntor__check_bridge,mcp__clarity_m3ntor__establish_bridge,mcp__clarity_m3ntor__revise_ratings,mcp__clarity_m3ntor__read_journal,mcp__clarity_m3ntor__add_journal,mcp__clarity_m3ntor__suser_question_set,mcp__clarity_m3ntor__user_question_read'];
+    args = ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: mcp } } }), '--allowedTools', 'mcp__clarity_m3ntor__get_coaching_context,mcp__clarity_m3ntor__record_answer,mcp__clarity_m3ntor__save_context,mcp__clarity_m3ntor__finish_interview,mcp__clarity_m3ntor__a2a_status,mcp__clarity_m3ntor__revise_ratings,mcp__clarity_m3ntor__read_journal,mcp__clarity_m3ntor__add_journal,mcp__clarity_m3ntor__suser_question_set,mcp__clarity_m3ntor__user_question_read'];
     if (a.sessionId) args.push('--resume', a.sessionId);
   }
   a.run = { status: 'running', stage, startedAt: new Date().toISOString(), detail: 'Starting your harness…', output: '' };
