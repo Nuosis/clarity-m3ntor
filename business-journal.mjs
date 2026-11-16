@@ -17,7 +17,7 @@ async function store(file, value) {
   const temporary = `${file}.${randomUUID()}.tmp`;
   await writeFile(temporary, JSON.stringify(value,null,2)+'\n', { mode: 0o600 }); await rename(temporary,file);
 }
-async function serial(cwd, action) {
+export async function serializeBusinessWrites(cwd, action) {
   const key = path.resolve(cwd);
   const previous = queues.get(key) || Promise.resolve();
   const current = previous.catch(() => {}).then(action); queues.set(key,current);
@@ -36,14 +36,22 @@ export async function readJournal(cwd, input = {}, now = new Date()) {
   }
   return { entries, revisions, today };
 }
-async function append(cwd,input,now) {
+// Internal storage callers hold serializeBusinessWrites; public addJournal
+// acquires it below. A supplied entry ID supports a repeat-safe reassessment.
+export async function appendJournalInWrite(cwd,input,now,entryId) {
   const date=validDate(input.date || businessDate(now));
   if (!input.content?.trim()) throw new Error('A business-related journal entry is required.');
   const day=await journal(cwd,date);
-  const entry={ id:randomUUID(), createdAt:now.toISOString(), kind:input.kind || 'activity', content:input.content, source:input.source || 'local_harness' };
+  const index=entryId ? day.entries.findIndex(entry=>entry.id===entryId) : -1;
+  const previous=index<0 ? null : day.entries[index];
+  const entry={ id:entryId || randomUUID(), createdAt:previous?.createdAt || now.toISOString(), kind:input.kind || 'activity', content:input.content, source:input.source || 'local_harness' };
   if (input.metadata) entry.metadata=input.metadata;
-  day.entries.push(entry); day.revision=randomUUID(); await store(journalFile(cwd,date),day);
-  return { entry, date, path:journalFile(cwd,date) };
+  const reused=!!previous && JSON.stringify(previous)===JSON.stringify(entry);
+  if (!reused) {
+    if (index<0) day.entries.push(entry); else day.entries[index]=entry;
+    day.revision=randomUUID(); await store(journalFile(cwd,date),day);
+  }
+  return { entry, date, path:journalFile(cwd,date), ...(entryId ? { reused } : {}) };
 }
 const questionFile = cwd => path.join(root(cwd),'user_questions.json');
 export async function questionState(cwd, now=new Date()) {
@@ -56,14 +64,14 @@ async function defer(cwd,state,now,content) {
   state.deferUntil=new Date(now.getTime()+4*60*60*1000).toISOString();
   state.lastDeclinedAt=now.toISOString(); delete state.pending; delete state.deferred;
   await store(questionFile(cwd),state);
-  const result=await append(cwd,{kind:'question_deferral',content:content || 'User declined Coach questions for now.',metadata:{deferUntil:state.deferUntil,exception:'User directly brings up the questions.'}},now);
+  const result=await appendJournalInWrite(cwd,{kind:'question_deferral',content:content || 'User declined Coach questions for now.',metadata:{deferUntil:state.deferUntil,exception:'User directly brings up the questions.'}},now);
   return { ...result, deferUntil:state.deferUntil };
 }
 export async function addJournal(cwd,input,now=new Date()) {
-  return serial(cwd,async()=> input.user_declined_questions === true ? defer(cwd,await questionState(cwd,now),now,input.content) : append(cwd,input,now));
+  return serializeBusinessWrites(cwd,async()=> input.user_declined_questions === true ? defer(cwd,await questionState(cwd,now),now,input.content) : appendJournalInWrite(cwd,input,now));
 }
 export async function setUserQuestions(cwd,input,now=new Date()) {
-  return serial(cwd,async()=> {
+  return serializeBusinessWrites(cwd,async()=> {
     const state=await questionState(cwd,now);
     const action=input.action || 'set';
     if (action==='defer') return defer(cwd,state,now,input.reason);
@@ -83,7 +91,7 @@ export async function setUserQuestions(cwd,input,now=new Date()) {
       Object.assign(existing,{status:action==='answer'?'answered':'dismissed',answer:input.answer || input.reason || '',updatedAt:now.toISOString()});
     } else throw new Error('Use set, answer, dismiss, or defer.');
     delete state.pending;delete state.deferred;await store(questionFile(cwd),state);
-    await append(cwd,{kind:'activity',content:action==='set'?'Recorded business questions for the user.':action==='answer'?'Recorded the user’s response to a business question.':'Dismissed a business question.',metadata:{questionId:input.question_id || null}},now);
+    await appendJournalInWrite(cwd,{kind:'activity',content:action==='set'?'Recorded business questions for the user.':action==='answer'?'Recorded the user’s response to a business question.':'Dismissed a business question.',metadata:{questionId:input.question_id || null}},now);
     return questionState(cwd,now);
   });
 }

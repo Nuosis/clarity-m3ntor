@@ -8,8 +8,8 @@ import { promisify } from 'node:util';
 import { steps, scale, dimensions, promptFor, categoricalScale, ratingPromptFor } from './questions.mjs';
 import { coachReport, validateRatings } from './coach-report.mjs';
 import { inspectBridge, establishBridge } from './bridge.mjs';
-import { savePomaAssessment } from './assessment-store.mjs';
-import { readJournal, addJournal, questionState, setUserQuestions, readUserQuestions, businessTools } from './business-journal.mjs';
+import { savePomaAssessment, savePomaReassessment } from './assessment-store.mjs';
+import { readJournal, addJournal, questionState, setUserQuestions, readUserQuestions, businessTools, serializeBusinessWrites } from './business-journal.mjs';
 import { coachIdentity } from './coach-identity.mjs';
 import { m3ntorTools, askM3ntor, reassessPoma, getM3ntorResult } from './m3ntor-jobs.mjs';
 import { utilityTools, reportUtility, searchUtility } from './clarity-utility.mjs';
@@ -196,6 +196,7 @@ const ratingSchema = { type: 'object', properties: { category: { type: 'string',
 const ratingsSchema = { type: 'object', properties: Object.fromEntries(dimensions.map(key => [key, ratingSchema])), required: dimensions, additionalProperties: false };
 const sectionsSchema = { type: 'object', properties: Object.fromEntries(steps.map(step => [step.id, { type: 'string' }])), required: steps.map(step => step.id), additionalProperties: false };
 const tools = [
+  { name: 'save_poma_reassessment', description: 'Save a prepared business POMA reassessment through this local service, including when your harness filesystem is read-only. Use the task revision_id UUID consistently. Saves one dated private revision, appends/updates its context section and journal entry, and saves a SEPARATE non-sensitive coaching summary locally. Workspace paths are fixed by this MCP connection. Repeating the same revision reconciles it without duplicates; prior revisions/unrelated context stay intact. Returns actual per-artifact saved states, paths and receipt or honest partial effects. No interview or new approval step; nothing is submitted to a remote server.', inputSchema: { type: 'object', properties: { revision_id: { type: 'string', format: 'uuid' }, ratings: ratingsSchema, evidence: { description: 'Local evidence and source references, including explicit gaps.' }, coverage: { description: 'Business/process/source/period coverage and exclusions.' }, uncertainty: { description: 'Evidence limits and uncertainty for the business-linked ratings.' }, comparison: { description: 'Actual business change versus newly discovered evidence or corrected interpretation.' }, productivity: { description: 'Supported calculation or labelled estimate with scope, period, currency, definitions and total-human-hour coverage, or specific missing evidence.' }, status: { type: 'string', description: 'Actual assessment lifecycle status; defaults to draft.' }, harness: { type: 'string', enum: ['codex', 'claude'], description: 'Actual local harness, when known.' }, context_update: { type: 'string', description: 'Detailed reassessment Markdown section; do not replace unrelated existing CONTEXT.' }, journal_entry: { type: 'string', description: 'Business-related reassessment journal entry.' }, coaching_summary: { type: 'string', description: 'SEPARATE non-sensitive coaching summary; exclude raw context, financial/working-hours details, private identifiers, paths and credentials.' } }, required: ['revision_id','ratings','evidence','coverage','uncertainty','comparison','productivity','context_update','journal_entry','coaching_summary'], additionalProperties: false } },
   { name: 'revise_ratings', description: 'Update an existing completed POMA report from its recorded findings only. Supply both a category and a 1–10 score for each area with non-sensitive rationales, and review them for sensitivity. Saves the report, appends the updated assessment to local CONTEXT.md, and saves a dated JSON revision. Does not repeat the interview or send the report.', inputSchema: { type: 'object', properties: { ratings: ratingsSchema, privacyReviewed: { type: 'boolean' } }, required: ['ratings','privacyReviewed'], additionalProperties: false } },
   { name: 'get_coaching_context', description: 'Retrieve local business context, previous findings, Coach identity, and any active interview assignment. With no active interview, support the owner’s current work using the journal and outstanding-question tools.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'record_answer', description: 'Save a non-sensitive progress summary for one interview section. Publish sections progressively during the continuous interview. Keep detailed or sensitive context in local CONTEXT.md. Each POMA area has a categorical assessment and a 1–10 score, with a rationale supporting both.', inputSchema: { type: 'object', properties: { stage: { type: 'string', enum: steps.map(s => s.id) }, answer: { type: 'string' }, ratings: ratingsSchema }, required: ['stage', 'answer'], additionalProperties: false } },
@@ -231,12 +232,12 @@ async function mcp(req, res, a) {
   if (call.method === 'initialize') {
     const id=randomUUID();mcpSessions.set(id,{cwd:a.cwd,createdAt:new Date().toISOString()});
     const assignment = a.run?.status === 'running' ? a.run.stage === 'ratings' ? 'Update only the existing POMA ratings from recorded findings, with both categorical and numeric assessments. Save the revision and return; do not repeat the interview.' : 'Complete the full interview assignment in one continuous session, saving local context and the separate non-sensitive report.' : 'Use the local business context and coaching tools to support your owner. Do not restart the interview without a request.';
-    result={protocolVersion:'2025-03-26',capabilities:{tools:{listChanged:true}},serverInfo:{name:'clarity_m3ntor',version:'0.6.0'},instructions:assignment+' '+questionInstructions+' Ask M3NT0R with ask_m3ntor or reassess the owner’s business with reassess_poma. Retrieve either running job with get_m3ntor_result.'};
+    result={protocolVersion:'2025-03-26',capabilities:{tools:{listChanged:true}},serverInfo:{name:'clarity_m3ntor',version:'0.6.1'},instructions:assignment+' '+questionInstructions+' Ask M3NT0R with ask_m3ntor or reassess the owner’s business with reassess_poma. Save reassessment artifacts through save_poma_reassessment, including from a read-only harness; retrieve either running job with get_m3ntor_result.'};
     return json(res,200,{jsonrpc:'2.0',id:call.id,result},{'Mcp-Session-Id':id});
   }
   if (call.method !== 'ping' && (!session || session.cwd !== a.cwd)) return json(res,404,{error:'MCP session is missing or expired; initialize again.'});
   if (call.method === 'ping') result = {};
-  else if (call.method === 'tools/list') result = { tools: [...m3ntorTools, ...utilityTools, ...tools.filter(tool => !a.local || tool.name === 'get_coaching_context'), ...businessTools(await questionState(a.cwd))] };
+  else if (call.method === 'tools/list') result = { tools: [...m3ntorTools, ...utilityTools, ...tools.filter(tool => !a.local || ['get_coaching_context','save_poma_reassessment'].includes(tool.name)), ...businessTools(await questionState(a.cwd))] };
   else if (call.method === 'tools/call') {
     try {
       const { name, arguments: input = {} } = call.params;
@@ -246,6 +247,9 @@ async function mcp(req, res, a) {
       } else if (name === 'get_m3ntor_result') {
         const job = await getM3ntorResult(input.job_id);
         result = { ...(job.status === 'failed' || job.status === 'interrupted' ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(job) }] };
+      } else if (name === 'save_poma_reassessment') {
+        const receipt = await savePomaReassessment(a.cwd, input, { assessmentId: a.id, harness: a.harness });
+        result = { ...(!receipt.saved ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(receipt) }] };
       } else if (name === 'report_utility' || name === 'search_utility') {
         const response = await (name === 'report_utility' ? reportUtility(input) : searchUtility(input));
         result = { content: [{ type: 'text', text: JSON.stringify(response) }] };
@@ -291,10 +295,12 @@ async function mcp(req, res, a) {
         candidate.sections = { ...candidate.sections, assessment: text };
         coachReport({ ...a, shareableReport: candidate });
         const file = contextPath(a);
-        const previous = await readFile(file, 'utf8');
         const now = new Date().toISOString();
-        const temporary = `${file}.${randomUUID()}.tmp`;
-        await writeFile(temporary, `${previous}\n\n## POMA assessment update — ${now}\n\n${text}\n`, { mode: 0o600 }); await rename(temporary, file);
+        await serializeBusinessWrites(a.cwd, async () => {
+          const previous = await readFile(file, 'utf8');
+          const temporary = `${file}.${randomUUID()}.tmp`;
+          await writeFile(temporary, `${previous}\n\n## POMA assessment update — ${now}\n\n${text}\n`, { mode: 0o600 }); await rename(temporary, file);
+        });
         a.context = { ...a.context, savedAt: now, runStartedAt: a.run.startedAt };
         a.ratings = input.ratings; a.shareableReport = candidate;
         a.answers.assessment = { text, recordedAt: now, runStartedAt: a.run.startedAt };
@@ -307,9 +313,11 @@ async function mcp(req, res, a) {
       } else if (name === 'save_context') {
         if (a.run?.status !== 'running' || !input.content?.trim()) throw new Error('Provide local context during the running interview.');
         const file = contextPath(a);
-        await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-        const temporary = file + '.' + randomUUID() + '.tmp';
-        await writeFile(temporary, input.content, { mode: 0o600 }); await rename(temporary, file);
+        await serializeBusinessWrites(a.cwd, async () => {
+          await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+          const temporary = file + '.' + randomUUID() + '.tmp';
+          await writeFile(temporary, input.content, { mode: 0o600 }); await rename(temporary, file);
+        });
         a.context = { path: file, savedAt: new Date().toISOString(), runStartedAt: a.run.startedAt, localOnly: true };
         await save(a);
         result = { content: [{ type: 'text', text: JSON.stringify({ saved: true, path: file, localOnly: true }) }] };

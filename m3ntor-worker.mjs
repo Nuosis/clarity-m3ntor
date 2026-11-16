@@ -44,7 +44,8 @@ async function runHarness(request, prompt) {
     ? ['-c', `mcp_servers.clarity_m3ntor.url=${JSON.stringify(request.mcp_url)}`, 'exec', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
     : ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } })];
   const context = typeof request.context === 'string' ? request.context : JSON.stringify(request.context, null, 2);
-  const input = `${prompt}\n\n## ${request.task === 'poma_reassessment' ? 'Current business POMA reassessment task' : 'Current coaching request'}\n\n${request.question}\n\n## Supplied context\n\n${context}\n`;
+  const persistence = request.task === 'poma_reassessment' ? `\n## Local persistence identity\n\nUse revision_id ${request.job_id} with clarity_m3ntor.save_poma_reassessment for this task. Reuse that same ID when reconciling a save. The local service writes the authorized artifacts even if this harness filesystem is read-only; retain actual per-artifact receipts.\n` : '';
+  const input = `${prompt}\n\n## ${request.task === 'poma_reassessment' ? 'Current business POMA reassessment task' : 'Current coaching request'}\n\n${request.question}\n\n## Supplied context\n\n${context}\n${persistence}`;
   await writeFile(path.join(directory, 'harness-input.md'), input, { mode: 0o600 });
   await storeJson(path.join(directory, 'command.json'), { command: request.harness, args, cwd: request.cwd, model: 'Inherited from the existing harness configuration', authentication: 'Inherited; no credential or account override' });
   const stdoutLog = createWriteStream(path.join(directory, 'harness.stdout.jsonl'), { mode: 0o600 });

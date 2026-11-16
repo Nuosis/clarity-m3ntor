@@ -70,6 +70,23 @@ Private dated revisions and detailed context remain local. A separately prepared
 non-sensitive coaching summary uses existing save/report routes where applicable.
 Harness completion alone does not prove an assessment file was saved.
 
+The local AI prepares the reassessment and calls `save_poma_reassessment` with
+the supplied stable revision ID. The existing local MCP service saves in its
+route's business workspace, even when the harness filesystem is read-only. It
+validates the existing four-area ratings, preserves prior daily revisions and
+unrelated context, appends/updates one reassessment context section and journal
+entry, and saves a separate non-sensitive summary locally. It sends no private
+assessment/context/financial data to the utility backend. No interview or new
+owner-approval step is needed for this authorized persistence.
+
+Per-workspace writes are serialized and individual files replaced atomically.
+The same revision ID updates/reconciles that reassessment without duplicating
+daily revisions, context sections or journal entries. Stable date/time metadata
+and per-artifact receipts survive partial failure; the tool reports the actual
+saved effects and error, so a repeated save can complete the same revision. Model
+text alone is not a save receipt. The harness retains its existing model,
+authentication, approval and sandbox route.
+
 This revision adds no actual scheduler installation, action worker, financial-data
 mining by the implementer or utility-backend change.
 
@@ -143,11 +160,16 @@ The separate infrastructure executor owns server storage and retrieval behavior.
     `get_m3ntor_result` retrieves that same job without another launch. Ordinary
     `ask_m3ntor` still fetches the mentor prompt. Readback: both remote prompt
     files, per-job request/state/fetched prompt/hash, transcripts and final output.
-13. Reassessment instructions save private context/dated assessment revisions
-    and prepare only a separate non-sensitive coaching summary. Actual local
-    saving/reporting is proven through local artifact/API readback, not merely
-    the harness exit code. No live owner-business records are needed to assess
-    the routing or instructions; isolated assessor evidence can cover saving.
+13. The actual local AI calls `save_poma_reassessment` through HTTP MCP under its
+    inherited read-only harness, and receives actual assessment/context/journal/
+    summary paths and save receipts. Authoritative local readback shows a new
+    dated revision, old revisions/schema/context retained, one journal entry and
+    a separate non-sensitive summary. Repeating the same revision does not
+    duplicate artifacts. A partial filesystem failure returns honest saved
+    effects, and the same ID can reconcile it. No interview gate, broader
+    sandbox or raw private-data network submission is introduced. Actual saves
+    are proven through the service boundary and local readback, not by a manual
+    assessor write or model exit code. Isolated business evidence is sufficient.
 14. Weekly scheduled reassessment is described separately from triggered
     improvement work. This source revision does not install a scheduler or
     modify the original service, global config, private assessments, utility

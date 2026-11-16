@@ -119,10 +119,28 @@ The standalone prompt directs the owner's local AI to read private context,
 journals, previous dated assessments and relevant current business sources;
 refresh affected evidence; assess Process, Observability, Measurement and Agency
 with independent category/1–10 ratings; distinguish business change from new
-evidence; and preserve private dated revisions. Existing save/report routes are
-reused where applicable, with local file operations for standalone saving. A
-returned model response or successful CLI exit does not prove those files saved;
-use the actual local artifact/readback evidence and separate coaching summary.
+evidence; and preserve private dated revisions. It calls the local MCP service's
+`save_poma_reassessment` with the task's job UUID as a stable `revision_id`, so
+an inherited read-only harness can save without broader filesystem permissions.
+A returned model response or successful CLI exit does not prove those files
+saved; use the actual per-artifact receipts and local readback.
+
+`save_poma_reassessment` accepts prepared four-area `ratings`, `evidence`,
+`coverage`, `uncertainty`, `comparison`, `productivity`, a `context_update`
+Markdown section, `journal_entry`, and SEPARATE non-sensitive `coaching_summary`.
+`status` defaults to `draft`; the actual `harness` can be supplied when known.
+Paths are fixed by this MCP connection's business workspace. The service saves
+`.clarity_coach/assessment/YYYY-MM-DD.json`, preserves previous daily schema and
+revisions, appends/updates that revision's section in `CONTEXT.md`, upserts one
+local journal entry and writes `.clarity_coach/reports/<revision_id>.md`.
+`.clarity_coach/reassessments/<revision_id>.json` records stable date/time and
+per-artifact save receipts for reconciliation. Same-ID saves do not duplicate
+entries/sections; individual files are atomic and workspace writes serialized.
+Partial failures return the confirmed effects and actual error, with the same ID
+available to reconcile them. This route works outside an active interview and
+does not submit private assessment, context or financial data to a server.
+Model, authentication, account, billing, sandbox and existing approval settings
+remain inherited. Direct file operations remain a fallback when supported.
 
 For productivity the local AI first searches established financial/sales and
 human working-hours evidence and attempts `sales / TOTAL human hours` for a
