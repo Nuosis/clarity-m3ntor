@@ -35,7 +35,8 @@ async function secretPut(service, account, value) {
       child.stderr.on('data', chunk => { stderr += chunk; });
       child.once('error', reject);
       child.once('close', code => (code === 0 && !stderr.trim() ? resolve() : reject(new Error(`Keychain write failed (${code}).`))));
-      child.stdin.end(`add-generic-password -U -s "${service}" -a "${account}" -w "${value}"\n`);
+      // -X takes hex, so any password characters survive the `security -i` parser.
+      child.stdin.end(`add-generic-password -U -s "${service}" -a "${account}" -X ${Buffer.from(value, 'utf8').toString('hex')}\n`);
     });
     return ['security', 'find-generic-password', '-s', service, '-a', account, '-w'];
   }
@@ -106,18 +107,27 @@ const login = async () => {
 
 // The installation identity is fixed before any server call, so a lost
 // registration response or failed local save is recovered, never duplicated.
-const installation_id = existing?.installation_id || randomUUID();
-if (!existing?.installation_id) await writeProfile({ ...(existing || {}), api_url: apiUrl, email, installation_id });
+let profile = { ...(existing || {}), api_url: apiUrl, email };
+profile.installation_id ||= randomUUID();
+const installation_id = profile.installation_id;
+const saveProfile = async patch => { profile = { ...profile, ...patch }; await writeProfile(profile); };
+if (!existing?.installation_id || existing?.email !== email) await saveProfile({});
 
 if (password) jwt = await login();
 // A supplied password that signs in is kept for later token recovery.
 if (jwt && suppliedPassword) await secretPut(ACCOUNT_SERVICE, email, password);
-if (!jwt && !password) {
-  password = randomBytes(24).toString('base64url');
+// Sign up when no account password exists, or retry a signup whose outcome was
+// never confirmed. The generated password is stored first and the profile marks
+// the signup pending, so a lost response is retried with the same password.
+if (!jwt && !suppliedPassword && (!password || profile.pending_signup)) {
+  if (!password) {
+    password = randomBytes(24).toString('base64url');
+    await secretPut(ACCOUNT_SERVICE, email, password);
+    await saveProfile({ pending_signup: true });
+  }
   const signup = await httpJson('POST', `${apiUrl}/auth/signup`, { data: { email, password, company_name: opts.company || null, username: opts.username || null } });
-  if (!signup.ok) done(1, { status: 'error', step: 'signup', http_status: signup.status, error: signup.payload?.error?.message || signup.payload });
-  // Store the password only once signup has accepted it, so a failed signup stays retryable.
-  await secretPut(ACCOUNT_SERVICE, email, password);
+  if (!signup.ok) done(1, { status: 'error', step: 'signup', http_status: signup.status, error: signup.payload?.error?.message || signup.payload, retry: 'Rerun the same command; the generated password is kept for this signup.' });
+  await saveProfile({ pending_signup: false });
   created_account = true;
   jwt = signup.payload.authenticated ? sessionJwt(signup.response) : null;
   if (!jwt && signup.payload.verification_pending && !opts['verify-url']) {
@@ -155,8 +165,7 @@ const registration = await httpJson('POST', `${apiUrl}/agent/mentor/registration
 if (!registration.ok) done(1, { status: 'error', step: 'registration', http_status: registration.status, error: registration.payload?.error?.message || registration.payload });
 const { token, ...identity } = registration.payload;
 const token_command = await secretPut(TOKEN_SERVICE, identity.agent_id, token);
-await writeProfile({
-  api_url: apiUrl, email, installation_id,
+await saveProfile({
   organization_id: identity.organization_id, agent_id: identity.agent_id, agent_handle: identity.agent_handle,
   capabilities: identity.capabilities, token_command, registered_at: new Date().toISOString(),
 });
