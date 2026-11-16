@@ -35,9 +35,13 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
     await clarityRequest('POST', '/agent/agent_messages/id/status', { id, status: state, delivery_status: delivery, ...(lastError ? { last_error: lastError.slice(0, 2000) } : {}) });
   }
 
+  const retryDelays = new Map();
+
+  // Returns 'pending' (job still running), 'done' (reply settled or waiting for a
+  // repaired credential) or 'retry' (delivery failed; try again later).
   async function reply(entry) {
     const job = await getM3ntorResult(entry.job_id);
-    if (!terminal.has(job.status)) return false;
+    if (!terminal.has(job.status)) return 'pending';
     const ok = job.status === 'complete';
     const text = ok ? job.output : `The owner's agent could not complete this request: ${job.error || job.status}`;
     try {
@@ -47,21 +51,36 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
       });
       await setRemoteStatus(entry.message_id, ok ? 'completed' : 'failed', ok ? 'completed' : 'failed', ok ? null : text);
       await writeLedger(entry.message_id, { ...entry, status: ok ? 'replied' : 'replied_failure', job_status: job.status, reply_id: sent.id, replied_at: new Date().toISOString() });
+      retryDelays.delete(entry.message_id);
+      return 'done';
     } catch (error) {
       await writeLedger(entry.message_id, { ...entry, status: 'reply_failed', reply_error: error.message });
       console.error(`A2A reply for ${entry.message_id} failed:`, error.message);
+      // A rejected credential is not retried; the next connection after repair resumes it.
+      return /HTTP 40[13]/.test(error.message) ? 'done' : 'retry';
     }
-    return true;
   }
 
   // Reply when the detached job finishes; job state changes arrive as file events.
+  // An event during a running check triggers one more check, so none is lost.
   function follow(entry) {
     if (watchers.has(entry.message_id)) return;
-    let busy = false;
+    let busy = false, again = false;
+    const finish = () => { watchers.get(entry.message_id)?.close(); watchers.delete(entry.message_id); };
     const check = async () => {
-      if (busy) return; busy = true;
-      try { if (await reply(entry)) { watchers.get(entry.message_id)?.close(); watchers.delete(entry.message_id); } }
-      finally { busy = false; }
+      if (busy) { again = true; return; }
+      busy = true;
+      try {
+        let outcome;
+        do { again = false; outcome = await reply(entry); } while (outcome === 'pending' && again);
+        if (outcome === 'done') finish();
+        if (outcome === 'retry') {
+          finish();
+          const wait = Math.min((retryDelays.get(entry.message_id) || 2500) * 2, 300000);
+          retryDelays.set(entry.message_id, wait);
+          setTimeout(async () => follow((await readLedger(entry.message_id)) || entry), wait);
+        }
+      } finally { busy = false; }
     };
     watchers.set(entry.message_id, watch(jobDirectory(entry.job_id), () => { check(); }));
     check();
@@ -70,7 +89,18 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
   async function handle(message) {
     if (!message?.id || message.status !== 'pending' || inFlight.has(message.id)) return;
     inFlight.add(message.id);
-    try { await start(message); } finally { inFlight.delete(message.id); }
+    try {
+      // A reply to this agent is information, never a new request: answering it
+      // would start an endless reply exchange between two receivers.
+      if (message.kind === 'response' || message.message_type === 'reply') await acceptResponse(message);
+      else await start(message);
+    } finally { inFlight.delete(message.id); }
+  }
+
+  async function acceptResponse(message) {
+    await writeLedger(message.id, { message_id: message.id, kind: 'response', from_agent: message.from_agent, parent_message_id: message.parent_message_id, session_id: message.session_id, message: message.message, received_at: new Date().toISOString(), status: 'response_received' });
+    await setRemoteStatus(message.id, 'completed', 'delivered');
+    await setStatus({ last_response_id: message.id, last_response_at: new Date().toISOString() });
   }
 
   async function start(message) {
@@ -78,10 +108,13 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
     if (existing?.job_id) { if (!String(existing.status).startsWith('replied')) follow(existing); return; }
     const entry = { message_id: message.id, from_agent: message.from_agent, session_id: message.session_id, received_at: new Date().toISOString(), status: 'received' };
     await writeLedger(message.id, entry);
-    await setRemoteStatus(message.id, 'processing', 'delivered');
+    // Link the job in the ledger before telling Clarity the message is processing:
+    // until then it stays pending and a reconnect replays it to the same ledger.
     const job = await startA2AJob(message, { cwd, harness, mcpUrl });
     const started = { ...entry, status: 'processing', job_id: job.job_id };
     await writeLedger(message.id, started);
+    try { await setRemoteStatus(message.id, 'processing', 'delivered'); }
+    catch (error) { console.error(`A2A processing status for ${message.id} failed:`, error.message); }
     await setStatus({ last_message_id: message.id, last_message_at: started.received_at });
     follow(started);
   }
@@ -95,11 +128,9 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
     }
   }
 
-  let resumed = false;
   async function connect() {
     try { profile = await loadProfile(); }
     catch { return waitForRegistration(); }
-    if (!resumed) { resumed = true; await resumeLedger(); }
     let response;
     try {
       const token = await readToken(profile);
@@ -108,8 +139,10 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
       response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' } });
     } catch (error) { return retry(`connect failed: ${error.message}`); }
     if (response.status === 401 || response.status === 403) {
-      // A rejected credential is not retried; rerunning register.mjs recovers it.
-      return setStatus({ state: 'rejected', http_status: response.status, last_error: await response.text().catch(() => '') });
+      // A rejected credential is not retried; reconnect once register.mjs rewrites the profile.
+      const used = JSON.stringify(profile);
+      await setStatus({ state: 'rejected', http_status: response.status, last_error: await response.text().catch(() => '') });
+      return watchProfile(candidate => JSON.stringify(candidate) !== used && Boolean(candidate.token_command || candidate.token_env));
     }
     if (!response.ok || !response.body) return retry(`HTTP ${response.status}`);
     await setStatus({ state: 'connected', connected_at: new Date().toISOString(), last_error: null });
@@ -123,7 +156,7 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
           const block = buffer.slice(0, end); buffer = buffer.slice(end + 2);
           const event = /^event:\s?(.*)$/m.exec(block)?.[1] || 'message';
           const data = block.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).replace(/^ /, '')).join('\n');
-          if (event === 'ready') { delay = 1000; await setStatus({ state: 'ready', ready_at: new Date().toISOString(), replayed_pending: JSON.parse(data || '{}').pending }); }
+          if (event === 'ready') { delay = 1000; await setStatus({ state: 'ready', ready_at: new Date().toISOString(), replayed_pending: JSON.parse(data || '{}').pending }); await resumeLedger(); }
           else if (event === 'message' && data) {
             try { await handle(JSON.parse(data)); }
             catch (error) { console.error('A2A message handling failed:', error.message); await setStatus({ last_error: error.message }); }
@@ -142,18 +175,22 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
 
   // Not registered yet: start as soon as register.mjs writes the profile.
   async function waitForRegistration() {
+    await setStatus({ state: 'not_registered', profile: profilePath() });
+    return watchProfile(candidate => Boolean(candidate.agent_handle && (candidate.token_command || candidate.token_env)));
+  }
+
+  // One profile write raises several file events; only the first accepted one reconnects.
+  async function watchProfile(accept) {
     if (waiting) return;
     waiting = true;
-    await setStatus({ state: 'not_registered', profile: profilePath() });
     const directory = path.dirname(profilePath());
     await mkdir(directory, { recursive: true, mode: 0o700 });
-    // One profile write raises several file events; only the first ready one opens the stream.
     let opened = false;
     const watcher = watch(directory, async () => {
       if (opened) return;
       try {
         const candidate = await loadProfile();
-        if (!opened && candidate.agent_handle && (candidate.token_command || candidate.token_env)) { opened = true; watcher.close(); waiting = false; connect(); }
+        if (!opened && accept(candidate)) { opened = true; watcher.close(); waiting = false; connect(); }
       } catch {}
     });
   }
