@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdirSync, watch } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, watch } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getM3ntorResult, jobDirectory, startTaskJob } from './m3ntor-jobs.mjs';
@@ -107,10 +107,10 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
   // A killed job writes nothing, so its state is also rechecked once a minute while it
   // runs (getM3ntorResult detects a dead worker).
   function follow(taskId, jobId) {
-    if (watchers.has(taskId)) return;
+    if (watchers.has(jobId)) return;
     let busy = false, again = false, fsWatcher = null, liveness = null;
-    watchers.set(taskId, { close() { fsWatcher?.close(); clearInterval(liveness); } });
-    const stop = () => { watchers.get(taskId)?.close(); watchers.delete(taskId); };
+    watchers.set(jobId, { close() { fsWatcher?.close(); clearInterval(liveness); } });
+    const stop = () => { watchers.get(jobId)?.close(); watchers.delete(jobId); };
     const check = async () => {
       if (busy) { again = true; return; }
       busy = true;
@@ -156,14 +156,21 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
     if (next) timer = setTimeout(schedule, Math.min(Math.max(new Date(next) - Date.now(), 0) + 50, 2 ** 31 - 1));
   }
 
+  // A job directory alone does not mean its worker started; the worker records its pid.
+  function launched(jobId) {
+    const directory = jobDirectory(jobId);
+    if (existsSync(path.join(directory, 'launch.json'))) return true;
+    try { return Boolean(JSON.parse(readFileSync(path.join(directory, 'state.json'), 'utf8')).worker_pid); } catch { return false; }
+  }
+
   // Restart recovery: follow jobs already started; a claim that never started a job is requeued.
   for (const task of db.prepare("SELECT * FROM tasks WHERE job_id IS NOT NULL OR status IN ('delivered', 'executing')").all()) {
-    if (task.job_id && existsSync(jobDirectory(task.job_id))) {
+    if (task.job_id && launched(task.job_id)) {
       if (task.status === 'delivered') update(task.id, { status: 'executing' });
       follow(task.id, task.job_id);
     } else if (['delivered', 'executing'].includes(task.status)) {
-      // The launch never created its job: nothing ran, so the task is queued again.
-      db.prepare("UPDATE runs SET status = 'failed', finished_at = ?, error = 'Service stopped before the job was created.' WHERE job_id = ? AND status = 'executing'").run(now(), task.job_id);
+      // The job's worker never started: nothing ran, so the task is queued again.
+      db.prepare("UPDATE runs SET status = 'failed', finished_at = ?, error = 'Service stopped before the job started.' WHERE job_id = ? AND status = 'executing'").run(now(), task.job_id);
       update(task.id, { status: 'queued', job_id: null });
     }
   }
@@ -196,7 +203,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
         if (!task) throw new Error(`Task ${input.task_id} was not found.`);
         if (input.action === 'delete') { db.prepare('DELETE FROM runs WHERE task_id = ?').run(task.id); db.prepare('DELETE FROM tasks WHERE id = ?').run(task.id); }
         else update(task.id, { status: 'done', next_run_at: null });
-        if (input.action === 'delete') { watchers.get(task.id)?.close(); watchers.delete(task.id); }
+        if (input.action === 'delete' && task.job_id) { watchers.get(task.job_id)?.close(); watchers.delete(task.job_id); }
         schedule();
         return { task_id: task.id, action: input.action, worker: workerState() };
       }
