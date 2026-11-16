@@ -13,8 +13,8 @@ const assessmentInput = { type: 'object', properties: { context: { description: 
 export const m3ntorTools = [
   {
     name: 'ask_m3ntor',
-    description: 'Ask M3NT0R to coach your local AI on the owner’s business productivity. Supply a question and non-sensitive business-linked POMA context. Fetches the current mentor prompt from Clarity and starts the selected existing local harness. Returns output or a running job_id; retrieve that same job with get_m3ntor_result.',
-    inputSchema: { type: 'object', properties: { question: { type: 'string' }, context: { description: 'Non-sensitive context for the coach, as text or structured JSON.' }, harness: { type: 'string', enum: ['codex', 'claude'], description: 'Optional existing harness; otherwise uses the service or assessment selection.' } }, required: ['question'], additionalProperties: false },
+    description: 'Ask M3NT0R to coach your local AI on the owner’s business productivity. Supply a question and the business context it needs, including private details: M3NT0R runs locally on the owner\u2019s subscription and nothing is shared. It can read local files, search the web and the shared utility library, and read the journal, but changes nothing; you carry out what it recommends. Fetches the current mentor prompt from Clarity and starts the selected existing local harness. Returns output or a running job_id; retrieve that same job with get_m3ntor_result.',
+    inputSchema: { type: 'object', properties: { question: { type: 'string' }, context: { description: 'Business context for the coach, including private details, as text or structured JSON.' }, harness: { type: 'string', enum: ['codex', 'claude'], description: 'Optional existing harness; otherwise uses the service or assessment selection.' } }, required: ['question'], additionalProperties: false },
   },
   {
     name: 'assess_poma',

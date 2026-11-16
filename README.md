@@ -77,10 +77,9 @@ Call `ask_m3ntor` with:
 }
 ```
 
-`context` may be text or JSON. Include only the non-sensitive information the
-coach needs. The optional `harness` selects an existing `codex` or `claude` CLI.
-Without it, the service's `M3NTOR_HARNESS`, assessment harness, or default `codex`
-is selected in that order. A failed selection does not trigger a fallback.
+`context` may be text or JSON and may include private business details: the coach
+runs locally on the owner's subscription. Coaching jobs can read local files, search
+the web and the shared utility library, and read the journal; they change nothing.
 
 Each call creates a new job, fetches the current remote prompt, then starts a
 detached local worker using the selected harness's model, authentication,

@@ -21,6 +21,10 @@ const save = async patch => {
 
 const TASK_INSTRUCTION = `You are the business owner's local AI agent, connected to Clarity M3NT0R through the clarity_m3ntor MCP tools. The task below comes from the owner's action queue and is now due. Carry it out within the owner's existing authority, access and policies, keeping private business records local. Your final response is recorded as this run's result: state what was done, the evidence (job IDs, save receipts), and anything that failed or still needs the owner.`;
 
+// Claude tool allowlist for M3NT0R coaching jobs (run with --permission-mode dontAsk).
+const COACH_TOOLS = ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'Bash(ls:*)', 'Bash(find:*)', 'Bash(grep:*)', 'Bash(rg:*)', 'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)',
+  'mcp__clarity_m3ntor__search_utility', 'mcp__clarity_m3ntor__read_journal', 'mcp__clarity_m3ntor__get_coaching_context', 'mcp__clarity_m3ntor__user_question_read', 'mcp__clarity_m3ntor__list_tasks'].join(',');
+
 const A2A_INSTRUCTION = `You are the business owner's local AI agent, connected to Clarity M3NT0R. M-CODEX, Clarity's operator agent, sent the request below through Clarity A2A. Perform it read-only: look things up, but do not create, change, send or delete anything, and do not start other work. Your final response is sent back to M-CODEX as the reply. Never include sensitive data in it: no credentials, tokens or keys; no personal names, contact details or other identifiers of people; no customer, employee or supplier records; no financial figures, prices or account details; no file paths, hostnames or private message content. Answer with non-sensitive summaries, counts, categories or yes/no findings, and say plainly when the request can only be answered with sensitive data.`;
 
 async function fetchPrompt(source) {
@@ -54,13 +58,19 @@ async function runHarness(request, prompt) {
   // A2A requests run read-only with NO MCP servers: the harness would otherwise
   // inherit every configured server (clarity_m3ntor and others), several of which write.
   const readOnly = request.task === 'a2a_message';
-  const args = request.harness === 'codex'
+  // M3NT0R coaching runs locally with the owner's full context: it may read files,
+  // search the web and the shared utility library, and read the journal, but it
+  // changes nothing; the owner's agent carries out what it recommends.
+  const coachArgs = request.task !== 'coaching' ? null : request.harness === 'codex'
+    ? ['-c', `mcp_servers.clarity_m3ntor.url=${JSON.stringify(request.mcp_url)}`, 'exec', '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
+    : ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } }), '--permission-mode', 'dontAsk', '--allowedTools', COACH_TOOLS];
+  const args = coachArgs || (request.harness === 'codex'
     ? (readOnly
       ? [...(await codexMcpOff(request.cwd)), 'exec', ...CODEX_FEATURES_OFF, '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
       : ['-c', `mcp_servers.clarity_m3ntor.url=${JSON.stringify(request.mcp_url)}`, 'exec', '--json', '--skip-git-repo-check', '-o', outputFile, '-'])
     : (readOnly
       ? ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: {} }), '--permission-mode', 'plan', '--disallowedTools', 'Edit,Write,NotebookEdit']
-      : ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } })]);
+      : ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } })]));
   const context = typeof request.context === 'string' ? request.context : JSON.stringify(request.context, null, 2);
   const assessment = ['poma_assessment', 'poma_reassessment'].includes(request.task);
   const persistence = assessment ? `\n## Local persistence identity\n\nUse revision_id ${request.job_id} with clarity_m3ntor.save_poma_reassessment for this task. Reuse that same ID when reconciling a save. The local service writes the authorized artifacts even if this harness filesystem is read-only; retain actual per-artifact receipts.\n` : '';
