@@ -93,20 +93,31 @@ const email = opts.email || existing?.email;
 if (!email) done(1, { status: 'missing_input', input: 'email', detail: "The owner's account email is required: node register.mjs --email <owner email>" });
 
 let password = opts['password-stdin'] ? await readStdin() : await secretGet(ACCOUNT_SERVICE, email);
+const suppliedPassword = Boolean(opts['password-stdin']);
 let jwt = null;
 let created_account = false;
+let loginError = null;
 
 const login = async () => {
   const result = await httpJson('POST', `${apiUrl}/auth/login`, { data: { email, password } });
+  loginError = result.ok ? null : (result.payload?.error?.message || `HTTP ${result.status}`);
   return result.ok ? sessionJwt(result.response) : null;
 };
 
+// The installation identity is fixed before any server call, so a lost
+// registration response or failed local save is recovered, never duplicated.
+const installation_id = existing?.installation_id || randomUUID();
+if (!existing?.installation_id) await writeProfile({ ...(existing || {}), api_url: apiUrl, email, installation_id });
+
 if (password) jwt = await login();
+// A supplied password that signs in is kept for later token recovery.
+if (jwt && suppliedPassword) await secretPut(ACCOUNT_SERVICE, email, password);
 if (!jwt && !password) {
   password = randomBytes(24).toString('base64url');
-  await secretPut(ACCOUNT_SERVICE, email, password);
   const signup = await httpJson('POST', `${apiUrl}/auth/signup`, { data: { email, password, company_name: opts.company || null, username: opts.username || null } });
   if (!signup.ok) done(1, { status: 'error', step: 'signup', http_status: signup.status, error: signup.payload?.error?.message || signup.payload });
+  // Store the password only once signup has accepted it, so a failed signup stays retryable.
+  await secretPut(ACCOUNT_SERVICE, email, password);
   created_account = true;
   jwt = signup.payload.authenticated ? sessionJwt(signup.response) : null;
   if (!jwt && signup.payload.verification_pending && !opts['verify-url']) {
@@ -129,14 +140,14 @@ if (!jwt && opts['verify-url']) {
   }
   if (!verifiedAt) done(1, { status: 'error', step: 'email_verification', detail: 'The link did not lead to an /auth/v1/verify confirmation step.' });
   jwt = await login();
+  if (jwt && suppliedPassword) await secretPut(ACCOUNT_SERVICE, email, password);
 }
 if (!jwt) {
   done(1, created_account
     ? { status: 'error', step: 'signin', detail: 'Signup was accepted but sign-in failed. If this email already had a Clarity account, supply its password with --password-stdin.' }
-    : { status: 'error', step: 'signin', detail: 'Sign-in failed with the stored or supplied password. Supply the account password with --password-stdin.' });
+    : { status: 'error', step: 'signin', login_error: loginError, detail: 'Sign-in failed with the stored or supplied password. If the error says the email is not confirmed, rerun with --verify-url "<confirmation link>"; otherwise supply the account password with --password-stdin.' });
 }
 
-const installation_id = existing?.installation_id || randomUUID();
 const registration = await httpJson('POST', `${apiUrl}/agent/mentor/registrations`, {
   bearer: jwt,
   data: { installation_id, harness: opts.harness || null, company_name: opts.company || null, username: opts.username || null },
