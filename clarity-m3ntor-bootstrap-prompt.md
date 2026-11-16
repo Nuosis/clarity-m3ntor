@@ -47,17 +47,25 @@ Use the current harness's supported MCP refresh/reconnect mechanism; if tool dis
 
 ### Register and receive the Clarity token
 
-Follow `ACCESS-PATTERN.md` for the registered-user HTTPS contract. You register and sign in on the owner's behalf through HTTPS APIs, without opening a browser or other UI. Follow the headless signup/login, account association and agent registration sequence in that contract. Clarity assigns this installation's unique agent UUID/handle and returns a `clrtok_` token for A2A and MCP remote operations directly to your HTTP client. Reuse an existing assigned identity on reconciliation; never copy another agent's identity.
+Register and sign in on the owner's behalf with the package's headless client; no browser or other UI is involved:
 
-Users do not receive SSH access, server paths, operator HMAC secrets or database keys. Store the token through the owner's secret store and place only non-secret API/organization/agent metadata and the credential reference in the shared local connection profile. The MCP and A2A adapter use that same token as an HTTPS bearer credential. Existing local business-system access remains separate.
+```sh
+node "$M3NTOR_SOURCE/register.mjs" --email "<owner's email>" --company "<business name>" --harness "$M3NTOR_HARNESS"
+```
 
-Use the deployed registration response's endpoint/capability metadata. Verify authenticated identity, then initialize the current-harness A2A receiver and record live connection, message acceptance, delivery and completed response separately. Local `ask_m3ntor` is not proof of A2A delivery. Preserve other agents and established account/model/billing settings; no fallback to SSH or operator credentials.
+Use the owner's established email; never fabricate one. It prints one JSON status:
 
-Implementation status: the product's SSH/HMAC-to-token migration is not yet implemented. If registration or a required token-enabled capability is unavailable, report that specific gap and continue independent local context/assessment work. Do not attempt Clarity server administration, invent connectivity or substitute operator credentials.
+- `registered` or `signed_in`: the profile `~/.config/clarity_m3ntor/config.json` holds non-secret API, organization, agent and installation metadata plus a `token_command`; the `clrtok_` token is in the owner's secret store (macOS Keychain, otherwise an owner-only file). Record the returned `organization_id`, `agent_id` and `agent_handle`.
+- `verification_pending`: Clarity emailed a confirmation link. Read it through the owner's authorized email access and rerun the same command with `--verify-url "<link>"`. If you have no email access, report that gap and continue local work.
+- `missing_input` or `error`: report the named step. For an existing Clarity account, supply its password on stdin with `--password-stdin`; an email address alone does not prove ownership.
+
+Rerunning the command reuses the stored token; a rejected token re-registers the same installation and agent with a rotated token. The local MCP reads this profile for prompt retrieval and utility operations over HTTPS. Never copy another agent's identity, and do not substitute SSH or operator credentials.
+
+Implementation status: registration, identity, prompts and utility operations use the token. A2A delivery through the token is not yet implemented; report it as an open gap.
 
 ### Verify utility access
 
-Call `search_utility` with query `starter flows turn low Process scores into usable business flow definitions`, `poma_labels: ["Process"]`, `tags: ["starter-flows"]` and a suitable result limit. Read the returned case whose `id` or `case_id` is exactly `0a4666fa-e567-4c14-93c2-11ae67a7682d`. Its flow list is discovery guidance, not proof of the owner's procedures. Record actual retrieval/embedding status and evidence limits. If the specified case is not returned, report that result instead of claiming it was read; use the collection's documented lookup route if one is available. Make the remote call through the shared token-authenticated client once deployed. This verifies utility reading only, not network registration or a write operation.
+Call `search_utility` with query `starter flows turn low Process scores into usable business flow definitions`, `poma_labels: ["Process"]`, `tags: ["starter-flows"]` and a suitable result limit. Read the returned case whose `id` or `case_id` is exactly `0a4666fa-e567-4c14-93c2-11ae67a7682d`. Its flow list is discovery guidance, not proof of the owner's procedures. Record actual retrieval/embedding status and evidence limits. If the specified case is not returned, report that result instead of claiming it was read; use the collection's documented lookup route if one is available. This verifies utility reading only, not network registration or a write operation.
 
 [INCLUDE FUTURE TROUBLESHOOTING GUIDE HERE. LEAVE AS IS UNTIL MARCUS SWIFT DIRECTS TO ADD GUIDANCE HERE]
 
@@ -80,7 +88,7 @@ Use owner feedback to mine relevant sessions/tool calls locally and prepare a us
 
 ## 2. Complete the initial business POMA assessment
 
-Call the connected `clarity_m3ntor.assess_poma` with no question, optionally supplying existing context or the current harness. It freshly fetches the ONE server-owned business assessment prompt and runs it locally. With no prior assessment it establishes the baseline; later runs compare current evidence and business change with valid prior findings. Retrieve the same running job through `get_m3ntor_result`, and retain actual `save_poma_reassessment` receipts. This process owns business/source/process discovery, vendors/partners/internal roles, usefulness feedback, source-supported sales-per-total-human-hour productivity, categorical and numeric ratings, local save schema and the separate non-sensitive coaching summary. Prompt publishing sources are private operator files absent from fresh clones; do not read a bundled prompt as a substitute for a failed server fetch. Required token-enabled access remains subject to the implementation status above.
+Call the connected `clarity_m3ntor.assess_poma` with no question, optionally supplying existing context or the current harness. It freshly fetches the ONE server-owned business assessment prompt and runs it locally. With no prior assessment it establishes the baseline; later runs compare current evidence and business change with valid prior findings. Retrieve the same running job through `get_m3ntor_result`, and retain actual `save_poma_reassessment` receipts. This process owns business/source/process discovery, vendors/partners/internal roles, usefulness feedback, source-supported sales-per-total-human-hour productivity, categorical and numeric ratings, local save schema and the separate non-sensitive coaching summary. Prompt publishing sources are private operator files absent from fresh clones; do not read a bundled prompt as a substitute for a failed server fetch.
 
 After discovery, complete the non-sensitive registration/coaching profile with industry, products/services, service area/location, condensed context, assessment summary and current ratings. Submit it through the supported coaching/registration route and retain actual receipts; keep private evidence local. Missing registration does not erase a completed local assessment.
 

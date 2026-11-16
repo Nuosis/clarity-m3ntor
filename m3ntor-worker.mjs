@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { finished } from 'node:stream/promises';
 import { storeJson } from './m3ntor-jobs.mjs';
+import { clarityRequest } from './clarity-client.mjs';
 
 // This worker owns one detached job; recovery inside the harness stays with it.
 process.umask(0o077);
@@ -14,28 +15,18 @@ const save = async patch => {
   state = { ...state, ...patch, updated_at: new Date().toISOString() };
   await storeJson(path.join(directory, 'state.json'), state);
 };
-const quote = text => "'" + text.replaceAll("'", "'\\''") + "'";
 
 async function fetchPrompt(source) {
-  let stdout = '';
-  let stderr = '';
-  const child = spawn('ssh', ['-T', '-o', 'BatchMode=yes', '--', source.ssh_host, 'sh', '-s'], { env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
-  child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-  const result = new Promise((resolve, reject) => {
-    child.once('error', reject);
-    child.once('close', (code, signal) => resolve({ code, signal }));
-  });
-  child.stdout.on('data', chunk => { stdout += chunk.toString(); });
-  child.stderr.on('data', chunk => { stderr += chunk.toString(); });
-  child.stdin.on('error', () => {}); // The close/spawn result owns an early SSH failure.
-  child.stdin.end(`cat -- ${quote(source.path)}\n`);
-  const outcome = await result;
-  await writeFile(path.join(directory, 'prompt-fetch.stderr.log'), stderr, { mode: 0o600 });
-  await writeFile(path.join(directory, 'fetched-prompt.md'), stdout, { mode: 0o600 });
-  await save({ prompt_fetch_exit_code: outcome.code, prompt_fetch_signal: outcome.signal });
-  if (outcome.code !== 0) throw new Error(`Prompt fetch failed (${outcome.code ?? outcome.signal}): ${stderr.trim()}`);
-  if (!stdout.trim()) throw new Error('The server M3NT0R prompt was empty.');
-  return stdout;
+  let prompt;
+  try { prompt = await clarityRequest('GET', `/agent/mentor/prompts/${encodeURIComponent(source.prompt_id)}`); }
+  catch (error) {
+    await save({ prompt_fetch_error: error.message });
+    throw new Error(`Prompt fetch failed: ${error.message}`);
+  }
+  if (typeof prompt?.content !== 'string' || !prompt.content.trim()) throw new Error('The server M3NT0R prompt was empty.');
+  await writeFile(path.join(directory, 'fetched-prompt.md'), prompt.content, { mode: 0o600 });
+  await save({ prompt_provenance: { prompt_id: prompt.prompt_id, sha256: prompt.sha256, published_at: prompt.published_at, fetched_at: prompt.fetched_at } });
+  return prompt.content;
 }
 
 async function runHarness(request, prompt) {

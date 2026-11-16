@@ -1,6 +1,6 @@
 # Registered-user Clarity access
 
-Status: target access contract established from Marcus's instruction, November 16, 2026. This document does not establish that registration, token-enabled prompt/utility endpoints or local client migration are deployed. The existing SSH/operator-HMAC implementation is a development baseline, not the user onboarding pattern.
+Status: deployed November 16, 2026 (clarity-backend 2ffb1e27): `POST /agent/mentor/registrations`, `GET /agent/mentor/me`, `GET /agent/mentor/prompts/{coach,poma-assessment}` and token access to `/agent/utility/*`; signup returns `verification_pending` when email confirmation is required. `register.mjs` implements the headless sequence. A2A token use and `/agent/mentor/assessments` remain proposed.
 
 ## User and agent flow
 

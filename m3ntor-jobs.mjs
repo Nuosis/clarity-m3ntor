@@ -73,15 +73,14 @@ export async function askM3ntor(input, environment) {
   if (typeof input.question !== 'string' || !input.question.trim()) throw new Error('A M3NT0R question is required.');
   return createJob(input, environment, {
     identity: 'coaching', question: input.question,
-    promptPath: process.env.M3NTOR_PROMPT_PATH || '/opt/clarity-m3ntor/m3ntor_agent_prompt.md',
+    promptId: 'coach',
   });
 }
 
 export async function assessPoma(input, environment) {
-  const legacyPath = process.env.M3NTOR_REASSESSMENT_PROMPT_PATH;
   return createJob(input, environment, {
     identity: 'poma_assessment', question: 'Perform an evidence-based assessment of the owner’s business POMA and source-supported productivity. Establish a baseline when no prior assessment exists; otherwise compare business change and current evidence with prior valid findings. Save private dated revisions and a separate non-sensitive coaching summary.',
-    promptPath: process.env.M3NTOR_ASSESSMENT_PROMPT_PATH || (legacyPath && legacyPath !== '/opt/clarity-m3ntor/poma_reassessment_prompt.md' ? legacyPath : '/opt/clarity-m3ntor/poma_initial_assessment_prompt.md'),
+    promptId: 'poma-assessment',
   });
 }
 export const reassessPoma = assessPoma;
@@ -97,7 +96,7 @@ async function createJob(input, { cwd, harness, mcpUrl }, task) {
   const request = {
     job_id: id, task: task.identity, question: task.question, context: input.context ?? '', harness: selected,
     cwd: path.resolve(process.env.M3NTOR_WORKSPACE || cwd), mcp_url: mcpUrl,
-    prompt_source: { ssh_host: process.env.M3NTOR_SSH_HOST || 'clarity', path: task.promptPath },
+    prompt_source: { prompt_id: task.promptId },
   };
   await storeJson(path.join(directory, 'request.json'), request);
   const state = { job_id: id, task: task.identity, status: 'queued', created_at: new Date().toISOString(), harness: selected, prompt_source: request.prompt_source };

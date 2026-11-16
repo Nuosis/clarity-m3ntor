@@ -1,6 +1,4 @@
-# Clarity M3NT0R MCP
-
-Status: registered-user token access is specified in [ACCESS-PATTERN.md](ACCESS-PATTERN.md), not yet implemented end to end. Earlier assessments cover the development SSH/operator-HMAC baseline and local persistence; they do not establish customer-token onboarding.
+Status: registration, identity, prompt delivery and utility cases use a registered Clarity `clrtok_` token over HTTPS (`register.mjs`). A2A through that token is not yet implemented.
 
 Local HTTP MCP for an owner's agent to ask M3NT0R for coaching using the owner's
 Codex or Claude Code harness. It extends the Clarity Coach service and retains
@@ -8,8 +6,7 @@ its POMA (Process, Observability, Measurement and Agency) assessment, journal an
 tools. No dependency install is needed; use Node.js 22 or newer, an installed
 Codex or Claude Code CLI with its existing login. User-facing server access must
 use a registered Clarity token over HTTPS, shared by the local MCP and A2A client.
-Users will not have SSH access. The source below still contains development-only
-SSH/HMAC paths; migrate them as listed in ACCESS-PATTERN.md before user rollout.
+Users need no SSH access or operator secret.
 
 Start the bootstrap in the owner's already-chosen local harness and express the
 intent to connect to Clarity M3NT0R there. The bootstrap reuses that current
@@ -22,7 +19,7 @@ POM, direction/policies and durable execution infrastructure.
 
 Start in the chosen harness. The agent registers/signs in with Clarity through HTTPS APIs and receives its assigned agent identity and `clrtok_` token directly, with no browser or UI step. Later sessions sign in using that stored token; account enrollment is not repeated. Both A2A and MCP remote operations use that same credential source. Store only its secret reference plus API/organization/agent metadata in the local profile. Prompt retrieval, assessment reporting and utility reporting/search/read use HTTPS bearer authentication. Private business records and detailed calculations stay local.
 
-The [access contract](ACCESS-PATTERN.md) distinguishes existing account/token primitives from required product registration, authorization, HTTPS prompt delivery and client changes. No automatic public registration URL or completed user-token deployment is claimed. Do not use another user's SSH/HMAC configuration to bypass a missing product capability.
+The [access contract](ACCESS-PATTERN.md) records the deployed routes and the remaining A2A work. Do not use another user's SSH/HMAC configuration to bypass a missing product capability.
 
 ## Start the local service
 
@@ -171,7 +168,7 @@ The bootstrap describes one system-scheduled weekly assessment that calls
 from the event/work-driven productivity-improvement loop. Starting this package
 or calling reassessment does not install a scheduler or new action worker.
 
-## Current development configuration (migration required)
+## Configuration
 
 Environment variables are read from the process; `.env` files are not loaded.
 
@@ -180,22 +177,18 @@ Environment variables are read from the process; `.env` files are not loaded.
 | `PORT` | `4317` | HTTP service port; choose an unused port for a second copy. |
 | `M3NTOR_WORKSPACE` | Owner's home directory | Local business context and harness working directory. |
 | `M3NTOR_HARNESS` | Assessment harness, then `codex` | Existing CLI to run; `codex` or `claude`. |
-| `M3NTOR_SSH_HOST` | `clarity` | Existing SSH alias/host used to read the prompt. |
-| `M3NTOR_PROMPT_PATH` | `/opt/clarity-m3ntor/m3ntor_agent_prompt.md` | Current server prompt; fetched for each new job. |
-| `M3NTOR_ASSESSMENT_PROMPT_PATH` | `/opt/clarity-m3ntor/poma_initial_assessment_prompt.md` | Unified server assessment prompt for `assess_poma` and its alias. |
-| `M3NTOR_REASSESSMENT_PROMPT_PATH` | Deprecated compatibility setting | A custom path is used only when the canonical setting is absent; the old standard reassessment path maps to the unified default. Both tool names use the same resolved path. |
+| `M3NTOR_CONFIG` | `~/.config/clarity_m3ntor/config.json` | Clarity connection profile written by `register.mjs`. |
 | `M3NTOR_JOB_DIR` | `.m3ntor-runtime/jobs` beside the source | Private durable job directory. Use an ignored or external location. |
 | `M3NTOR_WAIT_MS` | `1500` | Brief ask response wait; does not terminate a running job. |
 
-The following describes the current operator development implementation, not user setup.
-SSH uses the existing configuration with `BatchMode=yes`; no keys, users,
-credentials or alternative routes are installed. Fetch failure or an empty
-prompt fails that job. Private local prompt files are operator publishing sources, never a stale
-runtime fallback; a fresh checkout does not contain them.
+Each new job fetches its current prompt (`coach` or `poma-assessment`) from
+`GET /agent/mentor/prompts/{id}` with the installation token and records its
+SHA-256 and publish time in private job state. A missing profile, rejected token
+or empty prompt fails that job; there is no bundled fallback.
 
 ## Utility cases
 
-Target user authentication is the registered Clarity token for all three utility operations. The current HMAC-only client/API described below must be migrated; supplying an organization token to the old HMAC client does not implement that migration.
+All three utility operations authenticate with the registered installation token. Clarity attributes token submissions to the token's registered agent.
 
 `report_utility` sends a caller-prepared non-sensitive case to
 `POST /agent/utility/cases`. Required fields are `submission_id` (UUID), `title`,
@@ -214,74 +207,16 @@ idempotent persistence; a network error is not a confirmed saved case.
 response. These client tools do not mine raw local sessions or generate evidence
 on the owner's behalf; the local agent supplies the sanitized report.
 
-Both operations read the existing `~/.config/a2a-bridge/config.json` and use its
-`api_url` and `hmac_secret_command` argument array. The secret command runs
-without a shell; its output stays in memory. Requests use the bridge's existing
-HMAC-SHA256 `Authorization: Bearer <signature>.<timestamp>` signing over the
-exact JSON request body, preserving any configured API URL prefix. No alternate
-secret, account or auth configuration is installed. The client uses the existing
-transport's 30-second request convention and does not automatically retry or
-follow redirects. Missing configuration, secret-command failure and upstream
-errors remain explicit failed tool calls. The separate Clarity server utility
-API/database must be deployed for these tools to return real stored results.
+Both operations use the shared client in `clarity-client.mjs`: the profile's `api_url` and `token_command` (or `token_env`), `Authorization: Bearer <token>`, a 30-second timeout, no automatic retry and no redirects. Missing registration, token-command failure and upstream errors remain explicit failed tool calls.
 
 ## Operator-only server prompt maintenance
 
-These are Clarity operator deployment instructions for the current SSH baseline. Target end-user access requires token-authenticated HTTPS and no SSH; that migration remains unimplemented.
-
-`m3ntor_agent_prompt.md` and the ONE assessment source,
-`poma_initial_assessment_prompt.md`, are private local operator publishing files.
-They are excluded from the current Git tree and absent from fresh clones; obtain
-the authorized private sources before operator maintenance. The obsolete separate
-`poma_reassessment_prompt.md` source is deleted and ignored. Destination directories must be writable by the existing SSH account.
-The following stages both files and atomically replaces each prompt using the
-same SSH alias, without changing services or auth:
-
-```sh
-python3 - <<'PY'
-from pathlib import Path
-import json, os, shlex, subprocess
-
-assessment_path = os.environ.get('M3NTOR_ASSESSMENT_PROMPT_PATH')
-if not assessment_path:
-    legacy = os.environ.get('M3NTOR_REASSESSMENT_PROMPT_PATH')
-    assessment_path = legacy if legacy and legacy != '/opt/clarity-m3ntor/poma_reassessment_prompt.md' else '/opt/clarity-m3ntor/poma_initial_assessment_prompt.md'
-prompts = [
-    {'path': os.environ.get('M3NTOR_PROMPT_PATH', '/opt/clarity-m3ntor/m3ntor_agent_prompt.md'),
-     'content': Path('m3ntor_agent_prompt.md').read_text()},
-    {'path': assessment_path,
-     'content': Path('poma_initial_assessment_prompt.md').read_text()},
-]
-remote = '''import json, os, sys, tempfile
-from pathlib import Path
-staged = []
-try:
-    for item in json.load(sys.stdin):
-        target = Path(item['path'])
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(prefix='.' + target.name + '.', dir=target.parent)
-        staged.append((temporary, target))
-        with os.fdopen(fd, 'wb') as stream:
-            stream.write(item['content'].encode('utf-8'))
-            stream.flush()
-            os.fsync(stream.fileno())
-    for temporary, target in staged:
-        os.replace(temporary, target)
-finally:
-    for temporary, target in staged:
-        if os.path.exists(temporary): os.unlink(temporary)
-'''
-subprocess.run(
-    ['ssh', '-T', '-o', 'BatchMode=yes', '--', os.environ.get('M3NTOR_SSH_HOST', 'clarity'),
-     'python3 -c ' + shlex.quote(remote)],
-    input=json.dumps(prompts).encode('utf-8'), check=True)
-PY
-```
-
-Each rename replaces a complete prompt; a publication error must be reconciled
-per file. The next job reads its selected server prompt and records fetch time,
-path and SHA-256 in private job state. There is no bundled fallback or service
-restart needed to select newly published prompt contents.
+`m3ntor_agent_prompt.md` and `poma_initial_assessment_prompt.md` are private
+operator publishing files, absent from fresh clones. The API serves them from
+`/opt/clarity-backend/app/state/m3ntor-prompts/` on the Clarity host (mounted at
+`/app/state/m3ntor-prompts`, override with `M3NTOR_PROMPT_DIR`). Publish by
+atomically replacing each file there with the operator's SSH access; the next
+job fetches the new content without a restart.
 
 ## Stored data and scope
 
