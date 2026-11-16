@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, watch } from 'node:fs';
+import { existsSync, mkdirSync, watch } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getM3ntorResult, jobDirectory, startTaskJob } from './m3ntor-jobs.mjs';
@@ -81,13 +81,18 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
 
   // Record a finished job once, then requeue a recurring task or close a one-off.
   function settle(taskId, job) {
-    const task = get(taskId);
-    if (!task || task.job_id !== job.job_id || task.status !== 'executing') return;
     const ok = job.status === 'complete';
     const finished = now();
     const error = ok ? null : (job.error || job.status);
-    db.prepare('UPDATE runs SET status = ?, finished_at = ?, result = ?, error = ? WHERE task_id = ? AND job_id = ?')
-      .run(ok ? 'completed' : 'failed', finished, ok ? job.output : null, error, taskId, task.job_id);
+    db.prepare("UPDATE runs SET status = ?, finished_at = ?, result = ?, error = ? WHERE task_id = ? AND job_id = ? AND status = 'executing'")
+      .run(ok ? 'completed' : 'failed', finished, ok ? job.output : null, error, taskId, job.job_id);
+    const task = get(taskId);
+    if (!task || task.job_id !== job.job_id) return;
+    if (!['delivered', 'executing'].includes(task.status)) {
+      // Cleared while running: keep its done state and recurrence stopped, record the outcome.
+      update(taskId, { job_id: null, last_run_at: finished, last_status: ok ? 'completed' : 'failed', last_result: ok ? job.output : null, last_error: error });
+      return;
+    }
     const failures = ok ? 0 : task.consecutive_failures + 1;
     const next = task.recurrence ? nextFor(task, new Date()) : null;
     const status = !ok && failures >= MAX_CONSECUTIVE_FAILURES ? 'paused' : next ? 'queued' : ok ? 'completed' : 'failed';
@@ -99,9 +104,12 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
   }
 
   // Job state changes arrive as file events; an event during a check triggers one more.
+  // A killed job writes nothing, so its state is also rechecked once a minute while it
+  // runs (getM3ntorResult detects a dead worker).
   function follow(taskId, jobId) {
     if (watchers.has(taskId)) return;
-    let busy = false, again = false;
+    let busy = false, again = false, fsWatcher = null, liveness = null;
+    watchers.set(taskId, { close() { fsWatcher?.close(); clearInterval(liveness); } });
     const stop = () => { watchers.get(taskId)?.close(); watchers.delete(taskId); };
     const check = async () => {
       if (busy) { again = true; return; }
@@ -116,39 +124,48 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
         if (terminal.has(job.status)) { settle(taskId, job); stop(); schedule(); }
       } finally { busy = false; }
     };
-    try { watchers.set(taskId, watch(jobDirectory(jobId), () => { check(); })); }
-    catch { /* job directory missing: the check below records the failure */ }
+    try { fsWatcher = watch(jobDirectory(jobId), () => { check(); }); }
+    catch { /* job directory missing: the check records the failure */ }
+    liveness = setInterval(check, 60000);
     check();
   }
 
   async function run(task) {
-    // Claim: only a queued task moves to delivered, so a task is started once.
-    const claimed = db.prepare("UPDATE tasks SET status = 'delivered', updated_at = ? WHERE id = ? AND status = 'queued'").run(now(), task.id);
+    // Claim with a job id saved before launch: a restart reconciles that same job.
+    const jobId = randomUUID();
+    const claimed = db.prepare("UPDATE tasks SET status = 'delivered', job_id = ?, updated_at = ? WHERE id = ? AND status = 'queued'").run(jobId, now(), task.id);
     if (!claimed.changes) return;
-    let job;
-    try { job = await startTaskJob(task, { cwd, harness, mcpUrl }); }
+    db.prepare('INSERT INTO runs (id, task_id, job_id, status, started_at) VALUES (?, ?, ?, ?, ?)').run(randomUUID(), task.id, jobId, 'executing', now());
+    try { await startTaskJob({ ...task, job_id: jobId }, { cwd, harness, mcpUrl }); }
     catch (error) {
-      update(task.id, { status: 'queued', last_error: `Could not start: ${error.message}` });
+      db.prepare("UPDATE runs SET status = 'failed', finished_at = ?, error = ? WHERE job_id = ?").run(now(), `Could not start: ${error.message}`, jobId);
+      db.prepare("UPDATE tasks SET status = 'queued', job_id = NULL, last_error = ?, updated_at = ? WHERE id = ? AND status = 'delivered' AND job_id = ?").run(`Could not start: ${error.message}`, now(), task.id, jobId);
       return;
     }
-    db.prepare('INSERT INTO runs (id, task_id, job_id, status, started_at) VALUES (?, ?, ?, ?, ?)').run(randomUUID(), task.id, job.job_id, 'executing', now());
-    update(task.id, { status: 'executing', job_id: job.job_id });
-    follow(task.id, job.job_id);
+    db.prepare("UPDATE tasks SET status = 'executing', updated_at = ? WHERE id = ? AND status = 'delivered' AND job_id = ?").run(now(), task.id, jobId);
+    follow(task.id, jobId);
   }
 
   function schedule() {
     clearTimeout(timer);
     if (!enabled()) return;
-    const due = db.prepare("SELECT * FROM tasks WHERE status = 'queued' AND (next_run_at IS NULL OR next_run_at <= ?)").all(now());
+    const at = now();
+    const due = db.prepare("SELECT * FROM tasks WHERE status = 'queued' AND (next_run_at IS NULL OR next_run_at <= ?)").all(at);
     for (const task of due) run(task);
-    const next = db.prepare("SELECT MIN(next_run_at) AS at FROM tasks WHERE status = 'queued' AND next_run_at > ?").get(now())?.at;
+    const next = db.prepare("SELECT MIN(next_run_at) AS at FROM tasks WHERE status = 'queued' AND next_run_at > ?").get(at)?.at;
     if (next) timer = setTimeout(schedule, Math.min(Math.max(new Date(next) - Date.now(), 0) + 50, 2 ** 31 - 1));
   }
 
   // Restart recovery: follow jobs already started; a claim that never started a job is requeued.
-  for (const task of db.prepare("SELECT * FROM tasks WHERE status IN ('delivered', 'executing')").all()) {
-    if (task.status === 'executing' && task.job_id) follow(task.id, task.job_id);
-    else update(task.id, { status: 'queued' });
+  for (const task of db.prepare("SELECT * FROM tasks WHERE job_id IS NOT NULL OR status IN ('delivered', 'executing')").all()) {
+    if (task.job_id && existsSync(jobDirectory(task.job_id))) {
+      if (task.status === 'delivered') update(task.id, { status: 'executing' });
+      follow(task.id, task.job_id);
+    } else if (['delivered', 'executing'].includes(task.status)) {
+      // The launch never created its job: nothing ran, so the task is queued again.
+      db.prepare("UPDATE runs SET status = 'failed', finished_at = ?, error = 'Service stopped before the job was created.' WHERE job_id = ? AND status = 'executing'").run(now(), task.job_id);
+      update(task.id, { status: 'queued', job_id: null });
+    }
   }
   schedule();
 
@@ -179,7 +196,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
         if (!task) throw new Error(`Task ${input.task_id} was not found.`);
         if (input.action === 'delete') { db.prepare('DELETE FROM runs WHERE task_id = ?').run(task.id); db.prepare('DELETE FROM tasks WHERE id = ?').run(task.id); }
         else update(task.id, { status: 'done', next_run_at: null });
-        watchers.get(task.id)?.close(); watchers.delete(task.id);
+        if (input.action === 'delete') { watchers.get(task.id)?.close(); watchers.delete(task.id); }
         schedule();
         return { task_id: task.id, action: input.action, worker: workerState() };
       }

@@ -87,7 +87,7 @@ export const reassessPoma = assessPoma;
 
 // A task from the owner's action queue, run in the owner's harness with this MCP.
 export async function startTaskJob(task, environment) {
-  return createJob({ context: { task_id: task.id, title: task.title } }, environment, { identity: 'scheduled_task', question: task.instruction, promptId: null });
+  return createJob({ context: { task_id: task.id, title: task.title } }, environment, { identity: 'scheduled_task', question: task.instruction, promptId: null, jobId: task.job_id });
 }
 
 // An incoming A2A message for this installation's agent, run in the owner's harness.
@@ -101,7 +101,7 @@ async function createJob(input, { cwd, harness, mcpUrl }, task) {
   if (!['codex', 'claude'].includes(selected)) throw new Error('Select an existing codex or claude harness.');
   const waitMs = Number(process.env.M3NTOR_WAIT_MS ?? 1500);
   if (!Number.isFinite(waitMs) || waitMs < 0) throw new Error('M3NTOR_WAIT_MS must be a non-negative number.');
-  const id = randomUUID();
+  const id = task.jobId || randomUUID(); // a caller may persist the id before launch
   const directory = jobDirectory(id);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const request = {
