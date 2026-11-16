@@ -1,6 +1,6 @@
 # Registered-user access transition
 
-Status: the target user flow is defined in [ACCESS-PATTERN.md](ACCESS-PATTERN.md). Register/sign in → server-assigned organization/agent identity and Clarity token → one local credential source → HTTPS A2A, prompt retrieval and MCP reporting/retrieval. No user SSH or operator-HMAC access.
+Status: the target user flow is defined in [ACCESS-PATTERN.md](ACCESS-PATTERN.md). Agent API-only registration/sign-in (no browser/UI) → server-assigned organization/agent identity and Clarity token → one local credential source → HTTPS A2A, prompt retrieval and MCP reporting/retrieval. No user SSH or operator-HMAC access.
 
 The remaining sections record the existing development implementation and its earlier acceptance specification. SSH prompt paths and HMAC utility calls below are historical/operator baseline behavior to replace, not current user requirements or evidence that token onboarding works. New access verification follows ACCESS-PATTERN.md; earlier local runner/persistence results remain reusable where unchanged.
 

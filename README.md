@@ -20,7 +20,7 @@ POM, direction/policies and durable execution infrastructure.
 
 ## User access
 
-Start in the chosen harness, register/sign in with Clarity, and obtain the installation's assigned agent identity and `clrtok_` token. Both A2A and MCP remote operations use that same credential source. Store only its secret reference plus API/organization/agent metadata in the local profile. Prompt retrieval, assessment reporting and utility reporting/search/read use HTTPS bearer authentication. Private business records and detailed calculations stay local.
+Start in the chosen harness. The agent registers/signs in with Clarity through HTTPS APIs and receives its assigned agent identity and `clrtok_` token directly, with no browser or UI step. Later sessions sign in using that stored token; account enrollment is not repeated. Both A2A and MCP remote operations use that same credential source. Store only its secret reference plus API/organization/agent metadata in the local profile. Prompt retrieval, assessment reporting and utility reporting/search/read use HTTPS bearer authentication. Private business records and detailed calculations stay local.
 
 The [access contract](ACCESS-PATTERN.md) distinguishes existing account/token primitives from required product registration, authorization, HTTPS prompt delivery and client changes. No automatic public registration URL or completed user-token deployment is claimed. Do not use another user's SSH/HMAC configuration to bypass a missing product capability.
 

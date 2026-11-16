@@ -47,7 +47,7 @@ Use the current harness's supported MCP refresh/reconnect mechanism; if tool dis
 
 ### Register and receive the Clarity token
 
-Follow `ACCESS-PATTERN.md` for the registered-user HTTPS contract. The owner registers/signs in through Clarity's existing account flow, and Clarity associates their organization, assigns this installation's unique agent UUID/handle and issues a `clrtok_` token for A2A and MCP remote operations. Reuse an existing assigned identity on reconciliation; never copy another agent's identity.
+Follow `ACCESS-PATTERN.md` for the registered-user HTTPS contract. You register and sign in on the owner's behalf through HTTPS APIs, without opening a browser or other UI. Follow the headless signup/login, account association and agent registration sequence in that contract. Clarity assigns this installation's unique agent UUID/handle and returns a `clrtok_` token for A2A and MCP remote operations directly to your HTTP client. Reuse an existing assigned identity on reconciliation; never copy another agent's identity.
 
 Users do not receive SSH access, server paths, operator HMAC secrets or database keys. Store the token through the owner's secret store and place only non-secret API/organization/agent metadata and the credential reference in the shared local connection profile. The MCP and A2A adapter use that same token as an HTTPS bearer credential. Existing local business-system access remains separate.
 
