@@ -57,6 +57,7 @@ async function runHarness(request, prompt) {
   const seenProgress = new Set();
   const seenModelText = new Set();
   const streamedText = new Map();
+  const claudeOperations = new Map();
   const retryAttempts = [];
   const audit = (kind, detail) => recoveryLog.write(JSON.stringify({ at: new Date().toISOString(), kind, progress_version: progressVersion, ...detail }) + '\n');
   let killTimer;
@@ -142,7 +143,10 @@ async function runHarness(request, prompt) {
     if (incoming.type === 'assistant' || incoming.type === 'user') {
       if (incoming.type === 'assistant') modelText((incoming.message?.content || []).filter(part => part.type === 'text').map(part => part.text || '').join(''));
       for (const part of incoming.message?.content || []) {
-        if (part.type === 'tool_result') progress('tool_result', { type: part.type, content: part.content, is_error: part.is_error });
+        // Transport IDs correlate a result with its operation; the semantic
+        // progress key contains only that operation and the returned content.
+        if (incoming.type === 'assistant' && part.type === 'tool_use' && part.id) claudeOperations.set(part.id, { name: part.name, input: part.input });
+        if (part.type === 'tool_result') progress('tool_result', { type: part.type, operation: claudeOperations.get(part.tool_use_id), content: part.content, is_error: part.is_error });
       }
     }
     if (incoming.type === 'result') {
