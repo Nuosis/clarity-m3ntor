@@ -267,7 +267,7 @@ async function mcp(req, res, coach = false) {
         result = { content: [{ type: 'text', text: JSON.stringify(await runningJobs()) }] };
       } else if (name === 'read_answered_questions') {
         const state = await questionState(cwd);
-        result = { content: [{ type: 'text', text: JSON.stringify(state.questions.filter(q => q.status !== 'pending').slice(-50).reverse()) }] };
+        result = { content: [{ type: 'text', text: JSON.stringify(state.questions.filter(q => q.status !== 'pending').sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, 50)) }] };
       } else if (name === 'revoke_utility') {
         try { result = { content: [{ type: 'text', text: JSON.stringify(await revokeUtility(input.case_id)) }] }; }
         catch (error) { throw new Error(/HTTP 403/.test(error.message) ? 'Only use cases this business submitted can be revoked.' : error.message); }
