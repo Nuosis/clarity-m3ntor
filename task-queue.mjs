@@ -3,7 +3,12 @@ import { existsSync, mkdirSync, readFileSync, watch } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getM3ntorResult, jobDirectory, startTaskJob } from './m3ntor-jobs.mjs';
-import { addJournal } from './business-journal.mjs';
+import { appendJournalInWrite, serializeBusinessWrites } from './business-journal.mjs';
+
+// Journal entries with fixed ids, so a retried write updates the same entry.
+const journalOnce = (cwd, entryId, input) => serializeBusinessWrites(cwd, () => appendJournalInWrite(cwd, input, new Date(), entryId));
+// A task's job ends with `STATUS: done` or `STATUS: not done — <reason>`.
+const reportedDone = output => /^status:\s*done\b/i.test((String(output || '').trim().split('\n').pop() || '').replace(/[*`_]/g, '').trim());
 
 // The owner's action system: immediate, delayed and recurring tasks persisted in
 // .clarity_coach/action.sqlite3 and run by this service in the owner's harness.
@@ -83,9 +88,9 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
 
   // Record a finished job once, then requeue a recurring task or close a one-off.
   function settle(taskId, job) {
-    const ok = job.status === 'complete';
+    const ok = job.status === 'complete' && reportedDone(job.output);
     const finished = now();
-    const error = ok ? null : (job.error || job.status);
+    const error = ok ? null : job.status === 'complete' ? `The task reported it was not done: ${String(job.output || '').trim().split('\n').pop()}` : (job.error || job.status);
     db.prepare("UPDATE runs SET status = ?, finished_at = ?, result = ?, error = ? WHERE task_id = ? AND job_id = ? AND status = 'executing'")
       .run(ok ? 'completed' : 'failed', finished, ok ? job.output : null, error, taskId, job.job_id);
     const task = get(taskId);
@@ -96,11 +101,10 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
       return;
     }
     if (ok && task.remove_on_completion && !task.recurrence) {
-      // Implemented: journal the result, then remove the task and its runs from the list.
-      addJournal(cwd, { kind: 'activity', source: 'action_queue', content: `Implemented: ${task.title}\n\n${job.output}`, metadata: { task_id: taskId, job_id: job.job_id } })
-        .then(() => { db.prepare('DELETE FROM runs WHERE task_id = ?').run(taskId); db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId); })
-        .catch(error => { update(taskId, { status: 'completed', job_id: null, last_run_at: finished, last_status: 'completed', last_result: job.output, last_error: `Journal before removal failed: ${error.message}` }); });
-      update(taskId, { status: 'completed', job_id: null, last_run_at: finished, last_status: 'completed', last_result: job.output });
+      // Implemented: hold the task in 'finalizing' (protected from updates, retried after
+      // a restart) until its result is journaled, then remove it and its runs.
+      update(taskId, { status: 'finalizing', job_id: job.job_id, last_run_at: finished, last_status: 'completed', last_result: job.output, last_error: null });
+      finalize(taskId);
       return;
     }
     const failures = ok ? 0 : task.consecutive_failures + 1;
@@ -111,6 +115,18 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
       pause_reason: status === 'paused' ? `${failures} consecutive failed runs; state kept. Fix the cause, then set_task this task_id to resume.` : null,
       last_run_at: finished, last_status: ok ? 'completed' : 'failed', last_result: ok ? job.output : null, last_error: error,
     });
+  }
+
+  async function finalize(taskId) {
+    const task = get(taskId);
+    if (task?.status !== 'finalizing') return;
+    try {
+      await journalOnce(cwd, `task-implemented-${task.id}-${task.job_id}`, { kind: 'activity', source: 'action_queue', content: `Implemented: ${task.title}\n\n${task.last_result}`, metadata: { task_id: task.id, job_id: task.job_id } });
+      db.prepare("DELETE FROM runs WHERE task_id = ? AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status = 'finalizing' AND job_id = ?)").run(task.id, task.id, task.job_id);
+      db.prepare("DELETE FROM tasks WHERE id = ? AND status = 'finalizing' AND job_id = ?").run(task.id, task.job_id);
+    } catch (error) {
+      update(taskId, { last_error: `Journal before removal failed; retried at the next start: ${error.message}` });
+    }
   }
 
   // Job state changes arrive as file events; an event during a check triggers one more.
@@ -184,6 +200,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
       update(task.id, { status: 'queued', job_id: null });
     }
   }
+  for (const task of db.prepare("SELECT id FROM tasks WHERE status = 'finalizing'").all()) finalize(task.id);
   schedule();
 
   const workerState = () => ({ enabled: enabled(), database: path.join(directory, 'action.sqlite3'), executing: db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status = 'executing'").get().n, next_run_at: db.prepare("SELECT MIN(next_run_at) AS at FROM tasks WHERE status = 'queued'").get()?.at || null });
@@ -195,7 +212,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
         const id = input.task_id || randomUUID();
         const existing = input.task_id ? get(id) : null;
         if (input.task_id && !existing) throw new Error(`Task ${id} was not found.`);
-        if (existing && ['delivered', 'executing'].includes(existing.status)) throw new Error('This task is running; update it after the run finishes.');
+        if (existing && ['delivered', 'executing', 'finalizing'].includes(existing.status)) throw new Error('This task is running or being finalized; update it after it finishes.');
         const recurrence = input.recurrence ? JSON.stringify(input.recurrence) : null;
         const nextRun = input.run_at ? new Date(input.run_at).toISOString() : recurrence ? nextFor({ recurrence }, new Date()) : null;
         if (input.run_at && Number.isNaN(new Date(input.run_at).getTime())) throw new Error('run_at must be an ISO date-time.');
@@ -213,14 +230,16 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
       if (name === 'clear_task') {
         const task = get(input.task_id);
         if (!task) throw new Error(`Task ${input.task_id} was not found.`);
-        const journaled = input.reason?.trim()
-          ? addJournal(cwd, { kind: 'user_request', source: 'owner_decision', content: `The owner decided against: ${task.title}\nReason: ${input.reason.trim()}\nTask: ${task.instruction}`, metadata: { task_id: task.id, action: input.action } })
-          : null;
-        if (input.action === 'delete') { db.prepare('DELETE FROM runs WHERE task_id = ?').run(task.id); db.prepare('DELETE FROM tasks WHERE id = ?').run(task.id); }
-        else update(task.id, { status: 'done', next_run_at: null });
-        if (input.action === 'delete' && task.job_id) { watchers.get(task.job_id)?.close(); watchers.delete(task.job_id); }
-        schedule();
-        return Promise.resolve(journaled).then(entry => ({ task_id: task.id, action: input.action, reason_journaled: Boolean(entry), worker: workerState() }));
+        // The owner's reason is journaled before anything is cleared; if that fails, nothing changes.
+        return (input.reason?.trim()
+          ? journalOnce(cwd, `task-declined-${task.id}`, { kind: 'user_request', source: 'owner_decision', content: `The owner decided against: ${task.title}\nReason: ${input.reason.trim()}\nTask: ${task.instruction}`, metadata: { task_id: task.id, action: input.action } })
+          : Promise.resolve(null)).then(entry => {
+            if (input.action === 'delete') { db.prepare('DELETE FROM runs WHERE task_id = ?').run(task.id); db.prepare('DELETE FROM tasks WHERE id = ?').run(task.id); }
+            else update(task.id, { status: 'done', next_run_at: null });
+            if (input.action === 'delete' && task.job_id) { watchers.get(task.job_id)?.close(); watchers.delete(task.job_id); }
+            schedule();
+            return { task_id: task.id, action: input.action, reason_journaled: Boolean(entry), worker: workerState() };
+          });
       }
       if (name === 'start_task_worker') { setEnabled(true); schedule(); return workerState(); }
       if (name === 'stop_task_worker') { setEnabled(false); clearTimeout(timer); return workerState(); }

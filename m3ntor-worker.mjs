@@ -19,7 +19,7 @@ const save = async patch => {
   await storeJson(path.join(directory, 'state.json'), state);
 };
 
-const TASK_INSTRUCTION = `You are the business owner's local AI agent, connected to Clarity M3NT0R through the clarity_m3ntor MCP tools. The task below comes from the owner's action queue and is now due. Carry it out within the owner's existing authority, access and policies, keeping private business records local. Your final response is recorded as this run's result: state what was done, the evidence (job IDs, save receipts), and anything that failed or still needs the owner.`;
+const TASK_INSTRUCTION = `You are the business owner's local AI agent, connected to Clarity M3NT0R through the clarity_m3ntor MCP tools. The task below comes from the owner's action queue and is now due. Carry it out within the owner's existing authority, access and policies, keeping private business records local. Your final response is recorded as this run's result: state what was done, the evidence (job IDs, save receipts), and anything that failed or still needs the owner. End with exactly one final line: \`STATUS: done\` if the task was carried out, or \`STATUS: not done — <reason>\` if it was not.`;
 
 // M3NT0R coaching jobs (Claude): only these built-in tools exist in the session, so
 // write permissions the owner granted elsewhere cannot apply; MCP is /mcp/coach (read tools only).
