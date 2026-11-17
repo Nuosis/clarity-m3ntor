@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, watch } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getM3ntorResult, jobDirectory, startTaskJob } from './m3ntor-jobs.mjs';
+import { addJournal } from './business-journal.mjs';
 
 // The owner's action system: immediate, delayed and recurring tasks persisted in
 // .clarity_coach/action.sqlite3 and run by this service in the owner's harness.
@@ -27,9 +28,9 @@ const recurrenceSchema = {
 };
 
 export const taskTools = [
-  { name: 'set_task', description: 'Create or update a task in the owner\'s action queue. The service runs it in the owner\'s harness when due (now, at run_at, or on its recurrence) and records the result. Supplying an existing task_id updates that task instead of adding another; use this to reuse a matching recurring task.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'Existing task to update; omit to create.' }, title: { type: 'string' }, instruction: { type: 'string', description: 'What the owner\'s agent should do when the task runs.' }, run_at: { type: 'string', format: 'date-time', description: 'First run time; omit to run now (one-off) or at the next recurrence.' }, recurrence: recurrenceSchema }, required: ['title', 'instruction'], additionalProperties: false } },
+  { name: 'set_task', description: 'Create or update a task in the owner\'s action queue. The service runs it in the owner\'s harness when due (now, at run_at, or on its recurrence) and records the result. Supplying an existing task_id updates that task instead of adding another; use this to reuse a matching recurring task.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'Existing task to update; omit to create.' }, title: { type: 'string' }, instruction: { type: 'string', description: 'What the owner\'s agent should do when the task runs.' }, run_at: { type: 'string', format: 'date-time', description: 'First run time; omit to run now (one-off) or at the next recurrence.' }, recurrence: recurrenceSchema, remove_on_completion: { type: 'boolean', description: 'One-off tasks only: after a successful run, journal the result and remove the task from the list (used for implementing a recommendation).' } }, required: ['title', 'instruction'], additionalProperties: false } },
   { name: 'list_tasks', description: 'List tasks with status (queued, delivered, executing, completed, failed, paused, done), next run time, last run and its result or error.', inputSchema: { type: 'object', properties: { status: { type: 'string' } }, additionalProperties: false }, annotations: { readOnlyHint: true } },
-  { name: 'clear_task', description: 'Clear a task: action done marks it finished and stops any recurrence (history kept); action delete removes it and its run history. A running job is not stopped.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, action: { type: 'string', enum: ['done', 'delete'] } }, required: ['task_id', 'action'], additionalProperties: false } },
+  { name: 'clear_task', description: 'Clear a task: action done marks it finished and stops any recurrence (history kept); action delete removes it and its run history. A running job is not stopped. When the owner has decided against a task, give their reason: it is journaled so M3NT0R can take it into account on its next weekly run.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, action: { type: 'string', enum: ['done', 'delete'] }, reason: { type: 'string', description: 'The owner\'s decision and reason, when they directed this.' } }, required: ['task_id', 'action'], additionalProperties: false } },
   { name: 'start_task_worker', description: 'Start running due tasks (persists across service restarts) and return the worker state.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'stop_task_worker', description: 'Stop starting new tasks (persists across restarts). Jobs already running finish and their results are still recorded.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
 ];
@@ -54,12 +55,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
       recurrence TEXT, next_run_at TEXT, status TEXT NOT NULL,
       job_id TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0, pause_reason TEXT,
       last_run_at TEXT, last_status TEXT, last_result TEXT, last_error TEXT,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, remove_on_completion INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY, task_id TEXT NOT NULL, job_id TEXT, status TEXT NOT NULL,
       started_at TEXT NOT NULL, finished_at TEXT, result TEXT, error TEXT);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `);
+  if (!db.prepare('PRAGMA table_info(tasks)').all().some(column => column.name === 'remove_on_completion')) db.exec('ALTER TABLE tasks ADD COLUMN remove_on_completion INTEGER NOT NULL DEFAULT 0');
   const now = () => new Date().toISOString();
   const get = id => db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   const update = (id, fields) => {
@@ -91,6 +93,14 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
     if (!['delivered', 'executing'].includes(task.status)) {
       // Cleared while running: keep its done state and recurrence stopped, record the outcome.
       update(taskId, { job_id: null, last_run_at: finished, last_status: ok ? 'completed' : 'failed', last_result: ok ? job.output : null, last_error: error });
+      return;
+    }
+    if (ok && task.remove_on_completion && !task.recurrence) {
+      // Implemented: journal the result, then remove the task and its runs from the list.
+      addJournal(cwd, { kind: 'activity', source: 'action_queue', content: `Implemented: ${task.title}\n\n${job.output}`, metadata: { task_id: taskId, job_id: job.job_id } })
+        .then(() => { db.prepare('DELETE FROM runs WHERE task_id = ?').run(taskId); db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId); })
+        .catch(error => { update(taskId, { status: 'completed', job_id: null, last_run_at: finished, last_status: 'completed', last_result: job.output, last_error: `Journal before removal failed: ${error.message}` }); });
+      update(taskId, { status: 'completed', job_id: null, last_run_at: finished, last_status: 'completed', last_result: job.output });
       return;
     }
     const failures = ok ? 0 : task.consecutive_failures + 1;
@@ -189,8 +199,10 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
         const recurrence = input.recurrence ? JSON.stringify(input.recurrence) : null;
         const nextRun = input.run_at ? new Date(input.run_at).toISOString() : recurrence ? nextFor({ recurrence }, new Date()) : null;
         if (input.run_at && Number.isNaN(new Date(input.run_at).getTime())) throw new Error('run_at must be an ISO date-time.');
-        if (existing) update(id, { title: input.title, instruction: input.instruction, recurrence, next_run_at: nextRun, status: 'queued', consecutive_failures: 0, pause_reason: null });
-        else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id, input.title, input.instruction, recurrence, nextRun, 'queued', now(), now());
+        const removeOnCompletion = input.remove_on_completion === true ? 1 : 0;
+        if (removeOnCompletion && recurrence) throw new Error('remove_on_completion applies to one-off tasks only.');
+        if (existing) update(id, { title: input.title, instruction: input.instruction, recurrence, next_run_at: nextRun, status: 'queued', consecutive_failures: 0, pause_reason: null, remove_on_completion: removeOnCompletion });
+        else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, remove_on_completion) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, input.title, input.instruction, recurrence, nextRun, 'queued', now(), now(), removeOnCompletion);
         schedule();
         return { task: view(get(id)), created: !existing, worker: workerState() };
       }
@@ -201,11 +213,14 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
       if (name === 'clear_task') {
         const task = get(input.task_id);
         if (!task) throw new Error(`Task ${input.task_id} was not found.`);
+        const journaled = input.reason?.trim()
+          ? addJournal(cwd, { kind: 'user_request', source: 'owner_decision', content: `The owner decided against: ${task.title}\nReason: ${input.reason.trim()}\nTask: ${task.instruction}`, metadata: { task_id: task.id, action: input.action } })
+          : null;
         if (input.action === 'delete') { db.prepare('DELETE FROM runs WHERE task_id = ?').run(task.id); db.prepare('DELETE FROM tasks WHERE id = ?').run(task.id); }
         else update(task.id, { status: 'done', next_run_at: null });
         if (input.action === 'delete' && task.job_id) { watchers.get(task.job_id)?.close(); watchers.delete(task.job_id); }
         schedule();
-        return { task_id: task.id, action: input.action, worker: workerState() };
+        return Promise.resolve(journaled).then(entry => ({ task_id: task.id, action: input.action, reason_journaled: Boolean(entry), worker: workerState() }));
       }
       if (name === 'start_task_worker') { setEnabled(true); schedule(); return workerState(); }
       if (name === 'stop_task_worker') { setEnabled(false); clearTimeout(timer); return workerState(); }

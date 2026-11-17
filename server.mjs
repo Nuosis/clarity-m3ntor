@@ -128,7 +128,7 @@ async function mcp(req, res, coach = false) {
         if (receipt.saved) receipt.utility_question = await askAssessmentUtility(input, receipt);
         result = { ...(!receipt.saved || !receipt.submitted ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(receipt) }] };
       } else if (taskTools.some(tool => tool.name === name)) {
-        result = { content: [{ type: 'text', text: JSON.stringify(taskQueue.call(name, input)) }] };
+        result = { content: [{ type: 'text', text: JSON.stringify(await taskQueue.call(name, input)) }] };
       } else if (name === 'a2a_status') {
         result = { content: [{ type: 'text', text: JSON.stringify(a2aReceiver.status()) }] };
       } else if (name === 'report_utility' || name === 'search_utility') {
