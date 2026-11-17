@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, watch } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getM3ntorResult, jobDirectory, startTaskJob } from './m3ntor-jobs.mjs';
-import { appendJournalInWrite, serializeBusinessWrites } from './business-journal.mjs';
+import { appendJournalInWrite, businessDate, serializeBusinessWrites } from './business-journal.mjs';
 
 // Journal entries with fixed ids, so a retried write updates the same entry.
 const journalOnce = (cwd, entryId, input) => serializeBusinessWrites(cwd, () => appendJournalInWrite(cwd, input, new Date(), entryId));
@@ -121,7 +121,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
     const task = get(taskId);
     if (task?.status !== 'finalizing') return;
     try {
-      await journalOnce(cwd, `task-implemented-${task.id}-${task.job_id}`, { kind: 'activity', source: 'action_queue', content: `Implemented: ${task.title}\n\n${task.last_result}`, metadata: { task_id: task.id, job_id: task.job_id } });
+      await journalOnce(cwd, `task-implemented-${task.id}-${task.job_id}`, { date: businessDate(new Date(task.last_run_at)), kind: 'activity', source: 'action_queue', content: `Implemented: ${task.title}\n\n${task.last_result}`, metadata: { task_id: task.id, job_id: task.job_id } });
       db.prepare("DELETE FROM runs WHERE task_id = ? AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status = 'finalizing' AND job_id = ?)").run(task.id, task.id, task.job_id);
       db.prepare("DELETE FROM tasks WHERE id = ? AND status = 'finalizing' AND job_id = ?").run(task.id, task.job_id);
     } catch (error) {
@@ -190,7 +190,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
   }
 
   // Restart recovery: follow jobs already started; a claim that never started a job is requeued.
-  for (const task of db.prepare("SELECT * FROM tasks WHERE job_id IS NOT NULL OR status IN ('delivered', 'executing')").all()) {
+  for (const task of db.prepare("SELECT * FROM tasks WHERE status != 'finalizing' AND (job_id IS NOT NULL OR status IN ('delivered', 'executing'))").all()) {
     if (task.job_id && launched(task.job_id)) {
       if (task.status === 'delivered') update(task.id, { status: 'executing' });
       follow(task.id, task.job_id);
@@ -201,6 +201,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
     }
   }
   for (const task of db.prepare("SELECT id FROM tasks WHERE status = 'finalizing'").all()) finalize(task.id);
+  // A clear interrupted by a restart did not finish; hold the task as paused until the owner's clear is repeated.
+  db.prepare("UPDATE tasks SET status = 'paused', pause_reason = 'A clear was interrupted; repeat clear_task to finish it.', updated_at = ? WHERE status = 'clearing'").run(now());
   schedule();
 
   const workerState = () => ({ enabled: enabled(), database: path.join(directory, 'action.sqlite3'), executing: db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status = 'executing'").get().n, next_run_at: db.prepare("SELECT MIN(next_run_at) AS at FROM tasks WHERE status = 'queued'").get()?.at || null });
@@ -212,7 +214,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
         const id = input.task_id || randomUUID();
         const existing = input.task_id ? get(id) : null;
         if (input.task_id && !existing) throw new Error(`Task ${id} was not found.`);
-        if (existing && ['delivered', 'executing', 'finalizing'].includes(existing.status)) throw new Error('This task is running or being finalized; update it after it finishes.');
+        if (existing && ['delivered', 'executing', 'finalizing', 'clearing'].includes(existing.status)) throw new Error('This task is running, being finalized or being cleared; update it after it finishes.');
         const recurrence = input.recurrence ? JSON.stringify(input.recurrence) : null;
         const nextRun = input.run_at ? new Date(input.run_at).toISOString() : recurrence ? nextFor({ recurrence }, new Date()) : null;
         if (input.run_at && Number.isNaN(new Date(input.run_at).getTime())) throw new Error('run_at must be an ISO date-time.');
@@ -230,10 +232,17 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
       if (name === 'clear_task') {
         const task = get(input.task_id);
         if (!task) throw new Error(`Task ${input.task_id} was not found.`);
-        // The owner's reason is journaled before anything is cleared; if that fails, nothing changes.
+        // Reserve the task so it cannot start while the owner's reason is journaled;
+        // the reason is journaled before anything is cleared, and a failure restores it.
+        if (task.status === 'clearing') throw new Error('This task is already being cleared.');
+        const previous = task.status;
+        if (input.reason?.trim()) update(task.id, { status: 'clearing' });
         return (input.reason?.trim()
           ? journalOnce(cwd, `task-declined-${task.id}`, { kind: 'user_request', source: 'owner_decision', content: `The owner decided against: ${task.title}\nReason: ${input.reason.trim()}\nTask: ${task.instruction}`, metadata: { task_id: task.id, action: input.action } })
-          : Promise.resolve(null)).then(entry => {
+          : Promise.resolve(null)).catch(error => {
+            db.prepare("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = 'clearing'").run(previous, now(), task.id);
+            throw error;
+          }).then(entry => {
             if (input.action === 'delete') { db.prepare('DELETE FROM runs WHERE task_id = ?').run(task.id); db.prepare('DELETE FROM tasks WHERE id = ?').run(task.id); }
             else update(task.id, { status: 'done', next_run_at: null });
             if (input.action === 'delete' && task.job_id) { watchers.get(task.job_id)?.close(); watchers.delete(task.job_id); }
