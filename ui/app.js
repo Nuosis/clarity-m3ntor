@@ -83,8 +83,7 @@ function renderRun(run) {
 
 function declineForm(id) {
   return `<form class="decline" data-id="${esc(id)}">
-    <h3>Don't implement</h3>
-    <textarea name="reason" placeholder="Reason" required></textarea>
+    <textarea name="reason" placeholder="Reason for not implementing" aria-label="Reason for not implementing" required></textarea>
     <div class="actions"><button class="secondary" type="submit">Don't implement</button></div>
   </form>`;
 }
@@ -139,7 +138,7 @@ function renderAssessment() {
       <h2>Recommendation</h2>
       ${open.length ? open.map(task => `<div class="entry">
         <div>${esc(task.title)} ${status(task.status)}</div>
-        <div class="meta">${task.next_run_at ? `Implemented ${when(task.next_run_at)}` : ''}</div>
+        <div class="meta">${task.next_run_at ? `Runs ${when(task.next_run_at)}` : ''}</div>
         <div class="content">${esc(task.instruction)}</div>
         ${task.status === 'queued' ? declineForm(task.id) : ''}
       </div>`).join('') : '<p class="empty">No open recommendation.</p>'}
