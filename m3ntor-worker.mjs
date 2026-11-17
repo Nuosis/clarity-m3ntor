@@ -43,6 +43,14 @@ async function fetchPrompt(source) {
   return prompt.content;
 }
 
+// Background Codex jobs run with approval policy "never", so an MCP tool that would ask
+// for approval is refused. Jobs this service starts approve the service's own tools.
+const LOCAL_TOOLS = ['ask_m3ntor', 'assess_poma', 'reassess_poma', 'get_m3ntor_result', 'report_utility', 'search_utility', 'a2a_status',
+  'set_task', 'list_tasks', 'clear_task', 'start_task_worker', 'stop_task_worker', 'save_poma_reassessment', 'get_coaching_context',
+  'read_journal', 'add_journal', 'suser_question_set', 'user_question_read'];
+const COACH_READ_TOOLS = ['search_utility', 'read_journal', 'get_coaching_context', 'user_question_read', 'list_tasks'];
+const codexApprove = (server, names) => names.flatMap(name => ['-c', `mcp_servers.${server}.tools.${name}.approval_mode="approve"`]);
+
 // Codex for A2A jobs: the apps, plugins and remote_plugin features are turned
 // off (removing connector and plugin-provided MCP servers), and every remaining
 // server, listed from the job's own working directory so workspace config is
@@ -63,15 +71,15 @@ async function runHarness(request, prompt) {
   // search the web and the shared utility library, and read the journal, but it
   // changes nothing; the owner's agent carries out what it recommends.
   const coachArgs = request.task !== 'coaching' ? null : request.harness === 'codex'
-    ? [...(await codexMcpOff(request.cwd)), '-c', `mcp_servers.m3ntor_coach={url=${JSON.stringify(request.mcp_url)}}`, 'exec', ...CODEX_FEATURES_OFF, '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
+    ? [...(await codexMcpOff(request.cwd)), '-c', `mcp_servers.m3ntor_coach={url=${JSON.stringify(request.mcp_url)}}`, ...codexApprove('m3ntor_coach', COACH_READ_TOOLS), 'exec', ...CODEX_FEATURES_OFF, '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
     : ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } }), '--tools', COACH_BUILTIN_TOOLS, '--permission-mode', 'dontAsk', '--allowedTools', COACH_TOOLS];
   const args = coachArgs || (request.harness === 'codex'
     ? (readOnly
       ? [...(await codexMcpOff(request.cwd)), 'exec', ...CODEX_FEATURES_OFF, '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
-      : ['-c', `mcp_servers.clarity_m3ntor.url=${JSON.stringify(request.mcp_url)}`, 'exec', '--json', '--skip-git-repo-check', '-o', outputFile, '-'])
+      : ['-c', `mcp_servers.clarity_m3ntor.url=${JSON.stringify(request.mcp_url)}`, ...codexApprove('clarity_m3ntor', LOCAL_TOOLS), 'exec', '--json', '--skip-git-repo-check', '-o', outputFile, '-'])
     : (readOnly
       ? ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: {} }), '--permission-mode', 'plan', '--disallowedTools', 'Edit,Write,NotebookEdit']
-      : ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } })]));
+      : ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } }), '--allowedTools', 'mcp__clarity_m3ntor']));
   const context = typeof request.context === 'string' ? request.context : JSON.stringify(request.context, null, 2);
   const assessment = ['poma_assessment', 'poma_reassessment'].includes(request.task);
   const persistence = assessment ? `\n## Local persistence identity\n\nUse revision_id ${request.job_id} with clarity_m3ntor.save_poma_reassessment for this task. Reuse that same ID when reconciling a save. The local service writes the authorized artifacts even if this harness filesystem is read-only; retain actual per-artifact receipts.\n` : '';
