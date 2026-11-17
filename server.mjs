@@ -78,7 +78,9 @@ function toolsChanged() {
   for (const stream of mcpStreams) stream.res.write(notification);
 }
 const questionInstructions = 'At the start of a session, read today’s business journal with read_journal and check user_question_read. Before offering outstanding questions, today’s journal must have been read. When permitted and questions are pending, briefly ask whether the user has time to answer some Coach questions; continue their work if not. Record a no using suser_question_set(action="defer") or add_journal(user_declined_questions=true): no more offers for four hours unless the user directly raises these questions. Set new business questions with suser_question_set. Local journal and question contents are never report attachments.';
-async function mcp(req, res) {
+// M3NT0R coaching jobs connect to /mcp/coach, which offers only these read tools.
+const COACH_READ_TOOLS = new Set(['search_utility', 'read_journal', 'get_coaching_context', 'user_question_read', 'list_tasks']);
+async function mcp(req, res, coach = false) {
   const sessionId = req.headers['mcp-session-id'];
   const session = mcpSessions.get(sessionId);
   if (req.method === 'DELETE') {
@@ -104,10 +106,14 @@ async function mcp(req, res) {
   }
   if (call.method !== 'ping' && !session) return json(res,404,{error:'MCP session is missing or expired; initialize again.'});
   if (call.method === 'ping') result = {};
-  else if (call.method === 'tools/list') result = { tools: [...m3ntorTools, ...utilityTools, a2aStatusTool, ...taskTools, ...tools, ...businessTools(await questionState(cwd))] };
+  else if (call.method === 'tools/list') {
+    const all = [...m3ntorTools, ...utilityTools, a2aStatusTool, ...taskTools, ...tools, ...businessTools(await questionState(cwd))];
+    result = { tools: coach ? all.filter(tool => COACH_READ_TOOLS.has(tool.name)) : all };
+  }
   else if (call.method === 'tools/call') {
     try {
       const { name, arguments: input = {} } = call.params;
+      if (coach && !COACH_READ_TOOLS.has(name)) throw new Error('This coaching connection is read-only.');
       if (name === 'ask_m3ntor' || name === 'assess_poma' || name === 'reassess_poma') {
         const job = await (name === 'ask_m3ntor' ? askM3ntor : assessPoma)(input, { cwd, harness, mcpUrl });
         result = { ...(job.status === 'failed' || job.status === 'interrupted' ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(job) }] };
@@ -158,6 +164,7 @@ const server = http.createServer(async (req, res) => {
     if (req.headers.origin && ![base, `http://localhost:${port}`].includes(req.headers.origin)) return json(res, 403, { error: 'This service accepts local requests only.' });
     const url = new URL(req.url, base);
     if (url.pathname === '/mcp/local') return await mcp(req, res);
+    if (url.pathname === '/mcp/coach') return await mcp(req, res, true);
     return json(res, 404, { error: 'Not found. The MCP endpoint is /mcp/local.' });
   } catch (e) { if (!res.headersSent) json(res, 400, { error: e.message }); }
 });

@@ -106,7 +106,8 @@ async function createJob(input, { cwd, harness, mcpUrl }, task) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const request = {
     job_id: id, task: task.identity, question: task.question, context: input.context ?? '', harness: selected,
-    cwd: path.resolve(process.env.M3NTOR_WORKSPACE || cwd), mcp_url: mcpUrl,
+    // Coaching jobs get the read-only endpoint of this same service.
+    cwd: path.resolve(process.env.M3NTOR_WORKSPACE || cwd), mcp_url: task.identity === 'coaching' ? mcpUrl.replace(/\/mcp\/local$/, '/mcp/coach') : mcpUrl,
     prompt_source: task.promptId ? { prompt_id: task.promptId } : { local: task.identity },
   };
   await storeJson(path.join(directory, 'request.json'), request);
