@@ -110,3 +110,5 @@ button.secondary:hover { background: var(--panel-2); }
 .case summary { cursor: pointer; color: var(--accent-strong); }
 .case .head { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
 button.danger { font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 6px; cursor: pointer; background: var(--panel); color: var(--bad); border: 1px solid var(--bad); transition: background-color 150ms ease-out; }
+.card > .title { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
+.card > .title h2 { margin-bottom: 4px; }
