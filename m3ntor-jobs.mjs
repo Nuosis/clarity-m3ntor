@@ -87,7 +87,9 @@ export const reassessPoma = assessPoma;
 
 // A task from the owner's action queue, run in the owner's harness with this MCP.
 export async function startTaskJob(task, environment) {
-  return createJob({ context: { task_id: task.id, title: task.title } }, environment, { identity: 'scheduled_task', question: task.instruction, promptId: null, jobId: task.job_id });
+  const constraints = task.constraints ? JSON.parse(task.constraints) : [];
+  const question = `Task: ${task.instruction}\n\nSuccess means: ${task.success || 'the task above is carried out.'}${constraints.length ? `\n\nConstraints for this task:\n${constraints.map(item => `- ${item}`).join('\n')}` : ''}`;
+  return createJob({ context: { task_id: task.id, title: task.title, category: task.category } }, environment, { identity: 'scheduled_task', question, promptId: null, jobId: task.job_id });
 }
 
 // An incoming A2A message for this installation's agent, run in the owner's harness.

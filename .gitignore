@@ -26,3 +26,5 @@ credentials.json
 /poma_initial_assessment_prompt.md
 /m3ntor_agent_prompt.md
 /poma_reassessment_prompt.md
+desktop/src-tauri/target/
+desktop/src-tauri/gen/

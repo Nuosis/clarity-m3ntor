@@ -1,5 +1,6 @@
 import http from 'node:http';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, readdir } from 'node:fs/promises';
+import { mkdirSync, watch } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -7,7 +8,7 @@ import { dimensions, categoricalScale } from './questions.mjs';
 import { savePomaReassessment } from './assessment-store.mjs';
 import { readJournal, addJournal, questionState, setUserQuestions, readUserQuestions, businessTools } from './business-journal.mjs';
 import { coachIdentity } from './coach-identity.mjs';
-import { m3ntorTools, askM3ntor, assessPoma, getM3ntorResult } from './m3ntor-jobs.mjs';
+import { m3ntorTools, askM3ntor, assessPoma, getM3ntorResult, jobDirectory } from './m3ntor-jobs.mjs';
 import { utilityTools, reportUtility, searchUtility } from './clarity-utility.mjs';
 import { clarityRequest } from './clarity-client.mjs';
 import { startA2AReceiver } from './a2a-receiver.mjs';
@@ -158,6 +159,94 @@ async function mcp(req, res, coach = false) {
   else return json(res, 200, { jsonrpc: '2.0', id: call.id, error: { code: -32601, message: 'Method not found' } });
   json(res, 200, { jsonrpc: '2.0', id: call.id, result });
 }
+// ---- Owner view: read-mostly API for the UI in ui/ -----------------------------
+const clarityDir = path.join(cwd, '.clarity_coach');
+async function readJson(file, fallback) { try { return JSON.parse(await readFile(file, 'utf8')); } catch { return fallback; } }
+async function assessments() {
+  let days = [];
+  try { days = (await readdir(path.join(clarityDir, 'assessment'))).filter(name => name.endsWith('.json')).sort().reverse(); } catch {}
+  const list = [];
+  for (const day of days.slice(0, 26)) for (const item of (await readJson(path.join(clarityDir, 'assessment', day), { assessments: [] })).assessments || []) {
+    let report = '';
+    if (item.revisionId) try { report = await readFile(path.join(clarityDir, 'reports', `${item.revisionId}.md`), 'utf8'); } catch {}
+    list.push({ revision_id: item.revisionId, assessed_at: item.assessedAt, status: item.status, ratings: item.ratings, summary: item.summary || '', report });
+  }
+  return list.sort((a, b) => String(b.assessed_at).localeCompare(String(a.assessed_at)));
+}
+async function journalDays(days = 14) {
+  const to = new Date(); const from = new Date(to.getTime() - (days - 1) * 86400000);
+  const { entries } = await readJournal(cwd, { from_date: from.toLocaleDateString('en-CA'), to_date: to.toLocaleDateString('en-CA') });
+  return Object.entries(entries).map(([key, items]) => ({ date: key.replace('_entries', ''), entries: items })).filter(day => day.entries.length).reverse();
+}
+// What the agent did in a run, from its job transcript: tool steps and the final result.
+async function jobProcess(jobId) {
+  if (!jobId) return null;
+  const directory = jobDirectory(jobId); const steps = [];
+  let raw = '';
+  try { raw = await readFile(path.join(directory, 'harness.stdout.jsonl'), 'utf8'); } catch {}
+  for (const line of raw.split('\n')) {
+    let event; try { event = JSON.parse(line); } catch { continue; }
+    for (const part of event.message?.content || []) if (part?.type === 'tool_use') steps.push({ tool: part.name.replace(/^mcp__clarity_m3ntor__/, ''), input: JSON.stringify(part.input || {}).slice(0, 300) });
+    const item = event.item;
+    if (event.type === 'item.completed' && ['mcp_tool_call', 'command_execution', 'web_search'].includes(item?.type)) steps.push({ tool: item.tool || item.type, input: String(item.command || JSON.stringify(item.arguments || item.query || '')).slice(0, 300) });
+    if (steps.length >= 200) break;
+  }
+  let output = ''; try { output = await readFile(path.join(directory, 'output.txt'), 'utf8'); } catch {}
+  const state = await readJson(path.join(directory, 'state.json'), {});
+  return { status: state.status, started_at: state.started_at, finished_at: state.finished_at, error: state.error || null, steps, output };
+}
+async function overview() {
+  const { tasks, worker } = await taskQueue.call('list_tasks', {});
+  const questions = await questionState(cwd);
+  const journal = await journalDays();
+  const decisions = journal.flatMap(day => day.entries.filter(entry => ['owner_decision', 'action_queue'].includes(entry.source)).map(entry => ({ ...entry, date: day.date })));
+  return {
+    worker, tasks, a2a: a2aReceiver.status(),
+    questions: { pending: questions.pending, answered: questions.questions.filter(q => q.status !== 'pending').slice(-20).reverse(), deferred_until: questions.deferred ? questions.deferUntil : null },
+    assessments: await assessments(),
+    recommendations: { open: tasks.filter(task => task.category === 'recommendation'), history: decisions },
+    journal,
+  };
+}
+// Live updates for the owner view: one change event whenever .clarity_coach changes.
+const uiListeners = new Set();
+let uiChangeTimer = null;
+mkdirSync(clarityDir, { recursive: true, mode: 0o700 });
+try { watch(clarityDir, { recursive: true }, () => { clearTimeout(uiChangeTimer); uiChangeTimer = setTimeout(() => { for (const res of uiListeners) res.write('event: changed\ndata: {}\n\n'); }, 300); }); }
+catch (error) { console.error('Owner view change watch unavailable:', error.message); }
+async function ownerApi(req, res, url) {
+  const parts = url.pathname.split('/').filter(Boolean);
+  if (req.method === 'GET' && url.pathname === '/api/events') {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    res.write(': connected\n\n'); uiListeners.add(res);
+    const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 20000);
+    req.on('close', () => { clearInterval(heartbeat); uiListeners.delete(res); });
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/api/overview') return json(res, 200, await overview());
+  if (req.method === 'GET' && parts[1] === 'tasks' && parts[2]) {
+    const detail = taskQueue.detail(parts[2]);
+    if (!detail) return json(res, 404, { error: 'Task not found.' });
+    for (const run of detail.runs) run.process = await jobProcess(run.job_id);
+    return json(res, 200, detail);
+  }
+  if (req.method === 'POST' && parts[1] === 'questions' && parts[2]) {
+    const input = await body(req);
+    if (!['answer', 'dismiss'].includes(input.action)) throw new Error('Use answer or dismiss.');
+    await setUserQuestions(cwd, { action: input.action, question_id: parts[2], answer: input.answer, reason: input.reason });
+    toolsChanged();
+    return json(res, 200, await overview());
+  }
+  if (req.method === 'POST' && parts[1] === 'tasks' && parts[2] && parts[3] === 'decline') {
+    const input = await body(req);
+    if (!input.reason?.trim()) throw new Error('Give the reason.');
+    await taskQueue.call('clear_task', { task_id: parts[2], action: 'delete', reason: input.reason });
+    return json(res, 200, await overview());
+  }
+  return json(res, 404, { error: 'Not found.' });
+}
+const UI_FILES = { '/': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/style.css': ['style.css', 'text/css; charset=utf-8'] };
+
 const server = http.createServer(async (req, res) => {
   try {
     if (![ `127.0.0.1:${port}`, `localhost:${port}` ].includes(req.headers.host)) return json(res, 403, { error: 'Use the local Clarity M3NT0R address.' });
@@ -165,14 +254,17 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, base);
     if (url.pathname === '/mcp/local') return await mcp(req, res);
     if (url.pathname === '/mcp/coach') return await mcp(req, res, true);
-    return json(res, 404, { error: 'Not found. The MCP endpoint is /mcp/local.' });
+    if (url.pathname.startsWith('/api/')) return await ownerApi(req, res, url);
+    const file = UI_FILES[url.pathname];
+    if (file && req.method === 'GET') { res.writeHead(200, { 'Content-Type': file[1], 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' }); return res.end(await readFile(path.join(root, 'ui', file[0]))); }
+    return json(res, 404, { error: 'Not found.' });
   } catch (e) { if (!res.headersSent) json(res, 400, { error: e.message }); }
 });
 // This service holds the installation's A2A stream for as long as it runs.
 const a2aReceiver = startA2AReceiver({ cwd, harness, mcpUrl });
 // The owner's action queue runs due tasks for as long as this service runs.
 const taskQueue = startTaskQueue({ cwd, harness, mcpUrl });
-server.listen(port, '127.0.0.1', () => console.log(`Clarity M3NT0R MCP → ${mcpUrl}`));
+server.listen(port, '127.0.0.1', () => console.log(`Clarity M3NT0R MCP → ${mcpUrl} · owner view → ${base}/`));
 for (const signal of ['SIGTERM','SIGINT']) process.on(signal, () => {
   for (const stream of mcpStreams) stream.res.end();
   server.close(() => process.exit(0));

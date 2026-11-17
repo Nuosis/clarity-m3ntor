@@ -33,7 +33,7 @@ const recurrenceSchema = {
 };
 
 export const taskTools = [
-  { name: 'set_task', description: 'Create or update a task in the owner\'s action queue. The service runs it in the owner\'s harness when due (now, at run_at, or on its recurrence) and records the result. Supplying an existing task_id updates that task instead of adding another; use this to reuse a matching recurring task.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'Existing task to update; omit to create.' }, title: { type: 'string' }, instruction: { type: 'string', description: 'What the owner\'s agent should do when the task runs.' }, run_at: { type: 'string', format: 'date-time', description: 'First run time; omit to run now (one-off) or at the next recurrence.' }, recurrence: recurrenceSchema, remove_on_completion: { type: 'boolean', description: 'One-off tasks only: after a successful run, journal the result and remove the task from the list (used for implementing a recommendation).' } }, required: ['title', 'instruction'], additionalProperties: false } },
+  { name: 'set_task', description: 'Create or update a task in the owner\'s action queue. The service runs it in the owner\'s harness when due (now, at run_at, or on its recurrence) and records the result. Supplying an existing task_id updates that task instead of adding another; use this to reuse a matching recurring task.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'Existing task to update; omit to create.' }, title: { type: 'string' }, instruction: { type: 'string', description: 'The task: what the owner\'s agent should do when it runs.' }, success: { type: 'string', description: 'Definition of success: what must be true for the run to count as done.' }, constraints: { type: 'array', items: { type: 'string' }, description: 'Optional constraints unique to this task.' }, category: { type: 'string', enum: ['recommendation', 'assessment', 'other'], description: 'recommendation for M3NT0R\'s weekly recommendation, assessment for the weekly reassessment.' }, run_at: { type: 'string', format: 'date-time', description: 'First run time; omit to run now (one-off) or at the next recurrence.' }, recurrence: recurrenceSchema, remove_on_completion: { type: 'boolean', description: 'One-off tasks only: after a successful run, journal the result and remove the task from the list (used for implementing a recommendation).' } }, required: ['title', 'instruction', 'success'], additionalProperties: false } },
   { name: 'list_tasks', description: 'List tasks with status (queued, delivered, executing, completed, failed, paused, done), next run time, last run and its result or error.', inputSchema: { type: 'object', properties: { status: { type: 'string' } }, additionalProperties: false }, annotations: { readOnlyHint: true } },
   { name: 'clear_task', description: 'Clear a task: action done marks it finished and stops any recurrence (history kept); action delete removes it and its run history. A running job is not stopped. When the owner has decided against a task, give their reason: it is journaled so M3NT0R can take it into account on its next weekly run.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, action: { type: 'string', enum: ['done', 'delete'] }, reason: { type: 'string', description: 'The owner\'s decision and reason, when they directed this.' } }, required: ['task_id', 'action'], additionalProperties: false } },
   { name: 'start_task_worker', description: 'Start running due tasks (persists across service restarts) and return the worker state.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
@@ -60,13 +60,15 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
       recurrence TEXT, next_run_at TEXT, status TEXT NOT NULL,
       job_id TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0, pause_reason TEXT,
       last_run_at TEXT, last_status TEXT, last_result TEXT, last_error TEXT,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, remove_on_completion INTEGER NOT NULL DEFAULT 0);
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, remove_on_completion INTEGER NOT NULL DEFAULT 0,
+      success TEXT, constraints TEXT, category TEXT);
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY, task_id TEXT NOT NULL, job_id TEXT, status TEXT NOT NULL,
       started_at TEXT NOT NULL, finished_at TEXT, result TEXT, error TEXT);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `);
-  if (!db.prepare('PRAGMA table_info(tasks)').all().some(column => column.name === 'remove_on_completion')) db.exec('ALTER TABLE tasks ADD COLUMN remove_on_completion INTEGER NOT NULL DEFAULT 0');
+  const columns = new Set(db.prepare('PRAGMA table_info(tasks)').all().map(column => column.name));
+  for (const [name, type] of [['remove_on_completion', 'INTEGER NOT NULL DEFAULT 0'], ['success', 'TEXT'], ['constraints', 'TEXT'], ['category', 'TEXT']]) if (!columns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
   const now = () => new Date().toISOString();
   const get = id => db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   const update = (id, fields) => {
@@ -75,7 +77,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
   };
   const enabled = () => db.prepare("SELECT value FROM settings WHERE key = 'worker_enabled'").get()?.value === 'true';
   const setEnabled = value => db.prepare("INSERT INTO settings (key, value) VALUES ('worker_enabled', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(value));
-  const view = task => task && { ...task, recurrence: task.recurrence ? JSON.parse(task.recurrence) : null };
+  const view = task => task && { ...task, recurrence: task.recurrence ? JSON.parse(task.recurrence) : null, constraints: task.constraints ? JSON.parse(task.constraints) : [] };
   const watchers = new Map();
   let timer = null;
 
@@ -208,6 +210,11 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
   const workerState = () => ({ enabled: enabled(), database: path.join(directory, 'action.sqlite3'), executing: db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status = 'executing'").get().n, next_run_at: db.prepare("SELECT MIN(next_run_at) AS at FROM tasks WHERE status = 'queued'").get()?.at || null });
 
   return {
+    // Task with its runs, for the owner UI.
+    detail(taskId) {
+      const task = view(get(taskId));
+      return task && { task, runs: db.prepare('SELECT * FROM runs WHERE task_id = ? ORDER BY started_at DESC').all(taskId), worker: workerState() };
+    },
     call(name, input) {
       if (name === 'set_task') {
         if (input.recurrence && !input.recurrence.weekly === !input.recurrence.interval_minutes) throw new Error('Give recurrence either weekly or interval_minutes.');
@@ -218,10 +225,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl }) {
         const recurrence = input.recurrence ? JSON.stringify(input.recurrence) : null;
         const nextRun = input.run_at ? new Date(input.run_at).toISOString() : recurrence ? nextFor({ recurrence }, new Date()) : null;
         if (input.run_at && Number.isNaN(new Date(input.run_at).getTime())) throw new Error('run_at must be an ISO date-time.');
+        if (!input.success?.trim()) throw new Error('Give the definition of success for this task.');
+        if (input.constraints && (!Array.isArray(input.constraints) || input.constraints.some(item => typeof item !== 'string'))) throw new Error('constraints must be a list of strings.');
+        const contract = { success: input.success.trim(), constraints: input.constraints?.length ? JSON.stringify(input.constraints) : null, category: input.category || null };
         const removeOnCompletion = input.remove_on_completion === true ? 1 : 0;
         if (removeOnCompletion && recurrence) throw new Error('remove_on_completion applies to one-off tasks only.');
-        if (existing) update(id, { title: input.title, instruction: input.instruction, recurrence, next_run_at: nextRun, status: 'queued', consecutive_failures: 0, pause_reason: null, remove_on_completion: removeOnCompletion });
-        else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, remove_on_completion) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, input.title, input.instruction, recurrence, nextRun, 'queued', now(), now(), removeOnCompletion);
+        if (existing) update(id, { title: input.title, instruction: input.instruction, recurrence, next_run_at: nextRun, status: 'queued', consecutive_failures: 0, pause_reason: null, remove_on_completion: removeOnCompletion, ...contract });
+        else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, remove_on_completion, success, constraints, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, input.title, input.instruction, recurrence, nextRun, 'queued', now(), now(), removeOnCompletion, contract.success, contract.constraints, contract.category);
         schedule();
         return { task: view(get(id)), created: !existing, worker: workerState() };
       }

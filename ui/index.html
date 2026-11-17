@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>M3NT0R</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>M3NT0R</h1>
+    <span id="worker"></span>
+  </header>
+  <nav>
+    <button data-view="tasks" class="active">Tasks</button>
+    <button data-view="questions">Questions <span id="question-count"></span></button>
+    <button data-view="assessment">Assessment</button>
+    <button data-view="journal">Journal</button>
+  </nav>
+  <main>
+    <section id="tasks" class="view split">
+      <ul id="task-list" class="list"></ul>
+      <article id="task-detail" class="detail"><p class="empty">Select a task.</p></article>
+    </section>
+    <section id="questions" class="view" hidden></section>
+    <section id="assessment" class="view" hidden></section>
+    <section id="journal" class="view" hidden></section>
+  </main>
+  <p id="error" role="alert" hidden></p>
+  <script src="/app.js"></script>
+</body>
+</html>

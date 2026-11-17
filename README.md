@@ -63,6 +63,28 @@ globally, change authentication, restart another service, or start model work.
 The HTTP server listens only on loopback and checks the request Host/Origin.
 Keep it local; this package does not add remote-user authentication.
 
+## Owner view
+
+The service also serves the owner's view at `http://127.0.0.1:<port>/` (same
+port as the MCP). It shows the task queue with each task's contract, runs, what the
+agent did and the result; the questions waiting on the owner (answer or dismiss);
+the latest POMA assessment and the week's recommendation (which the owner can decline
+with a reason); and the business journal. It updates when local records change.
+
+### Desktop app
+
+`desktop/` wraps the owner view in a Tauri app. Build it once (requires Rust and the
+Tauri CLI: `cargo install tauri-cli --version "^2"`):
+
+```sh
+cd desktop/src-tauri
+cargo tauri build --bundles app      # macOS: target/release/bundle/macos/M3NT0R.app
+```
+
+On Windows use `--bundles nsis` and on Linux `--bundles appimage`. The app opens
+`http://127.0.0.1:4317/`; set `M3NTOR_URL` when the service uses another port. The
+service must be running.
+
 ## Ask and retrieve
 
 Call `ask_m3ntor` with:
