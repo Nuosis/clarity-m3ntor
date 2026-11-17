@@ -34,3 +34,4 @@ export const utilityTools = [
 const select = (input, fields) => Object.fromEntries(fields.filter(field => Object.hasOwn(input, field)).map(field => [field, input[field]]));
 export const reportUtility = input => clarityRequest('POST', '/agent/utility/cases', select(input, reportFields));
 export const searchUtility = input => clarityRequest('POST', '/agent/utility/search', select(input, searchFields));
+export const revokeUtility = caseId => clarityRequest('POST', `/agent/utility/cases/${encodeURIComponent(caseId)}/revoke`, {});

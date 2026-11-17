@@ -24,6 +24,7 @@
     <button data-view="tasks" class="active">Tasks</button>
     <button data-view="questions">Questions <span id="question-count" class="count"></span></button>
     <button data-view="assessment">Assessment</button>
+    <button data-view="use-cases">Use cases</button>
     <button data-view="context">Context</button>
     <button data-view="journal">Journal</button>
   </nav>
@@ -34,6 +35,26 @@
     </section>
     <section id="questions" class="view" hidden></section>
     <section id="assessment" class="view" hidden></section>
+    <section id="use-cases" class="view" hidden>
+      <form id="case-filters" class="card filters">
+        <input type="search" name="q" placeholder="Search use cases" aria-label="Search use cases">
+        <fieldset>
+          <legend>POMA</legend>
+          <label><input type="checkbox" name="label" value="Process"> Process</label>
+          <label><input type="checkbox" name="label" value="Observability"> Observability</label>
+          <label><input type="checkbox" name="label" value="Measurement"> Measurement</label>
+          <label><input type="checkbox" name="label" value="Agency"> Agency</label>
+        </fieldset>
+        <select name="source" aria-label="Source">
+          <option value="">All sources</option>
+          <option value="user_reported">Owner reported</option>
+          <option value="web_documented">Web documented</option>
+        </select>
+        <input type="text" name="tags" placeholder="Tags, comma separated" aria-label="Tags">
+        <button class="primary" type="submit">Search</button>
+      </form>
+      <div id="case-list"></div>
+    </section>
     <section id="context" class="view" hidden></section>
     <section id="journal" class="view" hidden></section>
   </main>

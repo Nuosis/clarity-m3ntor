@@ -9,7 +9,7 @@ import { savePomaReassessment } from './assessment-store.mjs';
 import { readJournal, addJournal, questionState, setUserQuestions, readUserQuestions, businessTools } from './business-journal.mjs';
 import { coachIdentity } from './coach-identity.mjs';
 import { m3ntorTools, askM3ntor, assessPoma, getM3ntorResult, jobDirectory, jobRoot } from './m3ntor-jobs.mjs';
-import { utilityTools, reportUtility, searchUtility } from './clarity-utility.mjs';
+import { utilityTools, reportUtility, searchUtility, revokeUtility } from './clarity-utility.mjs';
 import { clarityRequest } from './clarity-client.mjs';
 import { startA2AReceiver } from './a2a-receiver.mjs';
 import { taskTools, startTaskQueue } from './task-queue.mjs';
@@ -96,6 +96,23 @@ async function submitPayloadNow(payload) {
 async function submitAssessment(cwd_, input, profile, assessedAt) {
   return submitPayload(submissionPayload(input, profile, assessedAt));
 }
+// When the owner says what has been most useful, the owner's agent researches how that
+// solution works here, well enough for another agent to replicate it, and submits it
+// to the shared utility library. One task per answered question.
+async function queueUseCaseResearch(questionId, answer) {
+  if (!String(questionId).startsWith('poma-utility-') || !String(answer || '').trim()) return null;
+  const existing = (await taskQueue.call('list_tasks', {})).tasks.find(task => task.category === 'use_case' && task.instruction.includes(questionId));
+  if (existing) return existing.id;
+  const created = await taskQueue.call('set_task', {
+    title: 'Write up what has been most useful',
+    category: 'use_case',
+    instruction: `The owner answered "Have I been useful in getting your work done? If yes, what has felt the most useful?" with: "${answer.trim()}" (question ${questionId}).\n\nIf the owner said nothing has been useful, journal that with add_journal and stop. Otherwise research the solution they named as it works in this business: find it in the journal, tasks, local files, scripts, configuration and earlier agent sessions. Work out what it does, what triggers it, the steps it takes, the tools and access it needs, and the result it produces, in enough detail that another business's agent could replicate it. Then submit it with report_utility: a new UUID submission_id; title; summary; process (the steps); prerequisites; agent_actions; outcome; owner_feedback (the owner's words above); poma_labels; tags; evidence (kind owner_reported, with limitations); source_kind user_reported. Keep it non-sensitive: no names of people or customers, contact details, amounts, credentials, hostnames or file paths. Report the case_id returned.`,
+    success: 'report_utility returned a case_id for a replicable, non-sensitive write-up of the solution the owner named (or the owner said nothing was useful and that is journaled).',
+    constraints: ['Read-only research: change nothing in the business while researching.', 'Share only the non-sensitive write-up; private records stay local.'],
+  });
+  return created.task.id;
+}
+
 let retryTimer = null, retryDelay = 60000;
 function scheduleSubmissionRetry() {
   if (retryTimer) return;
@@ -216,6 +233,7 @@ async function mcp(req, res, coach = false) {
         result={content:[{type:'text',text:JSON.stringify(added)}]};
       } else if (name === 'suser_question_set') {
         const updated=await setUserQuestions(cwd,input);toolsChanged();
+        if (input.action === 'answer') await queueUseCaseResearch(input.question_id, input.answer).catch(error => console.error('Use case research task failed:', error.message));
         result={content:[{type:'text',text:JSON.stringify(updated)}]};
       } else if (name === 'user_question_read' || /^user_questions_\d+$/.test(name)) {
         result={content:[{type:'text',text:JSON.stringify(await readUserQuestions(cwd,session,input))}]};
@@ -328,7 +346,21 @@ async function ownerApi(req, res, url) {
     if (!['answer', 'dismiss'].includes(input.action)) throw new Error('Use answer or dismiss.');
     await setUserQuestions(cwd, { action: input.action, question_id: parts[2], answer: input.answer, reason: input.reason });
     toolsChanged();
+    if (input.action === 'answer') await queueUseCaseResearch(parts[2], input.answer).catch(error => console.error('Use case research task failed:', error.message));
     return json(res, 200, await overview());
+  }
+  if (req.method === 'GET' && url.pathname === '/api/use-cases') {
+    const labels = url.searchParams.getAll('label').filter(Boolean);
+    const tags = (url.searchParams.get('tags') || '').split(',').map(tag => tag.trim()).filter(Boolean);
+    const source = url.searchParams.get('source') || undefined;
+    try {
+      const found = await searchUtility({ query: url.searchParams.get('q') || '', poma_labels: labels, tags, ...(source ? { source_kind: source } : {}), limit: 50 });
+      return json(res, 200, { cases: (found.results || []).map(item => ({ ...item.case, own: item.own === true })), mode: found.retrieval_mode });
+    } catch (error) { return json(res, 502, { error: `The use case library is unavailable: ${error.message}` }); }
+  }
+  if (req.method === 'POST' && parts[1] === 'use-cases' && parts[2] && parts[3] === 'revoke') {
+    try { return json(res, 200, await revokeUtility(parts[2])); }
+    catch (error) { return json(res, /HTTP 403/.test(error.message) ? 403 : 502, { error: /HTTP 403/.test(error.message) ? 'Only use cases your business submitted can be revoked.' : error.message }); }
   }
   if (req.method === 'POST' && parts[1] === 'tasks' && parts[2] && parts[3] === 'decline') {
     const input = await body(req);

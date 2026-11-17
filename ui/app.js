@@ -48,6 +48,61 @@ function renderRunning() {
   box.hidden = false;
 }
 
+// Use cases come from the shared library through the local service; searched on demand.
+let caseQuery = '';
+async function loadUseCases() {
+  const list = $('#case-list');
+  try {
+    const result = await api(`/api/use-cases?${caseQuery}`);
+    list.innerHTML = result.cases.length ? result.cases.map(renderCase).join('') : '<p class="empty">No use cases match.</p>';
+  } catch (error) { list.innerHTML = `<p class="empty">${esc(error.message)}</p>`; }
+}
+function renderCase(item) {
+  const list = (title, values) => values?.length ? `<h3>${title}</h3><ul>${values.map(v => `<li>${esc(v)}</li>`).join('')}</ul>` : '';
+  return `<article class="card case">
+    <div class="head">
+      <h2>${esc(item.title)}</h2>
+      ${item.own ? `<button class="danger" type="button" data-revoke="${esc(item.id)}">Revoke</button>` : ''}
+    </div>
+    <div class="labels">
+      ${item.own ? '<span class="chip own">Your business</span>' : ''}
+      ${(item.poma_labels || []).map(l => `<span class="chip poma">${esc(l)}</span>`).join('')}
+      ${(item.tags || []).map(t => `<span class="chip">${esc(t)}</span>`).join('')}
+      <span class="meta">${esc(item.source_kind === 'web_documented' ? 'Web documented' : 'Owner reported')} · ${esc(when(item.created_at))}</span>
+    </div>
+    <p>${esc(item.summary)}</p>
+    <details>
+      <summary>How it works</summary>
+      <div class="prose">
+        <h3>Process</h3><p>${esc(item.process)}</p>
+        ${list('Prerequisites', item.prerequisites)}
+        ${list('What the agent does', item.agent_actions)}
+        <h3>Outcome</h3><p>${esc(item.outcome)}</p>
+        ${item.owner_feedback ? `<h3>Owner feedback</h3><p>${esc(item.owner_feedback)}</p>` : ''}
+        ${list('Limitations', item.evidence?.limitations)}
+      </div>
+    </details>
+  </article>`;
+}
+$('#case-filters').addEventListener('submit', event => {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  const params = new URLSearchParams();
+  if (form.get('q')) params.set('q', form.get('q'));
+  for (const label of form.getAll('label')) params.append('label', label);
+  if (form.get('source')) params.set('source', form.get('source'));
+  if (form.get('tags')) params.set('tags', form.get('tags'));
+  caseQuery = params.toString();
+  loadUseCases();
+});
+$('#case-list').addEventListener('click', async event => {
+  const id = event.target.dataset?.revoke;
+  if (!id) return;
+  if (!confirm('Revoke this use case? It will be removed from the shared library for every business.')) return;
+  try { await api(`/api/use-cases/${encodeURIComponent(id)}/revoke`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); loadUseCases(); }
+  catch (error) { showError(error); }
+});
+
 function renderContext() {
   $('#context').innerHTML = data.context.trim()
     ? `<article class="card prose">${window.renderMarkdown(data.context)}</article>`
@@ -199,6 +254,7 @@ document.querySelectorAll('nav button').forEach(button => button.addEventListene
   view = button.dataset.view;
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b === button));
   document.querySelectorAll('.view').forEach(section => { section.hidden = section.id !== view; });
+  if (view === 'use-cases') loadUseCases();
 }));
 $('#task-list').addEventListener('click', event => {
   const item = event.target.closest('li[data-id]');
