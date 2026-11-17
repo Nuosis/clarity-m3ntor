@@ -118,7 +118,16 @@ if (password) jwt = await login();
 if (jwt && suppliedPassword) await secretPut(ACCOUNT_SERVICE, email, password);
 const registrationFields = { installation_id, harness: opts.harness || null, company_name: opts.company || null, username: opts.username || null };
 let registration;
-if (jwt) {
+// "I forgot": an existing account is claimed with a one-time code that Clarity sent by
+// A2A to an agent the account's organization already has. No password is involved.
+const forgot = async () => {
+  const sent = await httpJson('POST', `${apiUrl}/agent/mentor/forgot`, { data: { email, installation_id, deliver_to: opts['deliver-to'] } });
+  if (!sent.ok) done(1, { status: 'error', step: 'forgot', http_status: sent.status, error: sent.payload?.error?.message || sent.payload });
+  done(2, { status: 'code_sent', deliver_to: opts['deliver-to'], expires_in_minutes: sent.payload.expires_in_minutes, next: `Read the M3NT0R registration code from ${opts['deliver-to']}'s A2A inbox and rerun with --code <code>.` });
+};
+if (opts.code) {
+  registration = await httpJson('POST', `${apiUrl}/agent/mentor/registrations/claim`, { data: { email, code: opts.code, ...registrationFields } });
+} else if (jwt) {
   registration = await httpJson('POST', `${apiUrl}/agent/mentor/registrations`, { bearer: jwt, data: registrationFields });
 } else if (!suppliedPassword && (!password || profile.pending_signup)) {
   // New account: one call creates the confirmed account and registers this
@@ -130,10 +139,14 @@ if (jwt) {
     await secretPut(ACCOUNT_SERVICE, email, password);
   }
   registration = await httpJson('POST', `${apiUrl}/agent/mentor/signup`, { data: { email, password, ...registrationFields } });
-  if (registration.status === 409) done(1, { status: 'error', step: 'signup', http_status: 409, detail: 'A Clarity account already exists for this email. Supply its password with --password-stdin.' });
+  if (registration.status === 409) {
+    if (opts['deliver-to']) await forgot();
+    done(1, { status: 'error', step: 'signup', http_status: 409, detail: 'A Clarity account already exists for this email. Rerun with --deliver-to <handle of an A2A agent your organization already has> to get a one-time code by A2A.' });
+  }
   if (registration.ok) { await saveProfile({ pending_signup: false }); created_account = true; }
 } else {
-  done(1, { status: 'error', step: 'signin', login_error: loginError, detail: 'Sign-in failed with the stored or supplied password. Supply the account password with --password-stdin.' });
+  if (opts['deliver-to']) await forgot();
+  done(1, { status: 'error', step: 'signin', login_error: loginError, detail: 'Sign-in failed with the stored password. Rerun with --deliver-to <handle of an A2A agent your organization already has> to get a one-time code by A2A.' });
 }
 if (!registration.ok) done(1, { status: 'error', step: 'registration', http_status: registration.status, error: registration.payload?.error?.message || registration.payload, retry: 'Rerun the same command; the installation and any generated password are kept.' });
 const { token, ...identity } = registration.payload;

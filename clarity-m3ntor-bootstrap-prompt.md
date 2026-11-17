@@ -56,7 +56,8 @@ node "$M3NTOR_SOURCE/register.mjs" --email "<owner's email>" --company "<busines
 Use the owner's established email; never fabricate one. No email access is needed: for a new account one call creates the confirmed account, registers this installation and returns its token. It prints one JSON status:
 
 - `registered` or `signed_in`: the profile `~/.config/clarity_m3ntor/config.json` holds non-secret API, organization, agent and installation metadata plus a `token_command`; the `clrtok_` token is in the owner's secret store (macOS Keychain, otherwise an owner-only file). Record the returned `organization_id`, `agent_id` and `agent_handle`.
-- `missing_input` or `error`: report the named step. If a Clarity account already exists for the email, supply its password on stdin with `--password-stdin`; an email address alone does not prove ownership.
+- `code_sent`: the email already has a Clarity account. Clarity sent a one-time registration code by A2A to the agent named with `--deliver-to` (an A2A agent the owner's organization already has, such as the harness's own A2A identity). Read the code from that agent's inbox (message from `clarity-m3ntor`, payload type `m3ntor_registration_code`) and rerun with `--code <code>` within 15 minutes. No password is needed or changed.
+- `missing_input` or `error`: report the named step. If the account exists and you have not given `--deliver-to`, rerun with it; `--password-stdin` remains available when the account password is already in the owner's secret store.
 
 Rerunning the command reuses the stored token; a rejected token re-registers the same installation and agent with a rotated token. The same token authenticates prompts, assessment submission, utility cases and A2A messages (`/agent/agent_messages`) over HTTPS. Never copy another agent's identity, and do not substitute operator credentials.
 
