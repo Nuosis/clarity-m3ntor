@@ -76,7 +76,7 @@ export function savePomaReassessment(cwd, input, { assessmentId, harness } = {})
       // same-ID reconciliation updates only this tool's own reassessment.
       if (index >= 0 && daily.assessments[index].persistence !== 'save_poma_reassessment') throw new Error('This revision ID already belongs to a prior assessment. The existing revision was preserved.');
       const revision = {
-        assessmentId: receipt.assessmentId, revisionId, assessedAt, status: input.status || 'draft',
+        assessmentId: receipt.assessmentId, revisionId, assessedAt, status: input.status || 'final',
         ...(input.harness || harness ? { harness: input.harness || harness } : {}),
         persistence: 'save_poma_reassessment',
         scale: { minimum: 1, maximum: 10, categories: structuredClone(categoricalScale) },
@@ -98,7 +98,7 @@ export function savePomaReassessment(cwd, input, { assessmentId, harness } = {})
       await checkpoint('context', await writePrivate(contextPath, updated));
       const journal = await appendJournalInWrite(cwd, { date, kind: 'poma_reassessment', source: 'local_harness', content: input.journal_entry, metadata: { revisionId } }, new Date(assessedAt), `poma_reassessment:${revisionId}`);
       await checkpoint('journal', { saved: true, path: journal.path, entryId: journal.entry.id, reused: journal.reused });
-      await checkpoint('summary', { ...await writePrivate(path.join(root, 'reports', `${revisionId}.md`), `Status: draft coaching summary; saved locally, not submitted.\n\n${input.coaching_summary}`), status: 'draft' });
+      await checkpoint('summary', { ...await writePrivate(path.join(root, 'reports', `${revisionId}.md`), `${input.coaching_summary}\n`) });
       receipt.saved = true;
       await writeJson(receiptPath, receipt);
     } catch (error) {

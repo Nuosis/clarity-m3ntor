@@ -33,8 +33,25 @@ function render() {
   const worker = data.worker;
   $('#worker').textContent = worker.enabled ? `Worker on${worker.next_run_at ? ` · next run ${when(worker.next_run_at)}` : ''}` : 'Worker off';
   $('#question-count').textContent = data.questions.pending.length ? `(${data.questions.pending.length})` : '';
-  renderTasks(); renderQuestions(); renderAssessment(); renderJournal();
+  renderRunning(); renderTasks(); renderQuestions(); renderAssessment(); renderContext(); renderJournal();
   restoreDrafts();
+}
+
+const JOB_LABELS = { poma_assessment: 'Assessment', poma_reassessment: 'Assessment', coaching: 'M3NT0R coaching', scheduled_task: 'Task', a2a_message: 'A2A request' };
+function renderRunning() {
+  const box = $('#running');
+  const jobs = data.running || [];
+  if (!jobs.length) { box.hidden = true; box.innerHTML = ''; return; }
+  const first = jobs[0];
+  const label = JOB_LABELS[first.task] || 'Job';
+  box.innerHTML = `<span class="bar" aria-hidden="true"></span><span>${esc(label)} running since ${esc(when(first.started_at))}${jobs.length > 1 ? `, and ${jobs.length - 1} more` : ''}</span>`;
+  box.hidden = false;
+}
+
+function renderContext() {
+  $('#context').innerHTML = data.context.trim()
+    ? `<article class="card prose">${window.renderMarkdown(data.context)}</article>`
+    : '<p class="empty">No business context recorded yet.</p>';
 }
 
 function renderTasks() {
@@ -42,7 +59,7 @@ function renderTasks() {
   if (!data.tasks.length) { list.innerHTML = '<li class="empty">No tasks.</li>'; return; }
   list.innerHTML = data.tasks.map(task => `
     <li data-id="${esc(task.id)}" class="${task.id === selectedTask ? 'selected' : ''}">
-      <div>${esc(task.title)} ${status(task.status)}</div>
+      <div class="title"><span>${esc(task.title)}</span>${status(task.status)}</div>
       <div class="meta">${task.next_run_at ? `Next ${when(task.next_run_at)}` : task.last_run_at ? `Last run ${when(task.last_run_at)}` : ''}</div>
     </li>`).join('');
 }
@@ -128,20 +145,28 @@ function renderQuestions() {
 }
 
 function renderAssessment() {
-  const [latest, ...earlier] = data.assessments;
+  const [latest, previous] = data.assessments;
   const areas = ['process', 'observability', 'measurement', 'agency'];
-  const ratings = assessment => `<table><tr><th>Area</th><th>Category</th><th>Score</th>${earlier.length ? '<th>Previous</th>' : ''}</tr>${areas.map(area => `<tr><td>${area[0].toUpperCase() + area.slice(1)}</td><td>${esc(assessment.ratings?.[area]?.category)}</td><td>${esc(assessment.ratings?.[area]?.score)}/10</td>${earlier.length ? `<td>${esc(earlier[0].ratings?.[area]?.score)}/10</td>` : ''}</tr>`).join('')}</table>`;
+  const ratings = assessment => `<div class="ratings">${areas.map(area => {
+    const rating = assessment.ratings?.[area] || {};
+    const before = previous?.ratings?.[area]?.score;
+    return `<div class="rating">
+      <span class="area">${area[0].toUpperCase() + area.slice(1)}</span>
+      <span class="category">${esc(rating.category)}</span>
+      <span class="track"><span class="fill" style="width:${Math.max(0, Math.min(10, Number(rating.score) || 0)) * 10}%"></span></span>
+      <span class="score">${esc(rating.score)}<small>/10</small>${before !== undefined && before !== rating.score ? ` <small>(was ${esc(before)})</small>` : ''}</span>
+    </div>`; }).join('')}</div>`;
   const open = data.recommendations.open;
   $('#assessment').innerHTML = `
     ${latest ? `<div class="card">
-      <h2>${status(latest.status)} Assessment ${when(latest.assessed_at)}</h2>
+      <h2>Assessment ${esc(when(latest.assessed_at))} ${status(latest.status)}</h2>
       ${ratings(latest)}
-      ${latest.report ? `<h3>Summary</h3><pre>${esc(latest.report)}</pre>` : latest.summary ? `<h3>Summary</h3><pre>${esc(latest.summary)}</pre>` : ''}
+      ${latest.report || latest.summary ? `<div class="prose">${window.renderMarkdown(latest.report || latest.summary)}</div>` : ''}
     </div>` : '<p class="empty">No assessment yet.</p>'}
     <div class="card">
       <h2>Recommendation</h2>
       ${open.length ? open.map(task => `<div class="entry">
-        <div>${esc(task.title)} ${status(task.status)}</div>
+        <div class="title"><span>${esc(task.title)}</span> ${status(task.status)}</div>
         <div class="meta">${task.next_run_at ? `Runs ${when(task.next_run_at)}` : ''}</div>
         <div class="content">${esc(task.instruction)}</div>
         ${task.status === 'queued' ? declineForm(task.id) : ''}
@@ -157,6 +182,18 @@ function renderJournal() {
       ${day.entries.map(entry => `<div class="entry"><div class="meta">${when(entry.createdAt)} · ${esc(entry.kind)}</div><div class="content">${esc(entry.content)}</div></div>`).join('')}
     </div>`).join('') : '<p class="empty">No journal entries in the last 14 days.</p>';
 }
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const button = $('#theme');
+  button.textContent = theme === 'dark' ? 'Light mode' : 'Dark mode';
+}
+applyTheme(document.documentElement.dataset.theme || 'light');
+$('#theme').addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('m3ntor-theme', next);
+  applyTheme(next);
+});
 
 document.querySelectorAll('nav button').forEach(button => button.addEventListener('click', () => {
   view = button.dataset.view;

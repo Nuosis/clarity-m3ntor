@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { readFile, writeFile, readdir } from 'node:fs/promises';
+import { readFile, writeFile, readdir, unlink, stat } from 'node:fs/promises';
 import { mkdirSync, watch } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +8,7 @@ import { dimensions, categoricalScale } from './questions.mjs';
 import { savePomaReassessment } from './assessment-store.mjs';
 import { readJournal, addJournal, questionState, setUserQuestions, readUserQuestions, businessTools } from './business-journal.mjs';
 import { coachIdentity } from './coach-identity.mjs';
-import { m3ntorTools, askM3ntor, assessPoma, getM3ntorResult, jobDirectory } from './m3ntor-jobs.mjs';
+import { m3ntorTools, askM3ntor, assessPoma, getM3ntorResult, jobDirectory, jobRoot } from './m3ntor-jobs.mjs';
 import { utilityTools, reportUtility, searchUtility } from './clarity-utility.mjs';
 import { clarityRequest } from './clarity-client.mjs';
 import { startA2AReceiver } from './a2a-receiver.mjs';
@@ -44,22 +44,68 @@ async function askAssessmentUtility(input, receipt) {
   } catch (error) { return { id, status: 'failed', error: error.message }; }
 }
 
-// Submit the separate non-sensitive summary to Clarity and keep the receipt beside the local one.
-async function submitAssessment(cwd, input, profile, assessedAt) {
+// Submit the separate non-sensitive summary to Clarity. Submission is required: the exact
+// payload is kept in a pending file until Clarity accepts it, retried with backoff and at
+// every start, and the outcome is recorded in the assessment's receipt.
+const reassessmentDir = () => path.join(cwd, '.clarity_coach', 'reassessments');
+function submissionPayload(input, profile, assessedAt) {
+  return {
+    revision_id: input.revision_id, status: input.status === 'draft' ? 'draft' : 'final',
+    // Only category and score leave the machine; rationales cite private sources.
+    assessed_at: assessedAt, coaching_summary: input.coaching_summary, profile,
+    ratings: Object.fromEntries(Object.entries(input.ratings || {}).map(([area, rating]) => [area, { category: rating?.category, score: rating?.score }])),
+  };
+}
+async function recordSubmission(revisionId, submission) {
+  const directory = reassessmentDir();
+  await writeFile(path.join(directory, `${revisionId}.submission.json`), JSON.stringify(submission, null, 2), { mode: 0o600 });
+  const receiptFile = path.join(directory, `${revisionId}.json`);
+  const receipt = await readJson(receiptFile, null);
+  if (receipt) await writeFile(receiptFile, JSON.stringify({ ...receipt, submitted: submission.saved === true, submitted_at: submission.submitted_at || null }, null, 2), { mode: 0o600 });
+}
+async function submitPayload(payload) {
+  const revisionId = String(payload.revision_id).toLowerCase();
+  const pendingFile = path.join(reassessmentDir(), `${revisionId}.pending-submission.json`);
   let submission;
   try {
-    const response = await clarityRequest('POST', '/agent/mentor/assessments', {
-      revision_id: input.revision_id, status: input.status === 'final' ? 'final' : 'draft',
-      // Only category and score leave the machine; rationales cite private sources.
-      assessed_at: assessedAt, coaching_summary: input.coaching_summary, profile,
-      ratings: Object.fromEntries(Object.entries(input.ratings || {}).map(([area, rating]) => [area, { category: rating?.category, score: rating?.score }])),
-    });
+    const response = await clarityRequest('POST', '/agent/mentor/assessments', payload);
     submission = { saved: response.saved === true, created: response.created, agent_id: response.agent_id, updated_at: response.assessment?.updated_at, submitted_at: new Date().toISOString() };
   } catch (error) { submission = { saved: false, error: error.message, attempted_at: new Date().toISOString() }; }
-  const file = path.join(cwd, '.clarity_coach', 'reassessments', `${input.revision_id}.submission.json`);
-  try { await writeFile(file, JSON.stringify(submission, null, 2), { mode: 0o600 }); submission.receipt_path = file; }
-  catch (error) { submission.receipt_error = error.message; }
+  try {
+    if (submission.saved) await unlink(pendingFile).catch(() => {});
+    else { await writeFile(pendingFile, JSON.stringify(payload, null, 2), { mode: 0o600 }); scheduleSubmissionRetry(); }
+    await recordSubmission(revisionId, submission);
+  } catch (error) { submission.receipt_error = error.message; }
   return submission;
+}
+async function submitAssessment(cwd_, input, profile, assessedAt) {
+  return submitPayload(submissionPayload(input, profile, assessedAt));
+}
+let retryTimer = null, retryDelay = 60000;
+function scheduleSubmissionRetry() {
+  if (retryTimer) return;
+  retryTimer = setTimeout(async () => {
+    retryTimer = null;
+    const left = await retryPendingSubmissions();
+    if (left) { retryDelay = Math.min(retryDelay * 2, 3600000); scheduleSubmissionRetry(); } else retryDelay = 60000;
+  }, retryDelay);
+}
+async function retryPendingSubmissions() {
+  let files = [];
+  try { files = (await readdir(reassessmentDir())).filter(name => name.endsWith('.pending-submission.json')); } catch {}
+  let left = 0;
+  for (const file of files) {
+    const payload = await readJson(path.join(reassessmentDir(), file), null);
+    if (!payload) continue;
+    let submission;
+    try {
+      const response = await clarityRequest('POST', '/agent/mentor/assessments', payload);
+      submission = { saved: response.saved === true, created: response.created, agent_id: response.agent_id, updated_at: response.assessment?.updated_at, submitted_at: new Date().toISOString(), retried: true };
+    } catch (error) { submission = { saved: false, error: error.message, attempted_at: new Date().toISOString() }; }
+    if (submission.saved) await unlink(path.join(reassessmentDir(), file)).catch(() => {}); else left++;
+    await recordSubmission(String(payload.revision_id).toLowerCase(), submission);
+  }
+  return left;
 }
 
 const ratingSchema = { type: 'object', properties: { category: { type: 'string', enum: categoricalScale.map(item => item.category) }, score: { type: 'integer', minimum: 1, maximum: 10 }, rationale: { type: 'string' } }, required: ['category', 'score', 'rationale'], additionalProperties: false };
@@ -195,13 +241,32 @@ async function jobProcess(jobId) {
   const state = await readJson(path.join(directory, 'state.json'), {});
   return { status: state.status, started_at: state.started_at, finished_at: state.finished_at, error: state.error || null, steps, output };
 }
+// M3NT0R jobs still queued or running (assessment, coaching, tasks, A2A), newest first.
+async function runningJobs() {
+  let names = [];
+  try { names = await readdir(jobRoot); } catch { return []; }
+  const recent = [];
+  for (const name of names) {
+    try { const info = await stat(path.join(jobRoot, name, 'state.json')); if (Date.now() - info.mtimeMs < 2 * 86400000) recent.push(name); } catch {}
+  }
+  const jobs = [];
+  for (const name of recent) {
+    try {
+      const job = await getM3ntorResult(name);
+      if (['queued', 'running'].includes(job.status)) jobs.push({ job_id: job.job_id, task: job.task, status: job.status, stage: job.stage, started_at: job.started_at || job.created_at });
+    } catch {}
+  }
+  return jobs.sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)));
+}
+
 async function overview() {
   const { tasks, worker } = await taskQueue.call('list_tasks', {});
   const questions = await questionState(cwd);
   const journal = await journalDays();
   const decisions = journal.flatMap(day => day.entries.filter(entry => ['owner_decision', 'action_queue'].includes(entry.source)).map(entry => ({ ...entry, date: day.date })));
   return {
-    worker, tasks, a2a: a2aReceiver.status(),
+    worker, tasks, a2a: a2aReceiver.status(), running: await runningJobs(),
+    context: await readFile(contextPath, 'utf8').catch(() => ''),
     questions: { pending: questions.pending, answered: questions.questions.filter(q => q.status !== 'pending').slice(-20).reverse(), deferred_until: questions.deferred ? questions.deferUntil : null },
     assessments: await assessments(),
     recommendations: { open: tasks.filter(task => task.category === 'recommendation'), history: decisions },
@@ -212,6 +277,9 @@ async function overview() {
 const uiListeners = new Set();
 let uiChangeTimer = null;
 mkdirSync(clarityDir, { recursive: true, mode: 0o700 });
+mkdirSync(jobRoot, { recursive: true, mode: 0o700 });
+const notifyUi = () => { clearTimeout(uiChangeTimer); uiChangeTimer = setTimeout(() => { for (const res of uiListeners) res.write('event: changed\ndata: {}\n\n'); }, 300); };
+try { watch(jobRoot, { recursive: true }, notifyUi); } catch (error) { console.error('Job change watch unavailable:', error.message); }
 try { watch(clarityDir, { recursive: true }, () => { clearTimeout(uiChangeTimer); uiChangeTimer = setTimeout(() => { for (const res of uiListeners) res.write('event: changed\ndata: {}\n\n'); }, 300); }); }
 catch (error) { console.error('Owner view change watch unavailable:', error.message); }
 async function ownerApi(req, res, url) {
@@ -248,7 +316,7 @@ async function ownerApi(req, res, url) {
   }
   return json(res, 404, { error: 'Not found.' });
 }
-const UI_FILES = { '/': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/style.css': ['style.css', 'text/css; charset=utf-8'] };
+const UI_FILES = { '/': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/style.css': ['style.css', 'text/css; charset=utf-8'], '/logo.svg': ['logo.svg', 'image/svg+xml'], '/markdown.js': ['markdown.js', 'text/javascript; charset=utf-8'] };
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -267,6 +335,7 @@ const server = http.createServer(async (req, res) => {
 const a2aReceiver = startA2AReceiver({ cwd, harness, mcpUrl });
 // The owner's action queue runs due tasks for as long as this service runs.
 const taskQueue = startTaskQueue({ cwd, harness, mcpUrl });
+retryPendingSubmissions().then(left => { if (left) scheduleSubmissionRetry(); });
 server.listen(port, '127.0.0.1', () => console.log(`Clarity M3NT0R MCP → ${mcpUrl} · owner view → ${base}/`));
 for (const signal of ['SIGTERM','SIGINT']) process.on(signal, () => {
   for (const stream of mcpStreams) stream.res.end();

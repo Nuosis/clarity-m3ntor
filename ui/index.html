@@ -3,18 +3,28 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>M3NT0R</title>
+  <title>Clarity M3NT0R</title>
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
+  <script>document.documentElement.dataset.theme = localStorage.getItem('m3ntor-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');</script>
 </head>
 <body>
   <header>
-    <h1>M3NT0R</h1>
-    <span id="worker"></span>
+    <div class="brand">
+      <img src="/logo.svg" alt="" width="32" height="32">
+      <h1>Clarity <span>M3NT0R</span></h1>
+    </div>
+    <div class="header-right">
+      <span id="worker"></span>
+      <button id="theme" class="ghost" type="button"></button>
+    </div>
   </header>
+  <div id="running" role="status" hidden></div>
   <nav>
     <button data-view="tasks" class="active">Tasks</button>
-    <button data-view="questions">Questions <span id="question-count"></span></button>
+    <button data-view="questions">Questions <span id="question-count" class="count"></span></button>
     <button data-view="assessment">Assessment</button>
+    <button data-view="context">Context</button>
     <button data-view="journal">Journal</button>
   </nav>
   <main>
@@ -24,9 +34,11 @@
     </section>
     <section id="questions" class="view" hidden></section>
     <section id="assessment" class="view" hidden></section>
+    <section id="context" class="view" hidden></section>
     <section id="journal" class="view" hidden></section>
   </main>
   <p id="error" role="alert" hidden></p>
+  <script src="/markdown.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

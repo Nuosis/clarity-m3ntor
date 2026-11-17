@@ -156,7 +156,7 @@ saved; use the actual per-artifact receipts and local readback.
 `save_poma_reassessment` accepts prepared four-area `ratings`, `evidence`,
 `coverage`, `uncertainty`, `comparison`, `productivity`, a `context_update`
 Markdown section, `journal_entry`, and SEPARATE non-sensitive `coaching_summary`.
-`status` defaults to `draft`; the actual `harness` can be supplied when known.
+`status` defaults to `final` (a completed assessment); `draft` is only for a deliberately unfinished one. The summary is always submitted to Clarity: a failed submission is kept and retried until Clarity accepts it. The actual `harness` can be supplied when known.
 Paths are fixed by this MCP connection's business workspace. The service saves
 `.clarity_coach/assessment/YYYY-MM-DD.json`, preserves previous daily schema and
 revisions, appends/updates that revision's section in `CONTEXT.md`, upserts one
