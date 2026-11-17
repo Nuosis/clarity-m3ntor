@@ -24,7 +24,7 @@ const TASK_INSTRUCTION = `You are the business owner's local AI agent, connected
 // M3NT0R coaching jobs (Claude): only these built-in tools exist in the session, so
 // write permissions the owner granted elsewhere cannot apply; MCP is /mcp/coach (read tools only).
 const COACH_BUILTIN_TOOLS = 'Read,Grep,Glob,WebSearch,WebFetch';
-const COACH_TOOLS = [COACH_BUILTIN_TOOLS, ...['search_utility', 'read_journal', 'get_coaching_context', 'user_question_read', 'list_tasks'].map(name => `mcp__clarity_m3ntor__${name}`)].join(',');
+const COACH_TOOLS = [COACH_BUILTIN_TOOLS, ...['search_utility', 'read_journal', 'get_coaching_context', 'user_question_read', 'list_tasks', 'get_task', 'list_recommendations', 'list_assessments', 'read_answered_questions'].map(name => `mcp__clarity_m3ntor__${name}`)].join(',');
 
 const A2A_INSTRUCTION = `You are the business owner's local AI agent, connected to Clarity M3NT0R. M-CODEX, Clarity's operator agent, sent the request below through Clarity A2A. Perform it read-only: look things up, but do not create, change, send or delete anything, and do not start other work. Your final response is sent back to M-CODEX as the reply. Never include sensitive data in it: no credentials, tokens or keys; no personal names, contact details or other identifiers of people; no customer, employee or supplier records; no financial figures, prices or account details; no file paths, hostnames or private message content. Answer with non-sensitive summaries, counts, categories or yes/no findings, and say plainly when the request can only be answered with sensitive data.`;
 
@@ -47,8 +47,9 @@ async function fetchPrompt(source) {
 // for approval is refused. Jobs this service starts approve the service's own tools.
 const LOCAL_TOOLS = ['ask_m3ntor', 'assess_poma', 'reassess_poma', 'get_m3ntor_result', 'report_utility', 'search_utility', 'a2a_status',
   'set_task', 'list_tasks', 'clear_task', 'start_task_worker', 'stop_task_worker', 'save_poma_reassessment', 'get_coaching_context',
-  'read_journal', 'add_journal', 'suser_question_set', 'user_question_read'];
-const COACH_READ_TOOLS = ['search_utility', 'read_journal', 'get_coaching_context', 'user_question_read', 'list_tasks'];
+  'read_journal', 'add_journal', 'user_question_set', 'user_question_read',
+  'get_task', 'list_recommendations', 'list_assessments', 'list_running_jobs', 'read_answered_questions', 'revoke_utility'];
+const COACH_READ_TOOLS = ['search_utility', 'read_journal', 'get_coaching_context', 'user_question_read', 'list_tasks', 'get_task', 'list_recommendations', 'list_assessments', 'read_answered_questions'];
 const codexApprove = (server, names) => names.flatMap(name => ['-c', `mcp_servers.${server}.tools.${name}.approval_mode="approve"`]);
 
 // Codex for A2A jobs: the apps, plugins and remote_plugin features are turned
