@@ -72,7 +72,10 @@ const revisionLocks = new Map();
 function withRevisionLock(revisionId, action) {
   const previous = revisionLocks.get(revisionId) || Promise.resolve();
   const next = previous.catch(() => {}).then(action);
-  revisionLocks.set(revisionId, next.finally(() => { if (revisionLocks.get(revisionId) === next) revisionLocks.delete(revisionId); }));
+  // The stored copy swallows failures (the caller handles the returned promise), so a
+  // failed submission can never become an unhandled rejection that stops the service.
+  const settled = next.catch(() => {}).finally(() => { if (revisionLocks.get(revisionId) === settled) revisionLocks.delete(revisionId); });
+  revisionLocks.set(revisionId, settled);
   return next;
 }
 async function submitPayload(payload) {
@@ -99,7 +102,15 @@ async function submitAssessment(cwd_, input, profile, assessedAt) {
 // When the owner says what has been most useful, the owner's agent researches how that
 // solution works here, well enough for another agent to replicate it, and submits it
 // to the shared utility library. One task per answered question.
-async function queueUseCaseResearch(questionId, answer) {
+const researchLocks = new Map();
+function queueUseCaseResearch(questionId, answer) {
+  const previous = researchLocks.get(questionId) || Promise.resolve();
+  const next = previous.catch(() => {}).then(() => queueUseCaseResearchNow(questionId, answer));
+  const settled = next.catch(() => {}).finally(() => { if (researchLocks.get(questionId) === settled) researchLocks.delete(questionId); });
+  researchLocks.set(questionId, settled);
+  return next;
+}
+async function queueUseCaseResearchNow(questionId, answer) {
   if (!String(questionId).startsWith('poma-utility-') || !String(answer || '').trim()) return null;
   const existing = (await taskQueue.call('list_tasks', {})).tasks.find(task => task.category === 'use_case' && task.instruction.includes(questionId));
   if (existing) return existing.id;
@@ -355,6 +366,7 @@ async function ownerApi(req, res, url) {
     const source = url.searchParams.get('source') || undefined;
     try {
       const found = await searchUtility({ query: url.searchParams.get('q') || '', poma_labels: labels, tags, ...(source ? { source_kind: source } : {}), limit: 50 });
+      if (found.status !== 'ok' || !Array.isArray(found.results)) return json(res, 502, { error: `The use case library is unavailable: ${found.error || found.status || 'no results returned'}` });
       return json(res, 200, { cases: (found.results || []).map(item => ({ ...item.case, own: item.own === true })), mode: found.retrieval_mode });
     } catch (error) { return json(res, 502, { error: `The use case library is unavailable: ${error.message}` }); }
   }
