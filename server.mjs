@@ -33,14 +33,18 @@ const a2aStatusTool = { name: 'a2a_status', description: 'Current state of this 
 // asks the owner whether it has been useful for getting their work done, and if so
 // what has felt most useful; the answer is the owner testimony for utility reporting.
 async function askAssessmentUtility(input, receipt) {
-  const id = `poma-utility-${String(receipt.revisionId || input.revision_id).toLowerCase()}`;
+  const revision = String(receipt.revisionId || input.revision_id).toLowerCase();
+  const id = `poma-utility-${revision}`;
+  // Asked in the agent's own voice, in this order: whether it has been useful, then how
+  // the owner wants it to improve. One of each per revision; answers are never reset.
+  const questions = [
+    { id, question: 'Have I been useful in getting your work done? If yes, what has felt the most useful?', source: 'm3ntor_assessment' },
+    { id: `poma-improve-${revision}`, question: 'How would you like me to improve? What should I do better, or start doing for you?', source: 'm3ntor_assessment' },
+  ];
   try {
-    // Asked in the agent's own voice about its usefulness for the owner's work.
-    const question = 'Have I been useful in getting your work done? If yes, what has felt the most useful?';
-    // Checked and added inside one serialized write: an existing question keeps its status.
-    const state = await setUserQuestions(cwd, { questions: [{ id, question, source: 'm3ntor_assessment' }], only_if_absent: true });
+    const state = await setUserQuestions(cwd, { questions, only_if_absent: true });
     toolsChanged();
-    return { id, status: state.questions.find(item => item.id === id)?.status || 'unknown' };
+    return { id, status: state.questions.find(item => item.id === id)?.status || 'unknown', improvement_id: questions[1].id, improvement_status: state.questions.find(item => item.id === questions[1].id)?.status || 'unknown' };
   } catch (error) { return { id, status: 'failed', error: error.message }; }
 }
 
