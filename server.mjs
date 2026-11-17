@@ -240,6 +240,9 @@ async function ownerApi(req, res, url) {
   if (req.method === 'POST' && parts[1] === 'tasks' && parts[2] && parts[3] === 'decline') {
     const input = await body(req);
     if (!input.reason?.trim()) throw new Error('Give the reason.');
+    const current = taskQueue.detail(parts[2])?.task;
+    if (!current) return json(res, 404, { error: 'This recommendation is no longer in the list.' });
+    if (!['queued', 'paused', 'failed'].includes(current.status)) return json(res, 409, { error: 'This recommendation has already started, so it can no longer be declined.' });
     await taskQueue.call('clear_task', { task_id: parts[2], action: 'delete', reason: input.reason });
     return json(res, 200, await overview());
   }
@@ -267,5 +270,6 @@ const taskQueue = startTaskQueue({ cwd, harness, mcpUrl });
 server.listen(port, '127.0.0.1', () => console.log(`Clarity M3NT0R MCP → ${mcpUrl} · owner view → ${base}/`));
 for (const signal of ['SIGTERM','SIGINT']) process.on(signal, () => {
   for (const stream of mcpStreams) stream.res.end();
+  for (const res of uiListeners) res.end();
   server.close(() => process.exit(0));
 });

@@ -34,6 +34,7 @@ function render() {
   $('#worker').textContent = worker.enabled ? `Worker on${worker.next_run_at ? ` · next run ${when(worker.next_run_at)}` : ''}` : 'Worker off';
   $('#question-count').textContent = data.questions.pending.length ? `(${data.questions.pending.length})` : '';
   renderTasks(); renderQuestions(); renderAssessment(); renderJournal();
+  restoreDrafts();
 }
 
 function renderTasks() {
@@ -69,6 +70,7 @@ async function showTask(id) {
     <h3>Runs</h3>
     ${runs.length ? runs.map(renderRun).join('') : '<p class="empty">Not run yet.</p>'}`;
   bindDecline(pane);
+  restoreDrafts();
 }
 
 function renderRun(run) {
@@ -92,6 +94,7 @@ function bindDecline(root) {
     event.preventDefault();
     try {
       data = await api(`/api/tasks/${encodeURIComponent(form.dataset.id)}/decline`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: form.reason.value }) });
+      drafts.delete(draftKey(form.reason));
       selectedTask = null; $('#task-detail').innerHTML = '<p class="empty">Select a task.</p>';
       render();
     } catch (error) { showError(error); }
@@ -118,6 +121,7 @@ function renderQuestions() {
     if (action === 'answer' && !form.answer.value.trim()) { showError(new Error('Write an answer first.')); return; }
     try {
       data = await api(`/api/questions/${encodeURIComponent(form.dataset.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, answer: form.answer.value }) });
+      drafts.delete(draftKey(form.answer));
       render();
     } catch (error) { showError(error); }
   }));
@@ -164,12 +168,19 @@ $('#task-list').addEventListener('click', event => {
   if (item) showTask(item.dataset.id);
 });
 
-// Typing in a form is not interrupted by a refresh; the refresh runs after the field loses focus.
+// Unsent text is kept per form (question or task id) and put back after every refresh;
+// a refresh that arrives while the owner is typing waits until the field loses focus.
+const drafts = new Map();
+const draftKey = field => `${field.form?.className}:${field.form?.dataset.id}:${field.name}`;
+document.addEventListener('input', event => { if (event.target.tagName === 'TEXTAREA') drafts.set(draftKey(event.target), event.target.value); });
+function restoreDrafts() {
+  document.querySelectorAll('form textarea').forEach(field => { const value = drafts.get(draftKey(field)); if (value) field.value = value; });
+}
 let pending = false;
 const events = new EventSource('/api/events');
 events.addEventListener('changed', () => {
   if (document.activeElement?.tagName === 'TEXTAREA') { pending = true; return; }
   load();
 });
-document.addEventListener('focusout', () => { if (pending) { pending = false; load(); } });
+document.addEventListener('focusout', () => { if (pending) { pending = false; setTimeout(() => { if (document.activeElement?.tagName !== 'TEXTAREA') load(); else pending = true; }, 0); } });
 load();
