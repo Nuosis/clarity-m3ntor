@@ -63,7 +63,18 @@ async function recordSubmission(revisionId, submission) {
   const receipt = await readJson(receiptFile, null);
   if (receipt) await writeFile(receiptFile, JSON.stringify({ ...receipt, submitted: submission.saved === true, submitted_at: submission.submitted_at || null }, null, 2), { mode: 0o600 });
 }
+// One submission at a time per revision, so a retry cannot overtake a newer save of it.
+const revisionLocks = new Map();
+function withRevisionLock(revisionId, action) {
+  const previous = revisionLocks.get(revisionId) || Promise.resolve();
+  const next = previous.catch(() => {}).then(action);
+  revisionLocks.set(revisionId, next.finally(() => { if (revisionLocks.get(revisionId) === next) revisionLocks.delete(revisionId); }));
+  return next;
+}
 async function submitPayload(payload) {
+  return withRevisionLock(String(payload.revision_id).toLowerCase(), () => submitPayloadNow(payload));
+}
+async function submitPayloadNow(payload) {
   const revisionId = String(payload.revision_id).toLowerCase();
   const pendingFile = path.join(reassessmentDir(), `${revisionId}.pending-submission.json`);
   let submission;
@@ -86,24 +97,34 @@ function scheduleSubmissionRetry() {
   if (retryTimer) return;
   retryTimer = setTimeout(async () => {
     retryTimer = null;
-    const left = await retryPendingSubmissions();
+    let left = 1;
+    try { left = await retryPendingSubmissions(); } catch (error) { console.error('Assessment submission retry failed:', error.message); }
     if (left) { retryDelay = Math.min(retryDelay * 2, 3600000); scheduleSubmissionRetry(); } else retryDelay = 60000;
   }, retryDelay);
 }
+// Returns how many submissions are still pending. A pending file is removed only if it is
+// unchanged since it was read, so a newer save of the same revision is never discarded.
 async function retryPendingSubmissions() {
   let files = [];
   try { files = (await readdir(reassessmentDir())).filter(name => name.endsWith('.pending-submission.json')); } catch {}
   let left = 0;
   for (const file of files) {
-    const payload = await readJson(path.join(reassessmentDir(), file), null);
-    if (!payload) continue;
-    let submission;
+    const pendingFile = path.join(reassessmentDir(), file);
     try {
-      const response = await clarityRequest('POST', '/agent/mentor/assessments', payload);
-      submission = { saved: response.saved === true, created: response.created, agent_id: response.agent_id, updated_at: response.assessment?.updated_at, submitted_at: new Date().toISOString(), retried: true };
-    } catch (error) { submission = { saved: false, error: error.message, attempted_at: new Date().toISOString() }; }
-    if (submission.saved) await unlink(path.join(reassessmentDir(), file)).catch(() => {}); else left++;
-    await recordSubmission(String(payload.revision_id).toLowerCase(), submission);
+      const done = await withRevisionLock(file.replace('.pending-submission.json', ''), async () => {
+        let raw; try { raw = await readFile(pendingFile, 'utf8'); } catch { return true; }
+        const payload = JSON.parse(raw);
+        let submission;
+        try {
+          const response = await clarityRequest('POST', '/agent/mentor/assessments', payload);
+          submission = { saved: response.saved === true, created: response.created, agent_id: response.agent_id, updated_at: response.assessment?.updated_at, submitted_at: new Date().toISOString(), retried: true };
+        } catch (error) { submission = { saved: false, error: error.message, attempted_at: new Date().toISOString() }; }
+        if (submission.saved && await readFile(pendingFile, 'utf8').catch(() => null) === raw) await unlink(pendingFile).catch(() => {});
+        await recordSubmission(String(payload.revision_id).toLowerCase(), submission);
+        return submission.saved;
+      });
+      if (!done) left++;
+    } catch (error) { left++; console.error(`Assessment submission retry for ${file} failed:`, error.message); }
   }
   return left;
 }
@@ -335,7 +356,7 @@ const server = http.createServer(async (req, res) => {
 const a2aReceiver = startA2AReceiver({ cwd, harness, mcpUrl });
 // The owner's action queue runs due tasks for as long as this service runs.
 const taskQueue = startTaskQueue({ cwd, harness, mcpUrl });
-retryPendingSubmissions().then(left => { if (left) scheduleSubmissionRetry(); });
+retryPendingSubmissions().then(left => { if (left) scheduleSubmissionRetry(); }, error => { console.error('Assessment submission retry failed:', error.message); scheduleSubmissionRetry(); });
 server.listen(port, '127.0.0.1', () => console.log(`Clarity M3NT0R MCP → ${mcpUrl} · owner view → ${base}/`));
 for (const signal of ['SIGTERM','SIGINT']) process.on(signal, () => {
   for (const stream of mcpStreams) stream.res.end();
