@@ -95,7 +95,7 @@ export async function setUserQuestions(cwd,input,now=new Date()) {
       Object.assign(existing,{status:action==='answer'?'answered':'dismissed',answer:input.answer || input.reason || '',updatedAt:now.toISOString()});
     } else throw new Error('Use set, answer, dismiss, or defer.');
     delete state.pending;delete state.deferred;await store(questionFile(cwd),state);
-    await appendJournalInWrite(cwd,{kind:'activity',content:action==='set'?'Recorded business questions for the user.':action==='answer'?'Recorded the user’s response to a business question.':'Dismissed a business question.',metadata:{questionId:input.question_id || null}},now);
+    await appendJournalInWrite(cwd,{kind:'activity',content:action==='set'?'Recorded business questions for the user.':action==='answer'?`The owner answered: ${state.questions.find(q=>q.id===input.question_id)?.question || 'a business question'}\nAnswer: ${input.answer}`:'Dismissed a business question.',metadata:{questionId:input.question_id || null}},now);
     return questionState(cwd,now);
   });
 }

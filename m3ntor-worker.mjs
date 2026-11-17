@@ -84,7 +84,11 @@ async function runHarness(request, prompt) {
   const assessment = ['poma_assessment', 'poma_reassessment'].includes(request.task);
   const persistence = assessment ? `\n## Local persistence identity\n\nUse revision_id ${request.job_id} with clarity_m3ntor.save_poma_reassessment for this task. Reuse that same ID when reconciling a save. The local service writes the authorized artifacts even if this harness filesystem is read-only; retain actual per-artifact receipts.\n` : '';
   const heading = assessment ? 'Current business POMA assessment task' : request.task === 'a2a_message' ? 'Incoming A2A message' : request.task === 'scheduled_task' ? 'Scheduled task' : 'Current coaching request';
-  const input = `${prompt}\n\n## ${heading}\n\n${request.question}\n\n## Supplied context\n\n${context}\n${persistence}`;
+  // The owner's own answers are direction from the owner: M3NT0R incorporates them as fully as possible.
+  const answers = request.owner_answers?.length
+    ? `\n## The owner's answers to your earlier questions\n\nThese are the owner's own words. Incorporate them as fully as possible: let them shape what you assess, recommend and prioritise, and where they conflict with your own inference, follow the owner and say how you did.\n\n${request.owner_answers.map(a => `- Q (${a.answered_at?.slice(0, 10) || 'date unknown'}): ${a.question}\n  A: ${a.answer}`).join('\n')}\n`
+    : '';
+  const input = `${prompt}\n\n## ${heading}\n\n${request.question}\n${answers}\n## Supplied context\n\n${context}\n${persistence}`;
   await writeFile(path.join(directory, 'harness-input.md'), input, { mode: 0o600 });
   await storeJson(path.join(directory, 'command.json'), { command: request.harness, args, cwd: request.cwd, model: 'Inherited from the existing harness configuration', authentication: 'Inherited; no credential or account override' });
   const stdoutLog = createWriteStream(path.join(directory, 'harness.stdout.jsonl'), { mode: 0o600 });

@@ -98,6 +98,16 @@ export async function startA2AJob(message, environment) {
   return createJob({ context: message.payload && Object.keys(message.payload).length ? message.payload : '' }, environment, { identity: 'a2a_message', question, promptId: null });
 }
 
+// The owner's answered questions, newest first (most recent 50), from the workspace's question store.
+async function answeredQuestions(cwd) {
+  try {
+    const state = JSON.parse(await readFile(path.join(cwd, '.clarity_coach', 'user_questions.json'), 'utf8'));
+    return (state.questions || []).filter(q => q.status === 'answered' && q.answer)
+      .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, 50)
+      .map(q => ({ question: q.question, answer: q.answer, answered_at: q.updatedAt }));
+  } catch { return []; }
+}
+
 async function createJob(input, { cwd, harness, mcpUrl }, task) {
   const selected = input.harness || process.env.M3NTOR_HARNESS || harness || 'codex';
   if (!['codex', 'claude'].includes(selected)) throw new Error('Select an existing codex or claude harness.');
@@ -106,8 +116,10 @@ async function createJob(input, { cwd, harness, mcpUrl }, task) {
   const id = task.jobId || randomUUID(); // a caller may persist the id before launch
   const directory = jobDirectory(id);
   await mkdir(directory, { recursive: true, mode: 0o700 });
+  // M3NT0R (coaching and assessment) always receives the owner's answers to its questions.
+  const ownerAnswers = ['coaching', 'poma_assessment', 'poma_reassessment'].includes(task.identity) ? await answeredQuestions(path.resolve(process.env.M3NTOR_WORKSPACE || cwd)) : [];
   const request = {
-    job_id: id, task: task.identity, question: task.question, context: input.context ?? '', harness: selected,
+    job_id: id, task: task.identity, question: task.question, context: input.context ?? '', harness: selected, owner_answers: ownerAnswers,
     // Coaching jobs get the read-only endpoint of this same service.
     cwd: path.resolve(process.env.M3NTOR_WORKSPACE || cwd), mcp_url: task.identity === 'coaching' ? mcpUrl.replace(/\/mcp\/local$/, '/mcp/coach') : mcpUrl,
     prompt_source: task.promptId ? { prompt_id: task.promptId } : { local: task.identity },
