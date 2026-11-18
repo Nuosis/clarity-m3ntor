@@ -46,7 +46,7 @@ node install-service.mjs --workspace /path/to/business/workspace --harness codex
 ```
 
 It prints one JSON status (label, definition file, port, URL, loaded, responding).
-An existing definition is kept with its settings; `--replace` rewrites it. Logs go to
+A service with that label already defined or loaded is kept with its settings; `--replace` rewrites it. `--label` installs a second copy under another name; `--help` prints usage and changes nothing. `port_in_use` names the program already on that port. Logs go to
 `<workspace>/.clarity_coach/logs/`. On Linux without `loginctl enable-linger` the
 service runs only while the owner is logged in.
 
