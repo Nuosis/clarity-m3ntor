@@ -136,19 +136,8 @@ function goalLabel(task) {
 const PACE_LABELS = { hourly: 'Hourly', daily: 'Daily', yolo: 'YOLO' };
 const GOAL_STATUS = { active: 'active', waiting: 'waiting', improving: 'improving', maintaining: 'maintaining', stopped: 'stopped' };
 function renderGoals() {
-  const pace = data.pace || {};
   const goals = data.goals || [];
-  const reviewing = pace.reviewing_job_id;
-  $('#goals').innerHTML = `
-    <div class="card filters">
-      <button class="primary" type="button" id="run-review"${reviewing ? ' disabled' : ''}>Run</button>
-    </div>
-    ${goals.length ? goals.map(renderGoal).join('') : '<p class="empty">No goals.</p>'}`;
-  $('#run-review').addEventListener('click', async () => {
-    $('#run-review').disabled = true;
-    try { data = await api('/api/goals/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); render(); }
-    catch (error) { $('#run-review').disabled = false; showError(error); }
-  });
+  $('#goals').innerHTML = goals.length ? goals.map(renderGoal).join('') : '<p class="empty">No goals.</p>';
   $('#goals').querySelectorAll('form.stop-goal').forEach(stop => stop.addEventListener('submit', async event => {
     event.preventDefault();
     try {
@@ -167,6 +156,7 @@ function renderSettings() {
       <div class="row">
         <select name="pace" aria-label="Agent cycle">${Object.entries(PACE_LABELS).map(([value, label]) => `<option value="${value}"${pace.pace === value ? ' selected' : ''}>${label}</option>`).join('')}</select>
         <label${pace.pace === 'daily' ? '' : ' hidden'}>at <input type="time" name="time" value="${esc(pace.time || '08:00')}"></label>
+        <button class="primary" type="button" id="run-review"${pace.reviewing_job_id ? ' disabled' : ''}>Run</button>
       </div>
       <p class="meta">YOLO reviews as soon as the current stage's tasks are done or blocked.</p>
       <h2>Agent runner</h2>
@@ -181,6 +171,11 @@ function renderSettings() {
     </form>`;
   const form = $('#settings-form');
   form.pace.addEventListener('change', () => { form.time.parentElement.hidden = form.pace.value !== 'daily'; });
+  $('#run-review').addEventListener('click', async () => {
+    $('#run-review').disabled = true;
+    try { data = await api('/api/goals/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); render(); }
+    catch (error) { $('#run-review').disabled = false; showError(error); }
+  });
   form.addEventListener('submit', async event => {
     event.preventDefault();
     try {
