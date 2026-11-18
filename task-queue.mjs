@@ -413,7 +413,10 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       const record = goal.kind === 'environment' ? await readEnvironment(cwd) : null;
       const stageRecord = record && { infrastructure: record.sources, observability: record.plate, process: record.processes }[view.stage.key];
       const stillMissing = goal.kind === 'environment' ? await environmentCheck(cwd, view.stage.key) : null;
-      await startGoalReviewJob({ jobId, question, context: { ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl, ...agentRun() });
+      // The owner's answers are direction: the review gets the latest ones (newest first).
+      let ownerAnswers = [];
+      try { ownerAnswers = JSON.parse(readFileSync(path.join(directory, 'user_questions.json'), 'utf8')).questions.filter(q => q.status === 'answered' && q.answer).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, 20).map(q => ({ question: q.question, answer: q.answer, answered_at: q.updatedAt })); } catch {}
+      await startGoalReviewJob({ jobId, question, context: { owner_answers: ownerAnswers, ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl, ...agentRun() });
       setSetting('goal_review_state', state);
       setSetting('goal_last_review_at', now());
       if (pace().pace !== 'yolo') setSetting('goal_next_review_at', nextClock().toISOString());
