@@ -278,7 +278,7 @@ function renderQuestions() {
     <h2>Waiting on you</h2>
     ${pending.length ? pending.map(q => `
       <form class="card question" data-id="${esc(q.id)}">
-        <p>${esc(q.question)}</p>
+        <div class="prose">${window.renderMarkdown(q.question)}</div>
         <textarea name="answer" placeholder="Your answer"></textarea>
         <div class="actions">
           <button class="primary" type="submit" value="answer">Answer</button>
