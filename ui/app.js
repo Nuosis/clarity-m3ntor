@@ -15,10 +15,19 @@ async function api(path, options) {
   if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
   return body;
 }
-function showError(error) {
+function showError(error, ms = 6000) {
   const box = $('#error');
   box.textContent = error.message; box.hidden = false;
-  setTimeout(() => { box.hidden = true; }, 6000);
+  clearTimeout(showError.timer);
+  showError.timer = setTimeout(() => { box.hidden = true; }, ms);
+}
+// A goal review problem shows once as a 3-second notice.
+let shownReviewError = sessionStorage.getItem('m3ntor-review-error');
+function noticeReviewError() {
+  if (!data.review_error || data.review_error === shownReviewError) return;
+  shownReviewError = data.review_error;
+  sessionStorage.setItem('m3ntor-review-error', shownReviewError);
+  showError(new Error(data.review_error), 3000);
 }
 
 async function load() {
@@ -33,7 +42,7 @@ function render() {
   const worker = data.worker;
   $('#worker').textContent = worker.enabled ? `Worker on${worker.next_run_at ? ` · next run ${when(worker.next_run_at)}` : ''}` : 'Worker off';
   $('#question-count').textContent = data.questions.pending.length ? `(${data.questions.pending.length})` : '';
-  renderRunning(); renderGoals(); renderSettings(); renderTasks(); renderQuestions(); renderAssessment(); renderContext(); renderJournal();
+  renderRunning(); renderGoals(); renderSettings(); noticeReviewError(); renderTasks(); renderQuestions(); renderAssessment(); renderContext(); renderJournal();
   restoreDrafts();
 }
 
@@ -133,9 +142,7 @@ function renderGoals() {
   $('#goals').innerHTML = `
     <div class="card filters">
       <button class="primary" type="button" id="run-review"${reviewing ? ' disabled' : ''}>Run</button>
-      <span class="meta">${reviewing ? 'Reviewing now' : pace.pace === 'yolo' ? 'Reviews when the current stage\'s tasks are done or blocked' : pace.next_review_at ? `Next review ${when(pace.next_review_at)}` : ''}${pace.last_review_at ? ` · last ${when(pace.last_review_at)}` : ''}${data.full_access ? ' · Full access' : ''}</span>
     </div>
-    ${data.review_error ? `<p class="card" style="color: var(--bad)">${esc(data.review_error)}</p>` : ''}
     ${goals.length ? goals.map(renderGoal).join('') : '<p class="empty">No goals.</p>'}`;
   $('#run-review').addEventListener('click', async () => {
     $('#run-review').disabled = true;
