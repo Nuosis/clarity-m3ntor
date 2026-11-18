@@ -268,7 +268,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const stages = stagesFor(goal.kind); const stage = stages[goal.stage];
     if (stage.key === 'improve') throw new Error('The Improve stage is recurring and does not complete.');
     const tasks = stageTasks(goal.id, stage.key);
-    if (tasks.some(task => ['queued', 'delivered', 'executing', 'finalizing', 'clearing'].includes(task.status))) throw new Error(`Tasks for the ${stage.name} stage are still queued or running.`);
+    // A recurring routine waiting for its next run is ongoing work, not unfinished work.
+    if (tasks.some(task => ['delivered', 'executing', 'finalizing', 'clearing'].includes(task.status) || (task.status === 'queued' && !task.recurrence))) throw new Error(`Tasks for the ${stage.name} stage are still queued or running.`);
     if (goal.kind === 'environment') {
       // The working environment's stages are checked against its records, not the agent's claim.
       const missing = await environmentCheck(cwd, stage.key);
@@ -298,6 +299,9 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     // A goal that reaches its ongoing stage leaves the active slot for the next goal.
     const status = !nextStage ? 'maintaining' : nextStage.key === 'improve' ? 'improving' : 'active';
     updateGoal(goal.id, { stage: nextStage ? nextIndex : goal.stage, completed: JSON.stringify(completed), status });
+    // A stage reached with no work planned for it gets a review now, whatever the pace.
+    const nextGoal = activeGoal();
+    if (nextGoal && !stageTasks(nextGoal.id, stagesFor(nextGoal.kind)[nextGoal.stage].key).length) setSetting('goal_next_review_at', now());
     await journalOnce(cwd, `goal-stage-${goal.id}-${stage.key}-${completed.length}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": ${stage.name} stage done.\n${evidence.trim()}`, metadata: { goal_id: goal.id, stage: stage.key } });
     activeGoal(); schedule();
     return goalView(getGoal(goal.id));
