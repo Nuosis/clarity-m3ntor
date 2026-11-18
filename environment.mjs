@@ -72,7 +72,7 @@ export function setPlate(cwd, input) { return serial(() => setPlateNow(cwd, inpu
 async function setPlateNow(cwd, input) {
   if (!Array.isArray(input.commitments)) throw new Error('Give the full list of commitments.');
   for (const item of input.commitments) if (!item.what || !item.to_whom || !item.status) throw new Error('Each commitment needs what, to_whom and status.');
-  return save(cwd, files(cwd).plate, { commitments: input.commitments, priorities: input.priorities || [], updated_at: now() });
+  return save(cwd, files(cwd).plate, { commitments: input.commitments, priorities: input.priorities || [], routine_task_id: input.routine_task_id || null, updated_at: now() });
 }
 
 export function recordProcess(cwd, input) { return serial(() => recordProcessNow(cwd, input)); }
@@ -82,7 +82,7 @@ async function recordProcessNow(cwd, input) {
   let flow = input.process_id ? record.processes.find(item => item.id === input.process_id) : null;
   if (input.process_id && !flow) throw new Error('Process not found.');
   if (!flow) { if (!input.name?.trim()) throw new Error('Give the process a name.'); flow = { id: randomUUID(), name: input.name.trim() }; record.processes.push(flow); }
-  for (const key of ['name', 'trigger', 'steps', 'handoffs', 'completion', 'examples']) if (input[key] !== undefined) flow[key] = input[key];
+  for (const key of ['name', 'trigger', 'steps', 'handoffs', 'completion', 'signals', 'examples']) if (input[key] !== undefined) flow[key] = input[key];
   flow.updated_at = now();
   return save(cwd, f.processes, record);
 }
@@ -102,13 +102,15 @@ export async function environmentCheck(cwd, stageKey) {
   if (stageKey === 'observability') {
     if (!recent(plate.updated_at, 7)) return 'The plate has not been updated in the last 7 days.';
     if (!plate.commitments.length) return 'The plate lists no commitments.';
-    const unlinked = plate.commitments.filter(item => !item.sources?.length);
-    return unlinked.length ? `These commitments have no linked source: ${unlinked.map(item => item.what).join('; ')}.` : null;
+    const unplaced = plate.commitments.filter(item => !item.sources?.length || !item.process || !item.step);
+    if (unplaced.length) return `These items need their process, step and source links: ${unplaced.map(item => item.what).join('; ')}.`;
+    if (!plate.routine_task_id) return 'The list was not refreshed by a recurring routine task.';
+    return null;
   }
   if (stageKey === 'process') {
     if (!processes.processes.length) return 'No processes are recorded.';
-    const incomplete = processes.processes.filter(item => !item.trigger || !item.steps?.length || !item.completion || !item.examples?.length);
-    return incomplete.length ? `These processes need a trigger, steps, completion and at least one example: ${incomplete.map(item => item.name).join(', ')}.` : null;
+    const incomplete = processes.processes.filter(item => !item.trigger || !item.steps?.length || !item.completion || !item.examples?.length || !item.signals?.length);
+    return incomplete.length ? `These processes need a trigger, steps, completion, step signals and at least one example: ${incomplete.map(item => item.name).join(', ')}.` : null;
   }
   return null;
 }
@@ -117,6 +119,6 @@ const ref = { type: 'object', properties: { ref: { type: 'string', description: 
 export const environmentTools = [
   { name: 'read_environment', description: 'The working environment records: sources the agent runs on (with whether each is needed and its last read-back), the owner\'s plate (commitments and priorities) and the business processes.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } },
   { name: 'record_source', description: 'Add or update a source in the working environment: its route and account, whether it is needed (with the reason), and a read-back you just performed (ok and what was read). The service stamps the read-back time.', inputSchema: { type: 'object', properties: { source_id: { type: 'string' }, name: { type: 'string' }, purpose: { type: 'string' }, route: { type: 'string' }, account: { type: 'string' }, needed: { type: 'boolean' }, needed_reason: { type: 'string' }, read_back: { type: 'object', properties: { ok: { type: 'boolean' }, what: { type: 'string', description: 'What was read, e.g. "5 most recent inbox messages, newest dated 2026-11-17".' } }, required: ['ok', 'what'], additionalProperties: false } }, additionalProperties: false } },
-  { name: 'set_plate', description: 'Replace the owner\'s plate: every current commitment (what, to whom, due, status, linked sources) and the owner\'s priorities. The service stamps the update time.', inputSchema: { type: 'object', properties: { commitments: { type: 'array', items: { type: 'object', properties: { what: { type: 'string' }, to_whom: { type: 'string' }, due: { type: 'string' }, status: { type: 'string' }, sources: { type: 'array', items: ref } }, required: ['what', 'to_whom', 'status'], additionalProperties: false } }, priorities: { type: 'array', items: { type: 'string' } } }, required: ['commitments'], additionalProperties: false } },
-  { name: 'record_process', description: 'Add or update one business process: trigger, steps, handoffs, completion and past examples.', inputSchema: { type: 'object', properties: { process_id: { type: 'string' }, name: { type: 'string' }, trigger: { type: 'string' }, steps: { type: 'array', items: { type: 'string' } }, handoffs: { type: 'array', items: { type: 'string' } }, completion: { type: 'string' }, examples: { type: 'array', items: ref } }, additionalProperties: false } },
+  { name: 'set_plate', description: 'Replace the commitments list: each piece of current work placed at its process step (what, for whom, due, status, process, step, source links), and the owner\'s priorities. Called by the recurring routine task that refreshes it, giving its routine_task_id. The service stamps the update time.', inputSchema: { type: 'object', properties: { commitments: { type: 'array', items: { type: 'object', properties: { what: { type: 'string' }, to_whom: { type: 'string' }, due: { type: 'string' }, status: { type: 'string' }, process: { type: 'string', description: 'Name of the recorded process.' }, step: { type: 'string' }, sources: { type: 'array', items: ref } }, required: ['what', 'to_whom', 'status'], additionalProperties: false } }, priorities: { type: 'array', items: { type: 'string' } }, routine_task_id: { type: 'string', description: 'The recurring task that ran this refresh.' } }, required: ['commitments'], additionalProperties: false } },
+  { name: 'record_process', description: 'Add or update one business process: trigger, steps, handoffs, completion, the signal that shows each step happened and where it appears, and past examples.', inputSchema: { type: 'object', properties: { process_id: { type: 'string' }, name: { type: 'string' }, trigger: { type: 'string' }, steps: { type: 'array', items: { type: 'string' } }, handoffs: { type: 'array', items: { type: 'string' } }, completion: { type: 'string' }, signals: { type: 'array', items: { type: 'object', properties: { step: { type: 'string' }, signal: { type: 'string', description: 'What shows this step happened, e.g. "quote email sent to the customer".' }, source: { type: 'string', description: 'The source it appears in.' } }, required: ['step', 'signal', 'source'], additionalProperties: false } }, examples: { type: 'array', items: ref } }, additionalProperties: false } },
 ];

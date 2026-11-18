@@ -219,12 +219,12 @@ function environmentRecords(goal) {
         <td>${s.read_back ? `${status(s.read_back.ok ? 'completed' : 'failed')} ${when(s.read_back.at)}<div class="meta">${esc(s.read_back.what)}</div>` : '<span class="meta">None</span>'}</td>
       </tr>`).join('')}</tbody></table>` : '<p class="empty">No sources recorded.</p>'}
     </details>
+    <details${open('process')}><summary>Processes (${processes.length})</summary>
+      ${processes.length ? processes.map(f => `<div class="entry"><strong>${esc(f.name)}</strong><div class="meta">Trigger: ${esc(f.trigger || 'not recorded')} · Completion: ${esc(f.completion || 'not recorded')} · ${(f.examples || []).length} examples</div>${f.signals?.length ? `<table class="records"><thead><tr><th>Step</th><th>Signal</th><th>Source</th></tr></thead><tbody>${f.signals.map(s => `<tr><td>${esc(s.step)}</td><td>${esc(s.signal)}</td><td>${esc(s.source)}</td></tr>`).join('')}</tbody></table>` : f.steps?.length ? `<ol>${f.steps.map(s => `<li>${esc(s)}</li>`).join('')}</ol>` : ''}</div>`).join('') : '<p class="empty">No processes recorded.</p>'}
     <details${open('observability')}><summary>Commitments (${commitments.length}${env.plate?.updated_at ? `, updated ${when(env.plate.updated_at)}` : ''})</summary>
-      ${commitments.length ? `<table class="records"><thead><tr><th>Commitment</th><th>To</th><th>Due</th><th>Status</th></tr></thead><tbody>${commitments.map(c => `<tr><td>${esc(c.what)}<div class="meta">${(c.sources || []).map(s => esc(s.ref)).join(', ')}</div></td><td>${esc(c.to_whom)}</td><td>${esc(c.due || '')}</td><td>${esc(c.status)}</td></tr>`).join('')}</tbody></table>` : '<p class="empty">No commitments recorded.</p>'}
+      ${commitments.length ? `<table class="records"><thead><tr><th>Work</th><th>For</th><th>Due</th><th>Step</th></tr></thead><tbody>${commitments.map(c => `<tr><td>${esc(c.what)}<div class="meta">${(c.sources || []).map(s => esc(s.ref)).join(', ')}</div></td><td>${esc(c.to_whom)}</td><td>${esc(c.due || '')}</td><td>${esc(c.process ? `${c.process}: ${c.step || ''}` : c.status)}</td></tr>`).join('')}</tbody></table>` : '<p class="empty">No commitments recorded.</p>'}
       ${env.plate?.priorities?.length ? `<h3>Priorities</h3><ol>${env.plate.priorities.map(p => `<li>${esc(p)}</li>`).join('')}</ol>` : ''}
     </details>
-    <details${open('process')}><summary>Processes (${processes.length})</summary>
-      ${processes.length ? processes.map(f => `<div class="entry"><strong>${esc(f.name)}</strong><div class="meta">Trigger: ${esc(f.trigger || 'not recorded')} · Completion: ${esc(f.completion || 'not recorded')} · ${(f.examples || []).length} examples</div>${f.steps?.length ? `<ol>${f.steps.map(s => `<li>${esc(s)}</li>`).join('')}</ol>` : ''}</div>`).join('') : '<p class="empty">No processes recorded.</p>'}
     </details>`;
 }
 $('#goals').addEventListener('click', event => {
