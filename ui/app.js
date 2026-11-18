@@ -273,7 +273,7 @@ function renderRun(run) {
 }
 
 function renderQuestions() {
-  const { pending, answered } = data.questions;
+  const { pending } = data.questions;
   $('#questions').innerHTML = `
     <h2>Waiting on you</h2>
     ${pending.length ? pending.map(q => `
@@ -285,7 +285,7 @@ function renderQuestions() {
           <button class="secondary" type="submit" value="dismiss">Dismiss</button>
         </div>
       </form>`).join('') : '<p class="empty">No questions waiting.</p>'}
-    ${answered.length ? `<h3>Answered</h3>${answered.map(q => `<div class="entry"><div>${esc(q.question)}</div><div class="meta">${esc(q.status)} ${when(q.updatedAt)}</div>${q.answer ? `<div class="content">${esc(q.answer)}</div>` : ''}</div>`).join('')}` : ''}`;
+`;
   document.querySelectorAll('form.question').forEach(form => form.addEventListener('submit', async event => {
     event.preventDefault();
     const action = event.submitter?.value || 'answer';
