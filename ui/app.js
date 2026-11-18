@@ -219,7 +219,7 @@ function environmentRecords(goal) {
         <td>${s.read_back ? `${status(s.read_back.ok ? 'completed' : 'failed')} ${when(s.read_back.at)}<div class="meta">${esc(s.read_back.what)}</div>` : '<span class="meta">None</span>'}</td>
       </tr>`).join('')}</tbody></table>` : '<p class="empty">No sources recorded.</p>'}
     </details>
-    <details${open('observability')}><summary>Plate (${commitments.length} commitments${env.plate?.updated_at ? `, updated ${when(env.plate.updated_at)}` : ''})</summary>
+    <details${open('observability')}><summary>Commitments (${commitments.length}${env.plate?.updated_at ? `, updated ${when(env.plate.updated_at)}` : ''})</summary>
       ${commitments.length ? `<table class="records"><thead><tr><th>Commitment</th><th>To</th><th>Due</th><th>Status</th></tr></thead><tbody>${commitments.map(c => `<tr><td>${esc(c.what)}<div class="meta">${(c.sources || []).map(s => esc(s.ref)).join(', ')}</div></td><td>${esc(c.to_whom)}</td><td>${esc(c.due || '')}</td><td>${esc(c.status)}</td></tr>`).join('')}</tbody></table>` : '<p class="empty">No commitments recorded.</p>'}
       ${env.plate?.priorities?.length ? `<h3>Priorities</h3><ol>${env.plate.priorities.map(p => `<li>${esc(p)}</li>`).join('')}</ol>` : ''}
     </details>
