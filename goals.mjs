@@ -1,7 +1,7 @@
 // Goals: each goal is built through a fixed sequence of stages (see goal-flow spec).
-// USER-AUTHORIZED — Marcus, November 17, 2026: the goal and stage order governs M3NT0R
-// recommendations, work implemented from them and capabilities the owner asks to have
-// built; one-off owner-directed tasks are outside it.
+// USER-AUTHORIZED — Marcus, November 17, 2026: the goal and stage order governs the goals
+// M3NT0R sets, the work done on them and capabilities the owner asks to have built;
+// one-off owner-directed tasks are outside it.
 
 export const ENVIRONMENT_STAGES = [
   { key: 'infrastructure', name: 'Infrastructure', work: 'Check that each route the agent needs works: email, billing, records, calendar and the M3NT0R service. Fill gaps by reusing established routes.', done: 'Each needed route has been read back working this week.' },

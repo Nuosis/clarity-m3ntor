@@ -33,7 +33,7 @@ function render() {
   const worker = data.worker;
   $('#worker').textContent = worker.enabled ? `Worker on${worker.next_run_at ? ` · next run ${when(worker.next_run_at)}` : ''}` : 'Worker off';
   $('#question-count').textContent = data.questions.pending.length ? `(${data.questions.pending.length})` : '';
-  renderRunning(); renderGoals(); renderTasks(); renderQuestions(); renderAssessment(); renderRecommendations(); renderContext(); renderJournal();
+  renderRunning(); renderGoals(); renderTasks(); renderQuestions(); renderAssessment(); renderContext(); renderJournal();
   restoreDrafts();
 }
 
@@ -203,10 +203,8 @@ async function showTask(id) {
       ${task.pause_reason ? `<dt>Paused</dt><dd>${esc(task.pause_reason)}</dd>` : ''}
       ${task.last_error ? `<dt>Last error</dt><dd>${esc(task.last_error)}</dd>` : ''}
     </dl>
-    ${task.category === 'recommendation' && task.status === 'queued' ? declineForm(task.id) : ''}
     <h3>Runs</h3>
     ${runs.length ? runs.map(renderRun).join('') : '<p class="empty">Not run yet.</p>'}`;
-  bindDecline(pane);
   restoreDrafts();
 }
 
@@ -218,24 +216,6 @@ function renderRun(run) {
     ${run.result || process?.output ? `<h3>Result</h3><pre>${esc(run.result || process.output)}</pre>` : ''}
     ${run.error ? `<h3>Error</h3><pre>${esc(run.error)}</pre>` : ''}
   </div>`;
-}
-
-function declineForm(id) {
-  return `<form class="decline" data-id="${esc(id)}">
-    <textarea name="reason" placeholder="Reason for not implementing" aria-label="Reason for not implementing" required></textarea>
-    <div class="actions"><button class="secondary" type="submit">Don't implement</button></div>
-  </form>`;
-}
-function bindDecline(root) {
-  root.querySelectorAll('form.decline').forEach(form => form.addEventListener('submit', async event => {
-    event.preventDefault();
-    try {
-      data = await api(`/api/tasks/${encodeURIComponent(form.dataset.id)}/decline`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: form.reason.value }) });
-      drafts.delete(draftKey(form.reason));
-      selectedTask = null; $('#task-detail').innerHTML = '<p class="empty">Select a task.</p>';
-      render();
-    } catch (error) { showError(error); }
-  }));
 }
 
 function renderQuestions() {
@@ -284,20 +264,6 @@ function renderAssessment() {
     </div>` : '<p class="empty">No assessment yet.</p>'}`;
 }
 
-function renderRecommendations() {
-  const { open, history } = data.recommendations;
-  $('#recommendations').innerHTML = `
-    ${open.length ? open.map(task => `<div class="card">
-      <div class="title"><h2>${esc(task.title)}</h2> ${status(task.status)}</div>
-      ${task.next_run_at ? `<div class="meta">Runs ${when(task.next_run_at)}</div>` : ''}
-      <div class="prose">${window.renderMarkdown(task.instruction || '')}</div>
-      ${task.success ? `<h3>Success means</h3><div class="prose">${window.renderMarkdown(task.success)}</div>` : ''}
-      ${task.constraints?.length ? `<h3>Constraints</h3><ul>${task.constraints.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
-      ${task.status === 'queued' ? declineForm(task.id) : ''}
-    </div>`).join('') : '<p class="empty">No open recommendation.</p>'}
-    ${history.length ? `<div class="card"><h2>Earlier</h2>${history.map(entry => `<div class="entry"><div class="meta">${esc(entry.date)}</div><div class="content">${esc(entry.content)}</div></div>`).join('')}</div>` : ''}`;
-  bindDecline($('#recommendations'));
-}
 
 function renderJournal() {
   $('#journal').innerHTML = data.journal.length ? data.journal.map(day => `

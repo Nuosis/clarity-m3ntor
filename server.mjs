@@ -167,7 +167,6 @@ const ratingsSchema = { type: 'object', properties: Object.fromEntries(dimension
 const tools = [
   { name: 'save_poma_reassessment', description: 'Save a prepared business POMA reassessment through this local service, including when your harness filesystem is read-only. Use the task revision_id UUID consistently. Saves one dated private revision, appends/updates its context section and journal entry, and saves a SEPARATE non-sensitive coaching summary locally. Workspace paths are fixed by this MCP connection. Repeating the same revision reconciles it without duplicates; prior revisions/unrelated context stay intact. After the local save it submits ONLY the coaching_summary, each area\'s category and score (never rationales) and coaching_profile to Clarity with this installation\'s token; resubmitting the same revision updates it. Returns actual per-artifact saved states, paths, the Clarity submission receipt or its failure.', inputSchema: { type: 'object', properties: { revision_id: { type: 'string', format: 'uuid' }, ratings: ratingsSchema, evidence: { description: 'Local evidence and source references, including explicit gaps.' }, coverage: { description: 'Business/process/source/period coverage and exclusions.' }, uncertainty: { description: 'Evidence limits and uncertainty for the business-linked ratings.' }, comparison: { description: 'Actual business change versus newly discovered evidence or corrected interpretation.' }, productivity: { description: 'Supported calculation or labelled estimate with scope, period, currency, definitions and total-human-hour coverage, or specific missing evidence.' }, status: { type: 'string', description: 'Actual assessment lifecycle status; defaults to draft.' }, harness: { type: 'string', enum: ['codex', 'claude'], description: 'Actual local harness, when known.' }, context_update: { type: 'string', description: 'Detailed reassessment Markdown section; do not replace unrelated existing CONTEXT.' }, journal_entry: { type: 'string', description: 'Business-related reassessment journal entry.' }, coaching_summary: { type: 'string', description: 'SEPARATE non-sensitive coaching summary; exclude raw context, financial/working-hours details, private identifiers, paths and credentials.' }, coaching_profile: { type: 'object', description: 'Non-sensitive registration/coaching profile submitted with the summary: industry, products_services, service_area, condensed_context.', properties: { industry: { type: 'string' }, products_services: { type: 'string' }, service_area: { type: 'string' }, condensed_context: { type: 'string' } }, additionalProperties: false } }, required: ['revision_id','ratings','evidence','coverage','uncertainty','comparison','productivity','context_update','journal_entry','coaching_summary'], additionalProperties: false } },
   { name: 'get_task', description: 'One task with its contract and every run: status, times, the steps the agent took and its result or error.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'], additionalProperties: false }, annotations: { readOnlyHint: true } },
-  { name: 'list_recommendations', description: 'M3NT0R\u2019s open recommendation tasks and the history of owner decisions on recommendations (including declines with their reasons), from the last 14 days of the journal.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } },
   { name: 'list_assessments', description: 'Saved POMA assessments, newest first: revision, date, status, ratings and report. Default limit 2 (latest and previous).', inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 26 } }, additionalProperties: false }, annotations: { readOnlyHint: true } },
   { name: 'list_running_jobs', description: 'M3NT0R jobs queued or running now (assessment, coaching, tasks, A2A), newest first.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } },
   { name: 'read_answered_questions', description: 'The owner\u2019s answered and dismissed Coach questions, newest first (up to 50), with their answers.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } },
@@ -186,7 +185,7 @@ function toolsChanged() {
 }
 const questionInstructions = 'At the start of a session, read today’s business journal with read_journal and check user_question_read. Before offering outstanding questions, today’s journal must have been read. When permitted and questions are pending, briefly ask whether the user has time to answer some Coach questions; continue their work if not. Record a no using user_question_set(action="defer") or add_journal(user_declined_questions=true): no more offers for four hours unless the user directly raises these questions. Set new business questions with user_question_set. Local journal and question contents are never report attachments.';
 // M3NT0R coaching jobs connect to /mcp/coach, which offers only these read tools.
-const COACH_READ_TOOLS = new Set(['search_utility', 'read_journal', 'get_coaching_context', 'user_question_read', 'list_tasks', 'get_task', 'list_recommendations', 'list_assessments', 'read_answered_questions', 'list_goals']);
+const COACH_READ_TOOLS = new Set(['search_utility', 'read_journal', 'get_coaching_context', 'user_question_read', 'list_tasks', 'get_task', 'list_assessments', 'read_answered_questions', 'list_goals']);
 async function mcp(req, res, coach = false) {
   const sessionId = req.headers['mcp-session-id'];
   const session = mcpSessions.get(sessionId);
@@ -261,8 +260,6 @@ async function mcp(req, res, coach = false) {
         if (!detail) throw new Error('Task not found.');
         for (const run of detail.runs) run.process = await jobProcess(run.job_id);
         result = { content: [{ type: 'text', text: JSON.stringify(detail) }] };
-      } else if (name === 'list_recommendations') {
-        result = { content: [{ type: 'text', text: JSON.stringify((await overview()).recommendations) }] };
       } else if (name === 'list_assessments') {
         result = { content: [{ type: 'text', text: JSON.stringify((await assessments()).slice(0, input.limit || 2)) }] };
       } else if (name === 'list_running_jobs') {
@@ -342,13 +339,11 @@ async function overview() {
   const { tasks, worker } = await taskQueue.call('list_tasks', {});
   const questions = await questionState(cwd);
   const journal = await journalDays();
-  const decisions = journal.flatMap(day => day.entries.filter(entry => ['owner_decision', 'action_queue'].includes(entry.source)).map(entry => ({ ...entry, date: day.date })));
   return {
     worker, tasks, a2a: a2aReceiver.status(), running: await runningJobs(),
     context: await readFile(contextPath, 'utf8').catch(() => ''),
     questions: { pending: questions.pending, answered: questions.questions.filter(q => q.status !== 'pending').slice(-20).reverse(), deferred_until: questions.deferred ? questions.deferUntil : null },
     assessments: await assessments(),
-    recommendations: { open: tasks.filter(task => task.category === 'recommendation'), history: decisions },
     ...taskQueue.goals(),
     journal,
   };
@@ -408,15 +403,6 @@ async function ownerApi(req, res, url) {
   if (req.method === 'POST' && url.pathname === '/api/pace') {
     const input = await body(req);
     taskQueue.call('set_pace', { pace: input.pace, ...(input.time ? { time: input.time } : {}) });
-    return json(res, 200, await overview());
-  }
-  if (req.method === 'POST' && parts[1] === 'tasks' && parts[2] && parts[3] === 'decline') {
-    const input = await body(req);
-    if (!input.reason?.trim()) throw new Error('Give the reason.');
-    const current = taskQueue.detail(parts[2])?.task;
-    if (!current) return json(res, 404, { error: 'This recommendation is no longer in the list.' });
-    if (!['queued', 'paused', 'failed'].includes(current.status)) return json(res, 409, { error: 'This recommendation has already started, so it can no longer be declined.' });
-    await taskQueue.call('clear_task', { task_id: parts[2], action: 'delete', reason: input.reason });
     return json(res, 200, await overview());
   }
   return json(res, 404, { error: 'Not found.' });
