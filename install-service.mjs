@@ -159,8 +159,6 @@ function current() {
   if (/\.vbs$/i.test(target) && existsSync(target)) script = readFileSync(target, 'utf8').match(/"""(.+?)"""/)?.[1] || null;
   else if (/\.(cmd|bat)$/i.test(target)) script = target;
   if (script && !existsSync(script)) script = null;
-  // Fall back to this installer's default script location.
-  if (!script) { const fallback = path.join(path.dirname(file), `${label}.cmd`); if (existsSync(fallback)) script = fallback; }
   windowsScript = script;
   const port = script ? Number(readFileSync(script, 'utf8').match(/set "PORT=(\d+)"/)?.[1]) || null : null;
   return { loaded: true, file: script, task_action: `${command} ${argsText}`.trim(), port, pid: null };
