@@ -10,7 +10,9 @@ import { appendJournalInWrite, businessDate, serializeBusinessWrites } from './b
 // Journal entries with fixed ids, so a retried write updates the same entry.
 const journalOnce = (cwd, entryId, input) => serializeBusinessWrites(cwd, () => appendJournalInWrite(cwd, input, new Date(), entryId));
 // A task's job ends with `STATUS: done` or `STATUS: not done — <reason>`.
-const reportedDone = output => /^status:\s*done\b/i.test((String(output || '').trim().split('\n').pop() || '').replace(/[*`_]/g, '').trim());
+// The last STATUS line decides, even if the agent adds a closing summary after it.
+const statusLine = output => String(output || '').split('\n').map(line => line.replace(/[*`_]/g, '').trim()).reverse().find(line => /^status:/i.test(line)) || '';
+const reportedDone = output => /^status:\s*done\b/i.test(statusLine(output));
 
 // The owner's action system: immediate, delayed and recurring tasks persisted in
 // .clarity_coach/action.sqlite3 and run by this service in the owner's harness.
@@ -98,7 +100,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   function settle(taskId, job) {
     const ok = job.status === 'complete' && reportedDone(job.output);
     const finished = now();
-    const error = ok ? null : job.status === 'complete' ? `The task reported it was not done: ${String(job.output || '').trim().split('\n').pop()}` : (job.error || job.status);
+    const error = ok ? null : job.status === 'complete' ? `The task reported it was not done: ${statusLine(job.output) || 'no STATUS line'}` : (job.error || job.status);
     db.prepare("UPDATE runs SET status = ?, finished_at = ?, result = ?, error = ? WHERE task_id = ? AND job_id = ? AND status = 'executing'")
       .run(ok ? 'completed' : 'failed', finished, ok ? job.output : null, error, taskId, job.job_id);
     const task = get(taskId);
@@ -447,7 +449,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         if (goal && !unplanned) setSetting('goal_review_state', reviewState(goal));
         if (unplanned) setSetting('goal_next_review_at', new Date().toISOString());
         setSetting('goal_review_job', null);
-        setSetting('goal_review_error', job.status === 'complete' && reportedDone(job.output) ? null : `The last goal review did not finish: ${job.error || String(job.output || '').trim().split('\n').pop()}`);
+        setSetting('goal_review_error', job.status === 'complete' && reportedDone(job.output) ? null : `The last goal review did not finish: ${job.error || statusLine(job.output) || 'no STATUS line'}`);
         schedule();
       } finally { busy = false; }
     };
