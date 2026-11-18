@@ -97,7 +97,7 @@ button.secondary:hover { background: var(--panel-2); }
 #error { position: fixed; bottom: 16px; left: 24px; right: 24px; background: var(--panel); color: var(--bad); border: 1px solid var(--bad); border-radius: 8px; padding: 8px 12px; margin: 0; box-shadow: var(--shadow); }
 
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.filters input[type="search"], .filters input[type="text"], .filters select { font: inherit; padding: 6px 10px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; }
+.filters input[type="search"], .filters input[type="text"], .filters input[type="time"], .filters select { color-scheme: inherit; font: inherit; padding: 6px 10px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; }
 .filters input[type="search"] { flex: 1 1 260px; }
 .filters fieldset { display: flex; gap: 12px; border: 0; padding: 0; margin: 0; }
 .filters legend { float: left; margin-right: 8px; color: var(--muted); font-size: 13px; }
@@ -124,3 +124,5 @@ button.danger { font: inherit; font-size: 13px; padding: 4px 12px; border-radius
 .status.maintaining { color: var(--ok); }
 .status.waiting, .status.stopped { color: var(--muted); }
 button.primary:disabled, button.secondary:disabled { opacity: 0.5; cursor: default; }
+[data-theme="dark"] { color-scheme: dark; }
+[data-theme="light"] { color-scheme: light; }
