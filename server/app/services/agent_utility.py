@@ -234,7 +234,8 @@ FILTERS = """
 """
 
 
-DOCUMENT = "(search_document || to_tsvector('english', coalesce(payload->>'distinct_aspects', '')))"
+# Matches the expression index in migration 0069; keep the two identical.
+DOCUMENT = "(search_document || to_tsvector('english'::regconfig, coalesce(payload->>'distinct_aspects', '')))"
 
 
 def search_cases(payload: dict) -> dict:
@@ -260,12 +261,19 @@ def search_cases(payload: dict) -> dict:
     # Published variants match too, by their text and their distinct aspects, and count for their case.
     match_filters = FILTERS.replace("status = 'recorded'", "status IN ('recorded', 'variant')")
     candidates = max(params["limit"] * 5, 50)
+    # Matches are grouped by their published case before ranking and limiting, so a case's
+    # variants never crowd out another case.
+    published_parent = "EXISTS (SELECT 1 FROM agent_utility_cases p WHERE p.id = COALESCE(c.variant_of, c.id) AND p.status = 'recorded')"
     lexical_sql = f"""
-        SELECT id, variant_of, row_number() OVER (ORDER BY
-            ts_rank_cd({DOCUMENT}, websearch_to_tsquery('english', :query)) DESC,
-            similarity(title, :query) DESC, created_at DESC, id) AS rank
-        FROM agent_utility_cases WHERE {match_filters}
-          AND ({DOCUMENT} @@ websearch_to_tsquery('english', :query) OR title % :query)
+        SELECT parent AS id, row_number() OVER (ORDER BY text_rank DESC, title_similarity DESC, created DESC, parent) AS rank
+        FROM (
+            SELECT COALESCE(c.variant_of, c.id) AS parent,
+                   max(ts_rank_cd({DOCUMENT}, websearch_to_tsquery('english', :query))) AS text_rank,
+                   max(similarity(c.title, :query)) AS title_similarity, max(c.created_at) AS created
+            FROM agent_utility_cases c WHERE {match_filters} AND {published_parent}
+              AND ({DOCUMENT} @@ websearch_to_tsquery('english', :query) OR c.title % :query)
+            GROUP BY 1
+        ) grouped
     """
     with SessionLocal() as db:
         lexical = db.execute(text(lexical_sql), params).mappings().all()
@@ -276,25 +284,21 @@ def search_cases(payload: dict) -> dict:
                 # Use a savepoint so a vector-query failure leaves lexical retrieval available.
                 with db.begin_nested():
                     dense = db.execute(text(f"""
-                        SELECT id, variant_of, row_number() OVER (ORDER BY embedding <=> CAST(:vector AS vector), id) AS rank,
-                               1 - (embedding <=> CAST(:vector AS vector)) AS similarity
-                        FROM agent_utility_cases WHERE {match_filters} AND embedding IS NOT NULL
-                        ORDER BY embedding <=> CAST(:vector AS vector), id LIMIT :candidates
+                        SELECT parent AS id, row_number() OVER (ORDER BY distance, parent) AS rank, 1 - distance AS similarity
+                        FROM (
+                            SELECT COALESCE(c.variant_of, c.id) AS parent, min(c.embedding <=> CAST(:vector AS vector)) AS distance
+                            FROM agent_utility_cases c WHERE {match_filters} AND c.embedding IS NOT NULL AND {published_parent}
+                            GROUP BY 1
+                        ) grouped
+                        ORDER BY distance, parent LIMIT :candidates
                     """), {**params, "vector": vector, "candidates": candidates}).mappings().all()
             except Exception as exc:
                 degradation.append(f"vector_retrieval_unavailable:{type(exc).__name__}")
         elif vector is not None:
             degradation.append("no_embedded_cases_for_filters")
         scores, details = {}, {}
-        # A case takes the best rank among itself and its variants in each retrieval.
-        lexical_best, dense_best = {}, {}
-        for row in lexical:
-            cid = str(row["variant_of"] or row["id"])
-            lexical_best.setdefault(cid, row["rank"])
-        for row in dense:
-            cid = str(row["variant_of"] or row["id"])
-            if cid not in dense_best or float(row["similarity"]) > dense_best[cid][1]:
-                dense_best[cid] = (row["rank"], float(row["similarity"]))
+        lexical_best = {str(row["id"]): row["rank"] for row in lexical}
+        dense_best = {str(row["id"]): (row["rank"], float(row["similarity"])) for row in dense}
         for cid, rank in lexical_best.items():
             scores[cid] = 1.0 / (60 + rank)
             details[cid] = {"lexical_rank": rank}
@@ -303,10 +307,6 @@ def search_cases(payload: dict) -> dict:
                 continue
             scores[cid] = scores.get(cid, 0) + 1.0 / (60 + rank)
             details.setdefault(cid, {}).update(vector_rank=rank, vector_similarity=similarity)
-        # A variant's case must itself be published.
-        if scores:
-            published = {str(row[0]) for row in db.execute(text("SELECT id FROM agent_utility_cases WHERE status = 'recorded' AND id = ANY(CAST(:ids AS uuid[]))"), {"ids": list(scores)}).all()}
-            scores = {cid: score for cid, score in scores.items() if cid in published}
         # Boosts raise a matching case's rank; they never add a case that did not match.
         boosts = boost_counts(db, list(scores))
         for cid in scores:
