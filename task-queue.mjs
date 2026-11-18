@@ -30,18 +30,19 @@ const recurrenceSchema = {
   type: 'object',
   description: 'Omit for a one-off task. weekly runs on a weekday at HH:MM in the service\'s local time; interval_minutes repeats after each run.',
   properties: {
-    weekly: { type: 'object', properties: { day: { type: 'string', enum: WEEKDAYS }, time: { type: 'string', pattern: '^([01]\\d|2[0-3]):[0-5]\\d$' } }, required: ['day', 'time'], additionalProperties: false },
-    interval_minutes: { type: 'integer', minimum: 5 },
+    weekly: { type: 'object', description: 'Run once a week.', properties: { day: { type: 'string', enum: WEEKDAYS, description: 'The weekday.' }, time: { type: 'string', pattern: '^([01]\\d|2[0-3]):[0-5]\\d$', description: 'Local time, HH:MM.' } }, required: ['day', 'time'], additionalProperties: false },
+    interval_minutes: { type: 'integer', minimum: 5, description: 'Minutes to wait after each run before the next.' },
   },
   additionalProperties: false,
 };
+const TASK_STATUSES = ['queued', 'delivered', 'executing', 'completed', 'failed', 'paused', 'done'];
 
 export const taskTools = [
-  { name: 'set_task', description: 'Create or update a task in the owner\'s action queue. The service runs it in the owner\'s harness when due (now, at run_at, or on its recurrence) and records the result. Supplying an existing task_id updates that task instead of adding another; use this to reuse a matching recurring task.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'Existing task to update; omit to create.' }, title: { type: 'string' }, instruction: { type: 'string', description: 'The task: what the owner\'s agent should do when it runs.' }, success: { type: 'string', description: 'Definition of success: what must be true for the run to count as done.' }, constraints: { type: 'array', items: { type: 'string' }, description: 'Optional constraints unique to this task.' }, category: { type: 'string', enum: ['assessment', 'use_case', 'other'], description: 'assessment for the weekly reassessment, use_case for researching an owner-reported use case.' }, run_at: { type: 'string', format: 'date-time', description: 'First run time; omit to run now (one-off) or at the next recurrence.' }, recurrence: recurrenceSchema, remove_on_completion: { type: 'boolean', description: 'One-off tasks only: after a successful run, journal the result and remove the task from the list (used for one-off work whose record belongs in the journal).' }, goal_id: { type: 'string', description: 'The goal this task works on; omit for one-off work the owner directs.' }, stage: { type: 'string', description: 'With goal_id: the goal\'s current stage key (list_goals). Tasks for a stage the goal has not reached are refused.' } }, required: ['title', 'instruction', 'success'], additionalProperties: false } },
-  { name: 'list_tasks', description: 'List tasks with status (queued, delivered, executing, completed, failed, paused, done), next run time, last run and its result or error.', inputSchema: { type: 'object', properties: { status: { type: 'string' } }, additionalProperties: false }, annotations: { readOnlyHint: true } },
-  { name: 'clear_task', description: 'Clear a task: action done marks it finished and stops any recurrence (history kept); action delete removes it and its run history. A running job is not stopped. When the owner has decided against a task, give their reason: it is journaled so M3NT0R can take it into account on its next weekly run.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, action: { type: 'string', enum: ['done', 'delete'] }, reason: { type: 'string', description: 'The owner\'s decision and reason, when they directed this.' } }, required: ['task_id', 'action'], additionalProperties: false } },
-  { name: 'start_task_worker', description: 'Start running due tasks (persists across service restarts) and return the worker state.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
-  { name: 'stop_task_worker', description: 'Stop starting new tasks (persists across restarts). Jobs already running finish and their results are still recorded.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'set_task', description: 'Use when work should run in the owner\'s harness now, later or on a schedule: the next work for the active goal\'s stage, the weekly assessment, a recurring routine, or one-off work the owner directs. Creates or updates a task in the owner\'s action queue; the service runs it when due and records the result. Supplying an existing task_id updates that task instead of adding another; use this to reuse a matching recurring task.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'Existing task to update; omit to create.' }, title: { type: 'string', description: 'Short name the owner sees in the task list.' }, instruction: { type: 'string', description: 'The task: what the owner\'s agent should do when it runs.' }, success: { type: 'string', description: 'Definition of success: what must be true for the run to count as done.' }, constraints: { type: 'array', items: { type: 'string' }, description: 'Optional constraints unique to this task.' }, category: { type: 'string', enum: ['assessment', 'use_case', 'other'], description: 'assessment for the weekly reassessment, use_case for researching an owner-reported use case.' }, run_at: { type: 'string', format: 'date-time', description: 'First run time; omit to run now (one-off) or at the next recurrence.' }, recurrence: recurrenceSchema, remove_on_completion: { type: 'boolean', description: 'One-off tasks only: after a successful run, journal the result and remove the task from the list (used for one-off work whose record belongs in the journal).' }, goal_id: { type: 'string', description: 'The active goal this task works on; omit for one-off work the owner directs.' }, stage: { type: 'string', description: 'With goal_id: the goal\'s current stage key (list_goals). Tasks for a stage the goal has not reached are refused.' } }, required: ['title', 'instruction', 'success'], additionalProperties: false } },
+  { name: 'list_tasks', description: 'Use before set_task, to reuse a matching task instead of adding a duplicate, and when checking what is queued, running or failed: lists tasks with status, next run time, last run and its result or error.', inputSchema: { type: 'object', properties: { status: { type: 'string', enum: TASK_STATUSES, description: 'Only tasks in this status; omit for all.' } }, additionalProperties: false }, annotations: { readOnlyHint: true } },
+  { name: 'clear_task', description: 'Use when a task is finished for good or the owner decides against it: action done marks it finished and stops any recurrence (history kept); action delete removes it and its run history. A running job is not stopped. When the owner has decided against a task, give their reason: it is journaled so M3NT0R can take it into account on its next weekly run.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'The task, from list_tasks.' }, action: { type: 'string', enum: ['done', 'delete'], description: 'done keeps its history; delete removes it and its runs.' }, reason: { type: 'string', description: 'The owner\'s decision and reason, when they directed this.' } }, required: ['task_id', 'action'], additionalProperties: false } },
+  { name: 'start_task_worker', description: 'Use at setup, or when the owner wants queued tasks to run again after stopping them: start running due tasks (persists across service restarts) and return the worker state.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'stop_task_worker', description: 'Use when the owner wants tasks paused, or to stop runaway or wasteful work: stop starting new tasks (persists across restarts). Jobs already running finish and their results are still recorded.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
 ];
 
 export function nextWeekly(after, { day, time }) {
@@ -250,6 +251,9 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     db.prepare('INSERT INTO goals (id, title, kind, outcome, source, position, stage, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?)')
       .run(randomUUID(), 'Working environment', 'environment', "The agent sees what is on the owner's plate and knows how the business does its work.", 'm3ntor', 'active', now(), now());
   }
+  // USER-AUTHORIZED — Marcus, November 18, 2026: a completed goal is journaled and marked
+  // inactive, and inactive goals are not rendered. Goals finished before then become inactive.
+  db.prepare("UPDATE goals SET status = 'inactive', updated_at = ? WHERE status IN ('improving', 'maintaining')").run(now());
   // One goal is active at a time; when none is, the next waiting goal by position starts.
   function activeGoal() {
     let goal = db.prepare("SELECT * FROM goals WHERE status = 'active' ORDER BY position LIMIT 1").get();
@@ -298,20 +302,22 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const completed = [...JSON.parse(goal.completed), { stage: stage.key, name: stage.name, evidence: evidence.trim(), at: now() }];
     const nextIndex = goal.stage + 1;
     const nextStage = stages[nextIndex];
-    // A goal that reaches its ongoing stage leaves the active slot for the next goal.
-    const status = !nextStage ? 'maintaining' : nextStage.key === 'improve' ? 'improving' : 'active';
-    updateGoal(goal.id, { stage: nextStage ? nextIndex : goal.stage, completed: JSON.stringify(completed), status });
+    // The last stage that ends (the recurring Improve stage does not) completes the goal:
+    // it is marked inactive and the next waiting goal takes the active slot.
+    const goalCompleted = !nextStage || nextStage.key === 'improve';
+    updateGoal(goal.id, { stage: goalCompleted ? goal.stage : nextIndex, completed: JSON.stringify(completed), status: goalCompleted ? 'inactive' : 'active' });
     // A stage reached with no work planned for it gets a review now, whatever the pace.
     const nextGoal = activeGoal();
     if (nextGoal && !stageTasks(nextGoal.id, stagesFor(nextGoal.kind)[nextGoal.stage].key).length) setSetting('goal_next_review_at', now());
     await journalOnce(cwd, `goal-stage-${goal.id}-${stage.key}-${completed.length}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": ${stage.name} stage done.\n${evidence.trim()}`, metadata: { goal_id: goal.id, stage: stage.key } });
+    if (goalCompleted) await journalOnce(cwd, `goal-completed-${goal.id}-${completed.length}`, { kind: 'success', source: 'goals', content: `Goal completed: ${goal.title}\nOutcome: ${goal.outcome}\n${completed.map(item => `- ${item.name}: ${item.evidence}`).join('\n')}`, metadata: { goal_id: goal.id } });
     activeGoal(); schedule();
     return goalView(getGoal(goal.id));
   }
 
   async function reopenStage(goalId, evidence) {
     const goal = getGoal(goalId);
-    if (!goal || goal.status !== 'improving') throw new Error('Only a goal in its Improve stage can reopen its Process stage.');
+    if (!goal || goal.status !== 'inactive' || goal.kind !== 'function') throw new Error('Only a completed function goal can reopen its Process stage.');
     const index = stagesFor(goal.kind).findIndex(stage => stage.key === 'process');
     // Reopened work becomes the next active goal so it runs through the stages again in order.
     db.prepare("UPDATE goals SET status = 'waiting' WHERE status = 'active'").run();
@@ -414,7 +420,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     try {
       const view = goalView(goal);
       const tasks = stageTasks(goal.id, view.stage.key).map(task => ({ task_id: task.id, title: task.title, status: task.status, success: task.success, last_status: task.last_status, last_result: String(task.last_result || '').slice(-1500), last_error: task.last_error, pause_reason: task.pause_reason }));
-      const others = db.prepare("SELECT * FROM goals WHERE status IN ('waiting', 'improving', 'maintaining') ORDER BY position").all().map(g => ({ goal_id: g.id, title: g.title, status: g.status }));
+      const others = db.prepare("SELECT * FROM goals WHERE status IN ('waiting', 'inactive') ORDER BY position").all().map(g => ({ goal_id: g.id, title: g.title, status: g.status }));
       const question = `Goal: ${view.title} (goal_id ${view.id})\nOutcome: ${view.outcome}\nCurrent stage ${view.stage.index} of ${view.stages.length}: ${view.stage.name} (stage key "${view.stage.key}")\nWork: ${view.stage.work}\nDone when: ${view.stage.done_check}`;
       const record = goal.kind === 'environment' ? await readEnvironment(cwd) : null;
       const stageRecord = record && { infrastructure: record.sources, observability: record.plate, process: record.processes }[view.stage.key];
@@ -503,7 +509,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
           const goal = getGoal(input.goal_id);
           if (!goal) throw new Error('Goal not found.');
           const current = stagesFor(goal.kind)[goal.stage];
-          if (!['active', 'improving', 'maintaining'].includes(goal.status)) throw new Error(`The goal "${goal.title}" is ${goal.status}; its tasks start when it becomes the active goal.`);
+          if (goal.status !== 'active') throw new Error(`The goal "${goal.title}" is ${goal.status}; its tasks start when it becomes the active goal.`);
           if (input.stage && input.stage !== current.key) throw new Error(`The goal "${goal.title}" is in its ${current.name} stage ("${current.key}"); tasks for the "${input.stage}" stage wait until it gets there.`);
           goalFields = { goal_id: goal.id, stage: current.key };
         }

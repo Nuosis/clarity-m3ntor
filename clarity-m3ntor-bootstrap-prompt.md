@@ -110,7 +110,7 @@ The service works on goals, one active goal at a time, each built through fixed 
 
 Agency and Measurement work, and capabilities the owner asks to have built, come as later goals once Process and Observability reach 8. One-off work the owner directs is done directly.
 
-The agent's goal reviews do this work: each reviews the active stage's results, applies the owner's answers, writes the next tasks and completes the stage when its check passes. The owner sets their pace (hourly, daily or YOLO), full access and the agent runner in the owner view's Settings. Ask the owner only through the question mechanism, one decision per question.
+M3NT0R sets the goals. inov8, the agent's goal review, does this work: each review checks the active stage's results, applies the owner's answers, writes the next tasks, completes the stage when its check passes and reports what proved useful with `report_utility`. A completed goal is journaled and marked inactive. The owner sets their pace (hourly, daily or YOLO), full access and the agent runner in the owner view's Settings. Ask the owner only through the question mechanism, one decision per question.
 
 Call `list_goals` to confirm the working environment goal is active, then call `run_goal_review` once so its first review starts now, and retrieve that job with `get_m3ntor_result`.
 

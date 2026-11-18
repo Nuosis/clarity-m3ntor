@@ -8,28 +8,29 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const terminal = new Set(['complete', 'failed', 'interrupted']);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 export const jobRoot = path.resolve(process.env.M3NTOR_JOB_DIR || path.join(root, '.m3ntor-runtime', 'jobs'));
-const assessmentInput = { type: 'object', properties: { context: { description: 'Optional existing business assessment context or local source references, as text or structured JSON.' }, harness: { type: 'string', enum: ['codex', 'claude'], description: 'Optional existing harness; otherwise uses the service or assessment selection.' } }, additionalProperties: false };
+const harnessInput = { type: 'string', enum: ['codex', 'claude'], description: 'Optional: which installed harness runs the job; omit to use the service\'s selection.' };
+const assessmentInput = { type: 'object', properties: { context: { type: ['string', 'object'], description: 'Optional existing business assessment context or local source references, as text or structured JSON.' }, harness: harnessInput }, additionalProperties: false };
 
 export const m3ntorTools = [
   {
     name: 'ask_m3ntor',
-    description: 'Ask M3NT0R to coach your local AI on the owner’s business productivity. Supply a question and the business context it needs, including private details: M3NT0R runs locally on the owner\u2019s subscription and nothing is shared. It can read local files, search the web and the shared utility library, and read the journal, but changes nothing; you carry out what it recommends. Fetches the current mentor prompt from Clarity and starts the selected existing local harness. Returns output or a running job_id; retrieve that same job with get_m3ntor_result.',
-    inputSchema: { type: 'object', properties: { question: { type: 'string' }, context: { description: 'Business context for the coach, including private details, as text or structured JSON.' }, harness: { type: 'string', enum: ['codex', 'claude'], description: 'Optional existing harness; otherwise uses the service or assessment selection.' } }, required: ['question'], additionalProperties: false },
+    description: 'Use when you need coaching on the owner\'s business productivity, or when your work shows a capability worth making a goal: ask M3NT0R. M3NT0R sets the goals (it creates, reorders and sharpens them with set_goal); you work the active goal. Supply a question and the business context it needs, including private details: M3NT0R runs locally on the owner\u2019s subscription and nothing is shared. It can read local files, search the web and the shared utility library, and read the journal; apart from goals it changes nothing, and you carry out what it recommends. Returns output or a running job_id; retrieve that same job with get_m3ntor_result.',
+    inputSchema: { type: 'object', properties: { question: { type: 'string', description: 'What you want M3NT0R\'s advice or decision on, in plain business terms.' }, context: { type: ['string', 'object'], description: 'Business context for the coach, including private details, as text or structured JSON.' }, harness: harnessInput }, required: ['question'], additionalProperties: false },
   },
   {
     name: 'assess_poma',
-    description: 'Assess the owner’s BUSINESS Process, Observability, Measurement and triggered Agency. Fetches the current unified assessment prompt from Clarity for both baseline and later/weekly assessments, and runs the existing local harness. Uses local evidence, independent category/1–10 ratings, source-supported sales per TOTAL human hour, stable revision identity and existing private save/result tools. No question required; returns output or a running job_id. Does not install a scheduler.',
+    description: 'Use for the owner\'s first business assessment at setup and for the weekly reassessment task: assess the business\'s Process, Observability, Measurement and triggered Agency. Runs the current assessment prompt from Clarity in the local harness, from local evidence, with category and 1\u201310 ratings and source-supported sales per total human hour, saved through save_poma_reassessment. Returns output or a running job_id; retrieve it with get_m3ntor_result. Does not schedule itself; the weekly run is a set_task task.',
     inputSchema: assessmentInput,
   },
   {
     name: 'reassess_poma',
-    description: 'Compatibility alias for assess_poma: uses the SAME current unified business assessment prompt, local harness, private save and result mechanics. No separate reassessment prompt or question required.',
+    description: 'Use only where an existing task or instruction already names it: compatibility alias for assess_poma, running the same assessment with the same saving and results. Prefer assess_poma.',
     inputSchema: assessmentInput,
   },
   {
     name: 'get_m3ntor_result',
-    description: 'Retrieve an existing coaching or business-POMA reassessment job, its task identity, prompt provenance and completed output or actual failure. Does not launch or retry work. Harness completion alone does not prove local assessment saving; use the returned save evidence and local artifact readback.',
-    inputSchema: { type: 'object', properties: { job_id: { type: 'string' } }, required: ['job_id'], additionalProperties: false },
+    description: 'Use after ask_m3ntor or assess_poma returned a job_id, to get that job\'s output: its status, prompt source and completed output or actual failure. It does not start or retry work. A finished assessment job is not proof it was saved; check the save evidence it returns.',
+    inputSchema: { type: 'object', properties: { job_id: { type: 'string', description: 'The job_id returned by ask_m3ntor or assess_poma.' } }, required: ['job_id'], additionalProperties: false },
     annotations: { readOnlyHint: true },
   },
 ];

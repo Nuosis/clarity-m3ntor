@@ -23,9 +23,11 @@ const save = async patch => {
 const TASK_INSTRUCTION = `You are the business owner's local AI agent, connected to Clarity M3NT0R through the clarity_m3ntor MCP tools. The task below comes from the owner's action queue and is now due. Carry it out within the owner's existing authority, access and policies, keeping private business records local. Your final response is recorded as this run's result: state what was done, the evidence (job IDs, save receipts), and anything that failed or still needs the owner. Keep to its constraints. End with exactly one final line: \`STATUS: done\` only if its definition of success is met, or \`STATUS: not done — <reason>\` if it is not.`;
 
 // M3NT0R coaching jobs (Claude): only these built-in tools exist in the session, so
-// write permissions the owner granted elsewhere cannot apply; MCP is /mcp/coach (read tools only).
+// write permissions the owner granted elsewhere cannot apply; MCP is /mcp/coach (read tools,
+// plus set_goal because M3NT0R sets the goals).
 const COACH_BUILTIN_TOOLS = 'Read,Grep,Glob,WebSearch,WebFetch';
-const COACH_TOOLS = [COACH_BUILTIN_TOOLS, ...['search_utility', 'read_journal', 'get_coaching_context', 'user_question_read', 'list_tasks', 'get_task', 'list_assessments', 'read_answered_questions', 'list_goals', 'read_environment'].map(name => `mcp__clarity_m3ntor__${name}`)].join(',');
+const COACH_MCP_TOOLS = ['search_utility', 'read_journal', 'get_coaching_context', 'user_question_read', 'list_tasks', 'get_task', 'list_assessments', 'read_answered_questions', 'list_goals', 'read_environment', 'set_goal'];
+const COACH_TOOLS = [COACH_BUILTIN_TOOLS, ...COACH_MCP_TOOLS.map(name => `mcp__clarity_m3ntor__${name}`)].join(',');
 
 const A2A_INSTRUCTION = `You are the business owner's local AI agent, connected to Clarity M3NT0R. M-CODEX, Clarity's operator agent, sent the request below through Clarity A2A. Perform it read-only: look things up, but do not create, change, send or delete anything, and do not start other work. Your final response is sent back to M-CODEX as the reply. Never include sensitive data in it: no credentials, tokens or keys; no personal names, contact details or other identifiers of people; no customer, employee or supplier records; no financial figures, prices or account details; no file paths, hostnames or private message content. Answer with non-sensitive summaries, counts, categories or yes/no findings, and say plainly when the request can only be answered with sensitive data.`;
 
@@ -50,10 +52,9 @@ async function fetchPrompt(source) {
 const LOCAL_TOOLS = ['ask_m3ntor', 'assess_poma', 'reassess_poma', 'get_m3ntor_result', 'report_utility', 'search_utility', 'a2a_status',
   'set_task', 'list_tasks', 'clear_task', 'start_task_worker', 'stop_task_worker', 'save_poma_reassessment', 'get_coaching_context',
   'read_journal', 'add_journal', 'user_question_set', 'user_question_read',
-  'list_goals', 'set_goal', 'complete_stage', 'reopen_stage', 'stop_goal', 'set_pace', 'run_goal_review',
+  'list_goals', 'complete_stage', 'reopen_stage', 'stop_goal', 'set_pace', 'run_goal_review',
   'read_environment', 'record_source', 'set_plate', 'record_process',
   'get_task', 'list_assessments', 'list_running_jobs', 'read_answered_questions', 'revoke_utility'];
-const COACH_READ_TOOLS = ['search_utility', 'read_journal', 'get_coaching_context', 'user_question_read', 'list_tasks', 'get_task', 'list_assessments', 'read_answered_questions', 'list_goals', 'read_environment'];
 const codexApprove = (server, names) => names.flatMap(name => ['-c', `mcp_servers.${server}.tools.${name}.approval_mode="approve"`]);
 
 // Codex for A2A jobs: the apps, plugins and remote_plugin features are turned
@@ -73,10 +74,10 @@ async function runHarness(request, prompt) {
   // inherit every configured server (clarity_m3ntor and others), several of which write.
   const readOnly = request.task === 'a2a_message';
   // M3NT0R coaching runs locally with the owner's full context: it may read files,
-  // search the web and the shared utility library, and read the journal, but it
-  // changes nothing; the owner's agent carries out what it recommends.
+  // search the web and the shared utility library, and read the journal; it sets the
+  // goals and otherwise changes nothing; the owner's agent carries out what it recommends.
   const coachArgs = request.task !== 'coaching' ? null : request.harness === 'codex'
-    ? [...(await codexMcpOff(request.cwd)), '-c', `mcp_servers.m3ntor_coach={url=${JSON.stringify(request.mcp_url)}}`, ...codexApprove('m3ntor_coach', COACH_READ_TOOLS), 'exec', ...CODEX_FEATURES_OFF, '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
+    ? [...(await codexMcpOff(request.cwd)), '-c', `mcp_servers.m3ntor_coach={url=${JSON.stringify(request.mcp_url)}}`, ...codexApprove('m3ntor_coach', COACH_MCP_TOOLS), 'exec', ...CODEX_FEATURES_OFF, '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
     : ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } }), '--tools', COACH_BUILTIN_TOOLS, '--permission-mode', 'dontAsk', '--allowedTools', COACH_TOOLS];
   const args = coachArgs || (request.harness === 'codex'
     ? (readOnly
@@ -96,7 +97,7 @@ async function runHarness(request, prompt) {
   const context = typeof request.context === 'string' ? request.context : JSON.stringify(request.context, null, 2);
   const assessment = ['poma_assessment', 'poma_reassessment'].includes(request.task);
   const persistence = assessment ? `\n## Local persistence identity\n\nUse revision_id ${request.job_id} with clarity_m3ntor.save_poma_reassessment for this task. Reuse that same ID when reconciling a save. The local service writes the authorized artifacts even if this harness filesystem is read-only; retain actual per-artifact receipts.\n` : '';
-  const heading = assessment ? 'Current business POMA assessment task' : request.task === 'a2a_message' ? 'Incoming A2A message' : request.task === 'scheduled_task' ? 'Scheduled task' : request.task === 'goal_review' ? 'Goal review' : 'Current coaching request';
+  const heading = assessment ? 'Current business POMA assessment task' : request.task === 'a2a_message' ? 'Incoming A2A message' : request.task === 'scheduled_task' ? 'Scheduled task' : request.task === 'goal_review' ? 'inov8 goal review' : 'Current coaching request';
   // The owner's own answers are direction from the owner: M3NT0R incorporates them as fully as possible.
   const answers = request.owner_answers?.length
     ? `\n## The owner's answers to your earlier questions\n\nThese are the owner's own words. Incorporate them as fully as possible: let them shape what you assess, recommend and prioritise, and where they conflict with your own inference, follow the owner and say how you did.\n\n${request.owner_answers.map(a => `- Q (${a.answered_at?.slice(0, 10) || 'date unknown'}): ${a.question}\n  A: ${a.answer}`).join('\n')}\n`

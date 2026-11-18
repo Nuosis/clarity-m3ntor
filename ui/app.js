@@ -46,7 +46,7 @@ function render() {
   restoreDrafts();
 }
 
-const JOB_LABELS = { goal_review: 'Goal review', poma_assessment: 'Assessment', poma_reassessment: 'Assessment', coaching: 'M3NT0R coaching', scheduled_task: 'Task', a2a_message: 'A2A request' };
+const JOB_LABELS = { goal_review: 'inov8', poma_assessment: 'Assessment', poma_reassessment: 'Assessment', coaching: 'M3NT0R coaching', scheduled_task: 'Task', a2a_message: 'A2A request' };
 function renderRunning() {
   const box = $('#running');
   const jobs = data.running || [];
@@ -137,9 +137,9 @@ function goalLabel(task) {
 }
 
 const PACE_LABELS = { hourly: 'Hourly', daily: 'Daily', yolo: 'YOLO' };
-const GOAL_STATUS = { active: 'active', waiting: 'waiting', improving: 'improving', maintaining: 'maintaining', stopped: 'stopped' };
+const GOAL_STATUS = { active: 'active', waiting: 'waiting', stopped: 'stopped' };
 function renderGoals() {
-  const goals = data.goals || [];
+  const goals = (data.goals || []).filter(goal => goal.status !== 'inactive');
   $('#goals').innerHTML = goals.length ? goals.map(renderGoal).join('') : '<p class="empty">No goals.</p>';
   $('#goals').querySelectorAll('form.stop-goal').forEach(stop => stop.addEventListener('submit', async event => {
     event.preventDefault();
@@ -155,9 +155,9 @@ function renderSettings() {
   const pace = data.pace || {};
   $('#settings').innerHTML = `
     <form id="settings-form" class="card settings">
-      <h2>Agent cycle</h2>
+      <h2>inov8</h2>
       <div class="row">
-        <select name="pace" aria-label="Agent cycle">${Object.entries(PACE_LABELS).map(([value, label]) => `<option value="${value}"${pace.pace === value ? ' selected' : ''}>${label}</option>`).join('')}</select>
+        <select name="pace" aria-label="inov8 pace">${Object.entries(PACE_LABELS).map(([value, label]) => `<option value="${value}"${pace.pace === value ? ' selected' : ''}>${label}</option>`).join('')}</select>
         <label${pace.pace === 'daily' ? '' : ' hidden'}>at <input type="time" name="time" value="${esc(pace.time || '08:00')}"></label>
         <button class="primary" type="button" id="run-review"${pace.reviewing_job_id ? ' disabled' : ''}>Run</button>
       </div>
@@ -166,9 +166,9 @@ function renderSettings() {
       <div class="row">
         <select name="agent_harness" aria-label="Agent runner">${[['codex', 'Codex'], ['claude', 'Claude']].map(([value, label]) => `<option value="${value}"${(data.agent_harness || 'codex') === value ? ' selected' : ''}>${label}</option>`).join('')}</select>
       </div>
-      <p class="meta">Runs tasks and goal reviews. M3NT0R's coaching and assessments keep their own harness.</p>
+      <p class="meta">Runs tasks and inov8. M3NT0R's coaching and assessments keep their own harness.</p>
       <h2>Full access</h2>
-      <label class="toggle"><input type="checkbox" name="full_access"${data.full_access ? ' checked' : ''}> Run tasks and goal reviews with full access</label>
+      <label class="toggle"><input type="checkbox" name="full_access"${data.full_access ? ' checked' : ''}> Run tasks and inov8 with full access</label>
       <p class="meta">Codex runs without a sandbox or approvals; Claude runs with permissions bypassed. They can change anything you can. Coaching and A2A requests stay read-only.</p>
       <div class="actions"><button class="primary" type="submit">Save</button></div>
     </form>`;

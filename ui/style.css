@@ -120,8 +120,7 @@ button.danger { font: inherit; font-size: 13px; padding: 4px 12px; border-radius
 .goal-tasks { padding-left: 20px; }
 .goal-tasks li { margin-bottom: 4px; }
 .goal-tasks a { color: var(--accent-strong); }
-.status.active, .status.improving { color: var(--accent-strong); }
-.status.maintaining { color: var(--ok); }
+.status.active { color: var(--accent-strong); }
 .status.waiting, .status.stopped { color: var(--muted); }
 button.primary:disabled, button.secondary:disabled { opacity: 0.5; cursor: default; }
 [data-theme="dark"] { color-scheme: dark; }
