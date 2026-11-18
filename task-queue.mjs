@@ -170,7 +170,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const claimed = db.prepare("UPDATE tasks SET status = 'delivered', job_id = ?, updated_at = ? WHERE id = ? AND status = 'queued'").run(jobId, now(), task.id);
     if (!claimed.changes) return;
     db.prepare('INSERT INTO runs (id, task_id, job_id, status, started_at) VALUES (?, ?, ?, ?, ?)').run(randomUUID(), task.id, jobId, 'executing', now());
-    try { await startTaskJob({ ...task, job_id: jobId }, { cwd, harness, mcpUrl }); }
+    try { await startTaskJob({ ...task, job_id: jobId }, { cwd, harness, mcpUrl, fullAccess: setting('full_access') === 'true' }); }
     catch (error) {
       db.prepare("UPDATE runs SET status = 'failed', finished_at = ?, error = ? WHERE job_id = ?").run(now(), `Could not start: ${error.message}`, jobId);
       db.prepare("UPDATE tasks SET status = 'queued', job_id = NULL, last_error = ?, updated_at = ? WHERE id = ? AND status = 'delivered' AND job_id = ?").run(`Could not start: ${error.message}`, now(), task.id, jobId);
@@ -392,7 +392,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       const record = goal.kind === 'environment' ? await readEnvironment(cwd) : null;
       const stageRecord = record && { infrastructure: record.sources, observability: record.plate, process: record.processes }[view.stage.key];
       const stillMissing = goal.kind === 'environment' ? await environmentCheck(cwd, view.stage.key) : null;
-      await startGoalReviewJob({ jobId, question, context: { ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl });
+      await startGoalReviewJob({ jobId, question, context: { ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl, fullAccess: setting('full_access') === 'true' });
       setSetting('goal_review_state', state);
       setSetting('goal_last_review_at', now());
       if (pace().pace !== 'yolo') setSetting('goal_next_review_at', nextClock().toISOString());
@@ -440,7 +440,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       if (!setting('goal_review_job')) throw new Error(setting('goal_review_error') || 'The goal review did not start.');
       return pace();
     },
-    goals: () => ({ goals: listGoals(), pace: pace(), review_error: setting('goal_review_error') }),
+    goals: () => ({ goals: listGoals(), pace: pace(), review_error: setting('goal_review_error'), full_access: setting('full_access') === 'true' }),
     // Task with its runs, for the owner UI.
     detail(taskId) {
       const task = view(get(taskId));
@@ -514,6 +514,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         clearTimeout(reviewTimer); schedule();
         return pace();
       }
+      if (name === 'set_full_access') { setSetting('full_access', input.enabled === true ? 'true' : 'false'); return { full_access: setting('full_access') === 'true' }; }
       if (name === 'start_task_worker') { setEnabled(true); schedule(); return workerState(); }
       if (name === 'stop_task_worker') { setEnabled(false); clearTimeout(timer); return workerState(); }
       throw new Error('Unknown task tool.');

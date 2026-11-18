@@ -33,7 +33,7 @@ function render() {
   const worker = data.worker;
   $('#worker').textContent = worker.enabled ? `Worker on${worker.next_run_at ? ` · next run ${when(worker.next_run_at)}` : ''}` : 'Worker off';
   $('#question-count').textContent = data.questions.pending.length ? `(${data.questions.pending.length})` : '';
-  renderRunning(); renderGoals(); renderTasks(); renderQuestions(); renderAssessment(); renderContext(); renderJournal();
+  renderRunning(); renderGoals(); renderSettings(); renderTasks(); renderQuestions(); renderAssessment(); renderContext(); renderJournal();
   restoreDrafts();
 }
 
@@ -131,24 +131,12 @@ function renderGoals() {
   const goals = data.goals || [];
   const reviewing = pace.reviewing_job_id;
   $('#goals').innerHTML = `
-    <form id="pace" class="card filters">
-      <label>Agent pace
-        <select name="pace">${Object.entries(PACE_LABELS).map(([value, label]) => `<option value="${value}"${pace.pace === value ? ' selected' : ''}>${label}</option>`).join('')}</select>
-      </label>
-      <label${pace.pace === 'daily' ? '' : ' hidden'}>at <input type="time" name="time" value="${esc(pace.time || '08:00')}"></label>
-      <button class="secondary" type="submit">Save</button>
+    <div class="card filters">
       <button class="primary" type="button" id="run-review"${reviewing ? ' disabled' : ''}>Run</button>
-      <span class="meta">${reviewing ? 'Reviewing now' : pace.pace === 'yolo' ? 'Reviews when the current stage\'s tasks are done or blocked' : pace.next_review_at ? `Next review ${when(pace.next_review_at)}` : ''}${pace.last_review_at ? ` · last ${when(pace.last_review_at)}` : ''}</span>
-    </form>
+      <span class="meta">${reviewing ? 'Reviewing now' : pace.pace === 'yolo' ? 'Reviews when the current stage\'s tasks are done or blocked' : pace.next_review_at ? `Next review ${when(pace.next_review_at)}` : ''}${pace.last_review_at ? ` · last ${when(pace.last_review_at)}` : ''}${data.full_access ? ' · Full access' : ''}</span>
+    </div>
     ${data.review_error ? `<p class="card" style="color: var(--bad)">${esc(data.review_error)}</p>` : ''}
     ${goals.length ? goals.map(renderGoal).join('') : '<p class="empty">No goals.</p>'}`;
-  const form = $('#pace');
-  form.pace.addEventListener('change', () => { form.time.parentElement.hidden = form.pace.value !== 'daily'; });
-  form.addEventListener('submit', async event => {
-    event.preventDefault();
-    try { data = await api('/api/pace', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pace: form.pace.value, time: form.time.value }) }); render(); }
-    catch (error) { showError(error); }
-  });
   $('#run-review').addEventListener('click', async () => {
     $('#run-review').disabled = true;
     try { data = await api('/api/goals/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); render(); }
@@ -162,6 +150,32 @@ function renderGoals() {
       render();
     } catch (error) { showError(error); }
   }));
+}
+function renderSettings() {
+  if ($('#settings').contains(document.activeElement)) return; // keep the owner's unsaved edits
+  const pace = data.pace || {};
+  $('#settings').innerHTML = `
+    <form id="settings-form" class="card settings">
+      <h2>Agent cycle</h2>
+      <div class="row">
+        <select name="pace" aria-label="Agent cycle">${Object.entries(PACE_LABELS).map(([value, label]) => `<option value="${value}"${pace.pace === value ? ' selected' : ''}>${label}</option>`).join('')}</select>
+        <label${pace.pace === 'daily' ? '' : ' hidden'}>at <input type="time" name="time" value="${esc(pace.time || '08:00')}"></label>
+      </div>
+      <p class="meta">YOLO reviews as soon as the current stage's tasks are done or blocked.</p>
+      <h2>Full access</h2>
+      <label class="toggle"><input type="checkbox" name="full_access"${data.full_access ? ' checked' : ''}> Run tasks and goal reviews with full access</label>
+      <p class="meta">Codex runs without a sandbox or approvals; Claude runs with permissions bypassed. They can change anything you can. Coaching and A2A requests stay read-only.</p>
+      <div class="actions"><button class="primary" type="submit">Save</button></div>
+    </form>`;
+  const form = $('#settings-form');
+  form.pace.addEventListener('change', () => { form.time.parentElement.hidden = form.pace.value !== 'daily'; });
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    try {
+      data = await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pace: form.pace.value, time: form.time.value, full_access: form.full_access.checked }) });
+      document.activeElement?.blur(); render();
+    } catch (error) { showError(error); }
+  });
 }
 function renderGoal(goal) {
   const tasks = data.tasks.filter(task => task.goal_id === goal.id && (!goal.stage || task.stage === goal.stage.key));

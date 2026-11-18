@@ -131,3 +131,9 @@ button.primary:disabled, button.secondary:disabled { opacity: 0.5; cursor: defau
 .records th { color: var(--muted); font-weight: 500; font-size: 12px; }
 .goal details { margin-top: 12px; }
 .goal summary { cursor: pointer; color: var(--accent-strong); }
+.settings h2 { margin-top: 0; }
+.settings h2 + .row, .settings .toggle { margin-top: 8px; }
+.settings .row { display: flex; align-items: center; gap: 12px; }
+.settings select, .settings input[type="time"] { font: inherit; padding: 6px 10px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; }
+.settings .toggle { display: flex; align-items: center; gap: 8px; }
+.settings p.meta { margin: 6px 0 20px; }

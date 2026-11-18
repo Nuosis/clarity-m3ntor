@@ -113,7 +113,7 @@ async function answeredQuestions(cwd) {
   } catch { return []; }
 }
 
-async function createJob(input, { cwd, harness, mcpUrl }, task) {
+async function createJob(input, { cwd, harness, mcpUrl, fullAccess = false }, task) {
   const selected = input.harness || process.env.M3NTOR_HARNESS || harness || 'codex';
   if (!['codex', 'claude'].includes(selected)) throw new Error('Select an existing codex or claude harness.');
   const waitMs = Number(process.env.M3NTOR_WAIT_MS ?? 1500);
@@ -128,6 +128,8 @@ async function createJob(input, { cwd, harness, mcpUrl }, task) {
     // Coaching jobs get the read-only endpoint of this same service.
     cwd: path.resolve(process.env.M3NTOR_WORKSPACE || cwd), mcp_url: task.identity === 'coaching' ? mcpUrl.replace(/\/mcp\/local$/, '/mcp/coach') : mcpUrl,
     prompt_source: task.promptId ? { prompt_id: task.promptId } : { local: task.identity },
+    // The owner's Full access setting applies only to the owner's own work: tasks and goal reviews.
+    full_access: fullAccess === true && ['scheduled_task', 'goal_review'].includes(task.identity),
   };
   await storeJson(path.join(directory, 'request.json'), request);
   const state = { job_id: id, task: task.identity, status: 'queued', created_at: new Date().toISOString(), harness: selected, prompt_source: request.prompt_source };

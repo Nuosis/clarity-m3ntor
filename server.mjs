@@ -413,9 +413,10 @@ async function ownerApi(req, res, url) {
     await taskQueue.runReview();
     return json(res, 200, await overview());
   }
-  if (req.method === 'POST' && url.pathname === '/api/pace') {
+  if (req.method === 'POST' && url.pathname === '/api/settings') {
     const input = await body(req);
-    taskQueue.call('set_pace', { pace: input.pace, ...(input.time ? { time: input.time } : {}) });
+    if (input.pace) taskQueue.call('set_pace', { pace: input.pace, ...(input.time ? { time: input.time } : {}) });
+    if (typeof input.full_access === 'boolean') taskQueue.call('set_full_access', { enabled: input.full_access });
     return json(res, 200, await overview());
   }
   return json(res, 404, { error: 'Not found.' });
