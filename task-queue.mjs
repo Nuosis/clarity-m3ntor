@@ -257,9 +257,31 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   const journalGoalCompleted = goal => {
     const done = JSON.parse(goal.completed);
     const at = done.at(-1)?.at || goal.updated_at;
-    return journalOnce(cwd, `goal-completed-${goal.id}-${done.length}`, { date: businessDate(new Date(at)), kind: 'success', source: 'goals', content: `Goal completed: ${goal.title}\nOutcome: ${goal.outcome}\n${done.map(item => `- ${item.name}: ${item.evidence}`).join('\n')}`, metadata: { goal_id: goal.id } });
+    // Keyed by the completion time, so a goal that is reopened and completes again keeps both entries.
+    return journalOnce(cwd, `goal-completed-${goal.id}-${at}`, { date: businessDate(new Date(at)), kind: 'success', source: 'goals', content: `Goal completed: ${goal.title}\nOutcome: ${goal.outcome}\n${done.map(item => `- ${item.name}: ${item.evidence}`).join('\n')}`, metadata: { goal_id: goal.id } });
   };
+  // A completed function goal's Improve stage is a weekly comparison the service schedules itself,
+  // so it never depends on an agent remembering to write it. Its instruction carries the reopen rule.
+  const improveTaskId = goal => `improve-${goal.id}`;
+  function ensureImproveTask(goal) {
+    const done = JSON.parse(goal.completed);
+    const measured = done.find(item => item.stage === 'measurement')?.evidence || 'the measured result recorded at Measurement';
+    const recurrence = JSON.stringify({ weekly: { day: 'monday', time: setting('goal_pace_time') || '08:00' } });
+    const fields = {
+      title: `Improve: ${goal.title}`,
+      instruction: `Weekly Improve check for the completed goal "${goal.title}" (goal_id ${goal.id}).\nOutcome it must keep delivering: ${goal.outcome}\nMeasured result at completion: ${measured}\n\n1. Read this goal's runs and records from the last week and compare the results with the outcome and the measured result.\n2. Read the journal for the last 21 days (read_journal from_date/to_date) and find this goal's previous Improve check.\n3. Record this week's comparison with add_journal: content starting "Improve check: ${goal.title}: met" or "Improve check: ${goal.title}: missed", then the evidence.\n4. If this week missed and the previous Improve check also missed, call reopen_stage with this goal_id and the evidence of both misses.`,
+      success: 'This week\'s comparison is journaled as met or missed, and a second consecutive miss has reopened the goal\'s Process stage.',
+      recurrence, goal_id: goal.id, stage: 'improve', category: 'other',
+    };
+    if (get(improveTaskId(goal))) update(improveTaskId(goal), { ...fields, status: 'queued', next_run_at: nextFor({ recurrence }, new Date()), consecutive_failures: 0, pause_reason: null });
+    else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, success, category, goal_id, stage) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(improveTaskId(goal), fields.title, fields.instruction, recurrence, nextFor({ recurrence }, new Date()), 'queued', now(), now(), fields.success, fields.category, goal.id, 'improve');
+  }
   db.prepare("UPDATE goals SET status = 'inactive', updated_at = ? WHERE status IN ('improving', 'maintaining')").run(now());
+  // A completed function goal missing its weekly Improve check (completed before this, or interrupted) gets one.
+  for (const goal of db.prepare("SELECT * FROM goals WHERE status = 'inactive' AND kind = 'function'").all()) {
+    if (stagesFor(goal.kind)[goal.stage]?.key === 'improve' && !get(improveTaskId(goal))) ensureImproveTask(goal);
+  }
   // Every start re-writes completed goals' entries, so a missed or failed write is recovered.
   for (const goal of db.prepare("SELECT * FROM goals WHERE status = 'inactive' AND completed != '[]'").all()) {
     journalGoalCompleted(goal).catch(error => console.error('Journaling a completed goal failed:', error.message));
@@ -315,12 +337,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     // The last stage that ends (the recurring Improve stage does not) completes the goal:
     // it is marked inactive and the next waiting goal takes the active slot.
     const goalCompleted = !nextStage || nextStage.key === 'improve';
-    // A function goal stays at its Improve stage so the review that completed it can install the weekly comparison.
+    // A function goal stays at its Improve stage, which the service runs as a weekly comparison.
     updateGoal(goal.id, { stage: nextStage ? nextIndex : goal.stage, completed: JSON.stringify(completed), status: goalCompleted ? 'inactive' : 'active' });
     // A stage reached with no work planned for it gets a review now, whatever the pace.
     const nextGoal = activeGoal();
     if (nextGoal && !stageTasks(nextGoal.id, stagesFor(nextGoal.kind)[nextGoal.stage].key).length) setSetting('goal_next_review_at', now());
     await journalOnce(cwd, `goal-stage-${goal.id}-${stage.key}-${completed.length}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": ${stage.name} stage done.\n${evidence.trim()}`, metadata: { goal_id: goal.id, stage: stage.key } });
+    if (goalCompleted && nextStage) ensureImproveTask(getGoal(goal.id));
     if (goalCompleted) await journalGoalCompleted(getGoal(goal.id));
     activeGoal(); schedule();
     return goalView(getGoal(goal.id));
@@ -333,6 +356,11 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     // Reopened work becomes the next active goal so it runs through the stages again in order.
     db.prepare("UPDATE goals SET status = 'waiting' WHERE status = 'active'").run();
     updateGoal(goal.id, { stage: index, status: 'active', completed: JSON.stringify(JSON.parse(goal.completed).filter(item => stagesFor(goal.kind).findIndex(stage => stage.key === item.stage) < index)) });
+    // The weekly Improve check pauses until the goal completes again (a run in progress still records its result),
+    // and the reopened stages' earlier tasks become history, so each stage is checked on new work.
+    if (get(improveTaskId(goal))) update(improveTaskId(goal), { status: 'done', next_run_at: null });
+    const reopened = stagesFor(goal.kind).slice(index).map(stage => stage.key).filter(key => key !== 'improve');
+    db.prepare(`UPDATE tasks SET stage = stage || '-before-reopen', updated_at = ? WHERE goal_id = ? AND stage IN (${reopened.map(() => '?').join(', ')})`).run(now(), goal.id, ...reopened);
     await journalOnce(cwd, `goal-reopen-${goal.id}-${Date.now()}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": Process stage reopened.\n${evidence}`, metadata: { goal_id: goal.id } });
     schedule();
     return goalView(getGoal(goal.id));
@@ -398,7 +426,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const { pace: mode } = pace();
     if (mode === 'yolo') {
       const stage = stagesFor(goal.kind)[goal.stage];
-      if (stageTasks(goal.id, stage.key).every(task => BLOCKED_OR_DONE.has(task.status))) startReview(goal, state);
+      // A recurring routine waiting for its next run, after a run, has settled (as in completeStage).
+      if (stageTasks(goal.id, stage.key).every(task => BLOCKED_OR_DONE.has(task.status) || (task.status === 'queued' && task.recurrence && task.last_run_at))) startReview(goal, state);
       return;
     }
     const due = setting('goal_next_review_at');
@@ -520,8 +549,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
           const goal = getGoal(input.goal_id);
           if (!goal) throw new Error('Goal not found.');
           const current = stagesFor(goal.kind)[goal.stage];
-          // A completed function goal still takes its recurring Improve work.
-          if (goal.status !== 'active' && !(goal.status === 'inactive' && current.key === 'improve')) throw new Error(`The goal "${goal.title}" is ${goal.status}; its tasks start when it becomes the active goal.`);
+          if (goal.status !== 'active') throw new Error(`The goal "${goal.title}" is ${goal.status}; its tasks start when it becomes the active goal.`);
           if (input.stage && input.stage !== current.key) throw new Error(`The goal "${goal.title}" is in its ${current.name} stage ("${current.key}"); tasks for the "${input.stage}" stage wait until it gets there.`);
           goalFields = { goal_id: goal.id, stage: current.key };
         }
