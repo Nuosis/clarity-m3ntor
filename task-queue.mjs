@@ -387,6 +387,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     reviewStarting = true;
     const jobId = randomUUID();
     setSetting('goal_review_job', jobId);
+    setSetting('goal_review_stage', `${goal.id}:${goal.stage}`);
     try {
       const view = goalView(goal);
       const tasks = stageTasks(goal.id, view.stage.key).map(task => ({ task_id: task.id, title: task.title, status: task.status, success: task.success, last_status: task.last_status, last_result: String(task.last_result || '').slice(-1500), last_error: task.last_error, pause_reason: task.pause_reason }));
@@ -415,7 +416,12 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         fsWatcher?.close(); clearInterval(liveness);
         // The review's own changes are part of the state it leaves; only later changes start another.
         const goal = activeGoal();
-        if (goal) setSetting('goal_review_state', reviewState(goal));
+        // A review that moved the goal to a new stage without queuing work for it leaves that
+        // stage unplanned: the next review starts now, whatever the pace.
+        const moved = goal && setting('goal_review_stage') !== `${goal.id}:${goal.stage}`;
+        const unplanned = moved && !stageTasks(goal.id, stagesFor(goal.kind)[goal.stage].key).length;
+        if (goal && !unplanned) setSetting('goal_review_state', reviewState(goal));
+        if (unplanned) setSetting('goal_next_review_at', new Date().toISOString());
         setSetting('goal_review_job', null);
         setSetting('goal_review_error', job.status === 'complete' && reportedDone(job.output) ? null : `The last goal review did not finish: ${job.error || String(job.output || '').trim().split('\n').pop()}`);
         schedule();

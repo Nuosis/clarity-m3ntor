@@ -33,7 +33,7 @@ export const GOAL_REVIEW_INSTRUCTION = `You are the business owner's local AI ag
 
 1. Review what the stage's tasks produced (get_task gives each run and its steps).
 2. Investigate any failed or paused task and decide what fixes it.
-3. If the stage's done-check holds, call complete_stage with the evidence. Otherwise write the next task or tasks for THIS stage with set_task (goal_id and stage as given). Each task needs an instruction, a success definition its single run can check, and any constraints. Name specific items; reuse established tools and routes.
+3. If the stage's done-check holds, call complete_stage with the evidence, then carry on with the stage it returns in this same review: read what it needs (list_goals, read_environment) and write its first tasks. Otherwise write the next task or tasks for THIS stage with set_task (goal_id and stage as given). Each task needs an instruction, a success definition its single run can check, and any constraints. Name specific items; reuse established tools and routes.
 4. If only the owner can supply something, ask with user_question_set and leave the stage waiting.
 5. Goals from M3NT0R or the owner that are not yet set can be added with set_goal.
 
