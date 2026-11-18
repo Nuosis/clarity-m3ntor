@@ -253,7 +253,12 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   }
   // USER-AUTHORIZED — Marcus, November 18, 2026: a completed goal is journaled and marked
   // inactive, and inactive goals are not rendered. Goals finished before then become inactive.
-  db.prepare("UPDATE goals SET status = 'inactive', updated_at = ? WHERE status IN ('improving', 'maintaining')").run(now());
+  for (const goal of db.prepare("SELECT * FROM goals WHERE status IN ('improving', 'maintaining')").all()) {
+    db.prepare("UPDATE goals SET status = 'inactive', updated_at = ? WHERE id = ?").run(now(), goal.id);
+    const done = JSON.parse(goal.completed);
+    journalOnce(cwd, `goal-completed-${goal.id}-${done.length}`, { kind: 'success', source: 'goals', content: `Goal completed: ${goal.title}\nOutcome: ${goal.outcome}\n${done.map(item => `- ${item.name}: ${item.evidence}`).join('\n')}`, metadata: { goal_id: goal.id } })
+      .catch(error => console.error('Journaling a completed goal failed:', error.message));
+  }
   // One goal is active at a time; when none is, the next waiting goal by position starts.
   function activeGoal() {
     let goal = db.prepare("SELECT * FROM goals WHERE status = 'active' ORDER BY position LIMIT 1").get();
@@ -305,7 +310,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     // The last stage that ends (the recurring Improve stage does not) completes the goal:
     // it is marked inactive and the next waiting goal takes the active slot.
     const goalCompleted = !nextStage || nextStage.key === 'improve';
-    updateGoal(goal.id, { stage: goalCompleted ? goal.stage : nextIndex, completed: JSON.stringify(completed), status: goalCompleted ? 'inactive' : 'active' });
+    // A function goal stays at its Improve stage so the review that completed it can install the weekly comparison.
+    updateGoal(goal.id, { stage: nextStage ? nextIndex : goal.stage, completed: JSON.stringify(completed), status: goalCompleted ? 'inactive' : 'active' });
     // A stage reached with no work planned for it gets a review now, whatever the pace.
     const nextGoal = activeGoal();
     if (nextGoal && !stageTasks(nextGoal.id, stagesFor(nextGoal.kind)[nextGoal.stage].key).length) setSetting('goal_next_review_at', now());
@@ -509,7 +515,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
           const goal = getGoal(input.goal_id);
           if (!goal) throw new Error('Goal not found.');
           const current = stagesFor(goal.kind)[goal.stage];
-          if (goal.status !== 'active') throw new Error(`The goal "${goal.title}" is ${goal.status}; its tasks start when it becomes the active goal.`);
+          // A completed function goal still takes its recurring Improve work.
+          if (goal.status !== 'active' && !(goal.status === 'inactive' && current.key === 'improve')) throw new Error(`The goal "${goal.title}" is ${goal.status}; its tasks start when it becomes the active goal.`);
           if (input.stage && input.stage !== current.key) throw new Error(`The goal "${goal.title}" is in its ${current.name} stage ("${current.key}"); tasks for the "${input.stage}" stage wait until it gets there.`);
           goalFields = { goal_id: goal.id, stage: current.key };
         }
