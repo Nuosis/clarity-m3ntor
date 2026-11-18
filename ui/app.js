@@ -162,6 +162,11 @@ function renderSettings() {
         <label${pace.pace === 'daily' ? '' : ' hidden'}>at <input type="time" name="time" value="${esc(pace.time || '08:00')}"></label>
       </div>
       <p class="meta">YOLO reviews as soon as the current stage's tasks are done or blocked.</p>
+      <h2>Agent runner</h2>
+      <div class="row">
+        <select name="agent_harness" aria-label="Agent runner">${[['codex', 'Codex'], ['claude', 'Claude']].map(([value, label]) => `<option value="${value}"${(data.agent_harness || 'codex') === value ? ' selected' : ''}>${label}</option>`).join('')}</select>
+      </div>
+      <p class="meta">Runs tasks and goal reviews. M3NT0R's coaching and assessments keep their own harness.</p>
       <h2>Full access</h2>
       <label class="toggle"><input type="checkbox" name="full_access"${data.full_access ? ' checked' : ''}> Run tasks and goal reviews with full access</label>
       <p class="meta">Codex runs without a sandbox or approvals; Claude runs with permissions bypassed. They can change anything you can. Coaching and A2A requests stay read-only.</p>
@@ -172,7 +177,7 @@ function renderSettings() {
   form.addEventListener('submit', async event => {
     event.preventDefault();
     try {
-      data = await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pace: form.pace.value, time: form.time.value, full_access: form.full_access.checked }) });
+      data = await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pace: form.pace.value, time: form.time.value, agent_harness: form.agent_harness.value, full_access: form.full_access.checked }) });
       document.activeElement?.blur(); render();
     } catch (error) { showError(error); }
   });

@@ -89,12 +89,12 @@ export const reassessPoma = assessPoma;
 export async function startTaskJob(task, environment) {
   const constraints = task.constraints ? JSON.parse(task.constraints) : [];
   const question = `Task: ${task.instruction}\n\nSuccess means: ${task.success || 'the task above is carried out.'}${constraints.length ? `\n\nConstraints for this task:\n${constraints.map(item => `- ${item}`).join('\n')}` : ''}`;
-  return createJob({ context: { task_id: task.id, title: task.title, category: task.category } }, environment, { identity: 'scheduled_task', question, promptId: null, jobId: task.job_id });
+  return createJob({ context: { task_id: task.id, title: task.title, category: task.category }, harness: environment.agentHarness }, environment, { identity: 'scheduled_task', question, promptId: null, jobId: task.job_id });
 }
 
 // The agent's review of its active goal, run in the owner's harness with the local tools.
 export async function startGoalReviewJob({ jobId, question, context }, environment) {
-  return createJob({ context }, environment, { identity: 'goal_review', question, promptId: null, jobId });
+  return createJob({ context, harness: environment.agentHarness }, environment, { identity: 'goal_review', question, promptId: null, jobId });
 }
 
 // An incoming A2A message for this installation's agent, run in the owner's harness.

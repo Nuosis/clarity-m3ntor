@@ -416,6 +416,7 @@ async function ownerApi(req, res, url) {
   if (req.method === 'POST' && url.pathname === '/api/settings') {
     const input = await body(req);
     if (input.pace) taskQueue.call('set_pace', { pace: input.pace, ...(input.time ? { time: input.time } : {}) });
+    if (input.agent_harness) taskQueue.call('set_agent_harness', { harness: input.agent_harness });
     if (typeof input.full_access === 'boolean') taskQueue.call('set_full_access', { enabled: input.full_access });
     return json(res, 200, await overview());
   }
