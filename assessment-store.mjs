@@ -43,7 +43,7 @@ export function reconcileReassessmentContext(current, proposed) {
 export function savePomaReassessment(cwd, input, { assessmentId, harness } = {}) {
   if (typeof input.revision_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.revision_id)) throw new Error('Provide the reassessment revision_id UUID supplied with the task.');
   validateRatings(input.ratings);
-  for (const field of ['context_update', 'journal_entry', 'coaching_summary']) if (typeof input[field] !== 'string' || !input[field].trim()) throw new Error(`Provide ${field}.`);
+  for (const field of ['context_update', 'journal_entry', 'coaching_summary', 'owner_summary']) if (typeof input[field] !== 'string' || !input[field].trim()) throw new Error(`Provide ${field}.`);
   for (const field of ['evidence', 'coverage', 'uncertainty', 'comparison', 'productivity']) if (!Object.hasOwn(input, field)) throw new Error(`Provide ${field}; state evidence gaps explicitly when unknown.`);
   if (input.status !== undefined && (typeof input.status !== 'string' || !input.status.trim())) throw new Error('Provide a lifecycle status string, or omit it for draft.');
   const revisionId = input.revision_id.toLowerCase();
@@ -84,6 +84,7 @@ export function savePomaReassessment(cwd, input, { assessmentId, harness } = {})
         evidence: input.evidence, coverage: input.coverage, uncertainty: input.uncertainty,
         comparison: input.comparison, productivity: input.productivity,
         summary: input.coaching_summary,
+        owner_summary: input.owner_summary,
       };
       if (index < 0) daily.assessments.push(revision); else daily.assessments[index] = revision;
       await checkpoint('assessment', await writeJson(assessmentPath, daily));

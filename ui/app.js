@@ -314,7 +314,7 @@ function renderAssessment() {
     ${latest ? `<div class="card">
       <h2>Assessment ${esc(when(latest.assessed_at))} ${status(latest.status)}</h2>
       ${ratings(latest)}
-      ${latest.report || latest.summary ? `<div class="prose">${window.renderMarkdown(latest.report || latest.summary)}</div>` : ''}
+      ${latest.owner_summary ? `<div class="prose">${window.renderMarkdown(latest.owner_summary)}</div>` : ''}
     </div>` : '<p class="empty">No assessment yet.</p>'}`;
 }
 
