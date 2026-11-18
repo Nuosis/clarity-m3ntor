@@ -115,6 +115,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       finalize(taskId);
       return;
     }
+    if (ok) journalCompleted(task, job.job_id, finished, job.output);
     const failures = ok ? 0 : task.consecutive_failures + 1;
     const next = task.recurrence ? nextFor(task, new Date()) : null;
     const status = !ok && failures >= MAX_CONSECUTIVE_FAILURES ? 'paused' : next ? 'queued' : ok ? 'completed' : 'failed';
@@ -123,6 +124,14 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       pause_reason: status === 'paused' ? `${failures} consecutive failed runs; state kept. Fix the cause, then set_task this task_id to resume.` : null,
       last_run_at: finished, last_status: ok ? 'completed' : 'failed', last_result: ok ? job.output : null, last_error: error,
     });
+  }
+
+  // Every completed run goes into the journal: the task, its success definition and the result.
+  function journalCompleted(task, jobId, finishedAt, output) {
+    const goal = task.goal_id ? getGoal(task.goal_id) : null;
+    const content = `Completed: ${task.title}${goal ? `\nGoal: ${goal.title}${task.stage ? ` (${task.stage})` : ''}` : ''}\nTask: ${task.instruction}\nSuccess means: ${task.success || ''}\n\nResult:\n${String(output || '').trim()}`;
+    return journalOnce(cwd, `task-completed-${task.id}-${jobId}`, { date: businessDate(new Date(finishedAt)), kind: 'activity', source: 'action_queue', content, metadata: { task_id: task.id, job_id: jobId } })
+      .catch(error => console.error('Journaling a completed task failed:', error.message));
   }
 
   async function finalize(taskId) {
@@ -440,6 +449,10 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     check();
   }
   if (setting('goal_review_job')) followReview(setting('goal_review_job'));
+  // Completed runs from before this was journaled (fixed entry ids, so repeats change nothing).
+  for (const run of db.prepare("SELECT runs.job_id, runs.finished_at, runs.result, runs.task_id FROM runs JOIN tasks ON tasks.id = runs.task_id WHERE runs.status = 'completed' AND runs.finished_at IS NOT NULL AND tasks.remove_on_completion = 0").all()) {
+    journalCompleted(get(run.task_id), run.job_id, run.finished_at, run.result);
+  }
 
   schedule();
 
