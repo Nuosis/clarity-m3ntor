@@ -322,7 +322,7 @@ function renderAssessment() {
 function renderJournal() {
   $('#journal').innerHTML = data.journal.length ? data.journal.map(day => `
     <div class="card"><h2>${esc(day.date)}</h2>
-      ${day.entries.map(entry => `<div class="entry"><div class="meta">${when(entry.createdAt)} · ${esc(entry.kind)}</div><div class="content">${esc(entry.content)}</div></div>`).join('')}
+      ${[...day.entries].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(entry => `<div class="entry"><div class="meta">${when(entry.createdAt)} · ${esc(entry.kind)}</div><div class="content">${esc(entry.content)}</div></div>`).join('')}
     </div>`).join('') : '<p class="empty">No journal entries in the last 14 days.</p>';
 }
 
