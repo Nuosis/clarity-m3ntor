@@ -37,4 +37,4 @@ export const GOAL_REVIEW_INSTRUCTION = `You are the business owner's local AI ag
 4. If only the owner can supply something, ask with user_question_set and leave the stage waiting.
 5. Goals from M3NT0R or the owner that are not yet set can be added with set_goal.
 
-Do not write tasks for later stages. Your final response is recorded: say what you reviewed, what you queued or completed, and what is waiting. End with exactly one final line: \`STATUS: done\` or \`STATUS: not done — <reason>\`.`;
+Do not write tasks for later stages. Your final response is recorded: say what you reviewed, what you queued or completed, and what is waiting. End with exactly one final line: \`STATUS: done\` when you completed this review (reviewed, and queued tasks, completed the stage or asked the owner), even though the stage itself is still open; \`STATUS: not done — <reason>\` only if the review itself could not be carried out.`;

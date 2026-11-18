@@ -81,7 +81,9 @@ async function runHarness(request, prompt) {
   const args = coachArgs || (request.harness === 'codex'
     ? (readOnly
       ? [...(await codexMcpOff(request.cwd)), 'exec', ...CODEX_FEATURES_OFF, '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
-      : ['-c', `mcp_servers.clarity_m3ntor.url=${JSON.stringify(request.mcp_url)}`, ...codexApprove('clarity_m3ntor', LOCAL_TOOLS), 'exec', '--json', '--skip-git-repo-check', '-o', outputFile, '-'])
+      // Tasks and goal reviews read the owner's sources over their established routes
+      // (SSH, HTTPS), so they get network access; Codex's default exec sandbox has none.
+      : ['-c', `mcp_servers.clarity_m3ntor.url=${JSON.stringify(request.mcp_url)}`, ...codexApprove('clarity_m3ntor', LOCAL_TOOLS), '-c', 'sandbox_workspace_write.network_access=true', 'exec', '--sandbox', 'workspace-write', '--json', '--skip-git-repo-check', '-o', outputFile, '-'])
     : (readOnly
       ? ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: {} }), '--permission-mode', 'plan', '--disallowedTools', 'Edit,Write,NotebookEdit']
       : ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } }), '--allowedTools', 'mcp__clarity_m3ntor']));
