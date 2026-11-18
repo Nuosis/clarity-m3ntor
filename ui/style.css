@@ -126,3 +126,8 @@ button.danger { font: inherit; font-size: 13px; padding: 4px 12px; border-radius
 button.primary:disabled, button.secondary:disabled { opacity: 0.5; cursor: default; }
 [data-theme="dark"] { color-scheme: dark; }
 [data-theme="light"] { color-scheme: light; }
+.records { width: 100%; border-collapse: collapse; margin: 8px 0; }
+.records th, .records td { text-align: left; vertical-align: top; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--line); }
+.records th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.goal details { margin-top: 12px; }
+.goal summary { cursor: pointer; color: var(--accent-strong); }

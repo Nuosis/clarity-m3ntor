@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getM3ntorResult, jobDirectory, startTaskJob, startGoalReviewJob } from './m3ntor-jobs.mjs';
 import { stagesFor, GOAL_REVIEW_INSTRUCTION } from './goals.mjs';
+import { environmentCheck, readEnvironment } from './environment.mjs';
 import { appendJournalInWrite, businessDate, serializeBusinessWrites } from './business-journal.mjs';
 
 // Journal entries with fixed ids, so a retried write updates the same entry.
@@ -258,10 +259,16 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const stages = stagesFor(goal.kind); const stage = stages[goal.stage];
     if (stage.key === 'improve') throw new Error('The Improve stage is recurring and does not complete.');
     const tasks = stageTasks(goal.id, stage.key);
-    if (!tasks.length) throw new Error(`No task has run for the ${stage.name} stage yet.`);
     if (tasks.some(task => ['queued', 'delivered', 'executing', 'finalizing', 'clearing'].includes(task.status))) throw new Error(`Tasks for the ${stage.name} stage are still queued or running.`);
-    const last = tasks.filter(task => task.last_run_at).sort((a, b) => String(b.last_run_at).localeCompare(String(a.last_run_at)))[0];
-    if (last?.last_status !== 'completed') throw new Error(`The ${stage.name} stage's last task did not end STATUS: done.`);
+    if (goal.kind === 'environment') {
+      // The working environment's stages are checked against its records, not the agent's claim.
+      const missing = await environmentCheck(cwd, stage.key);
+      if (missing) throw new Error(`The ${stage.name} done-check is not met: ${missing}`);
+    } else {
+      if (!tasks.length) throw new Error(`No task has run for the ${stage.name} stage yet.`);
+      const last = tasks.filter(task => task.last_run_at).sort((a, b) => String(b.last_run_at).localeCompare(String(a.last_run_at)))[0];
+      if (last?.last_status !== 'completed') throw new Error(`The ${stage.name} stage's last task did not end STATUS: done.`);
+    }
     if (stage.score) {
       const latest = await latestAssessment();
       const score = Number(latest?.ratings?.[stage.score]?.score);
@@ -382,7 +389,10 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       const tasks = stageTasks(goal.id, view.stage.key).map(task => ({ task_id: task.id, title: task.title, status: task.status, success: task.success, last_status: task.last_status, last_result: String(task.last_result || '').slice(-1500), last_error: task.last_error, pause_reason: task.pause_reason }));
       const others = db.prepare("SELECT * FROM goals WHERE status IN ('waiting', 'improving', 'maintaining') ORDER BY position").all().map(g => ({ goal_id: g.id, title: g.title, status: g.status }));
       const question = `Goal: ${view.title} (goal_id ${view.id})\nOutcome: ${view.outcome}\nCurrent stage ${view.stage.index} of ${view.stages.length}: ${view.stage.name} (stage key "${view.stage.key}")\nWork: ${view.stage.work}\nDone when: ${view.stage.done_check}`;
-      await startGoalReviewJob({ jobId, question, context: { stage_tasks: tasks, completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl });
+      const record = goal.kind === 'environment' ? await readEnvironment(cwd) : null;
+      const stageRecord = record && { infrastructure: record.sources, observability: record.plate, process: record.processes }[view.stage.key];
+      const stillMissing = goal.kind === 'environment' ? await environmentCheck(cwd, view.stage.key) : null;
+      await startGoalReviewJob({ jobId, question, context: { ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl });
       setSetting('goal_review_state', state);
       setSetting('goal_last_review_at', now());
       if (pace().pace !== 'yolo') setSetting('goal_next_review_at', nextClock().toISOString());

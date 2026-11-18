@@ -174,6 +174,7 @@ function renderGoal(goal) {
       <p>${esc(goal.stage.work)}</p>
       <dl><dt>Done when</dt><dd>${esc(goal.stage.done_check)}</dd></dl>
       ${tasks.length ? `<ul class="goal-tasks">${tasks.map(task => `<li><a href="#" data-task="${esc(task.id)}">${esc(task.title)}</a> ${status(task.status)}</li>`).join('')}</ul>` : '<p class="empty">No tasks for this stage yet.</p>'}` : ''}
+    ${goal.kind === 'environment' ? environmentRecords(goal) : ''}
     ${goal.completed.length ? `<details><summary>Completed stages</summary>${goal.completed.map(item => `<div class="entry"><div class="meta">${esc(item.name)} · ${when(item.at)}</div><div class="content">${esc(item.evidence)}</div></div>`).join('')}</details>` : ''}
     ${goal.stop_reason ? `<p class="meta">Stopped: ${esc(goal.stop_reason)}</p>` : ''}
     ${goal.kind !== 'environment' && goal.status !== 'stopped' ? `<form class="stop-goal" data-id="${esc(goal.id)}">
@@ -181,6 +182,29 @@ function renderGoal(goal) {
       <div class="actions"><button class="secondary" type="submit">Stop goal</button></div>
     </form>` : ''}
   </article>`;
+}
+function environmentRecords(goal) {
+  const env = data.environment || {};
+  const open = key => goal.stage?.key === key ? ' open' : '';
+  const sources = env.sources?.sources || [];
+  const commitments = env.plate?.commitments || [];
+  const processes = env.processes?.processes || [];
+  const needed = value => value === true ? 'Needed' : value === false ? 'Not needed' : 'Undecided';
+  return `
+    <details${open('infrastructure')}><summary>Sources (${sources.filter(s => s.needed).length} needed of ${sources.length})</summary>
+      ${sources.length ? `<table class="records"><thead><tr><th>Source</th><th>Needed</th><th>Last read-back</th></tr></thead><tbody>${sources.map(s => `<tr>
+        <td><strong>${esc(s.name)}</strong><div class="meta">${esc(s.route || '')}</div></td>
+        <td>${needed(s.needed)}${s.needed_reason ? `<div class="meta">${esc(s.needed_reason)}</div>` : ''}</td>
+        <td>${s.read_back ? `${status(s.read_back.ok ? 'completed' : 'failed')} ${when(s.read_back.at)}<div class="meta">${esc(s.read_back.what)}</div>` : '<span class="meta">None</span>'}</td>
+      </tr>`).join('')}</tbody></table>` : '<p class="empty">No sources recorded.</p>'}
+    </details>
+    <details${open('observability')}><summary>Plate (${commitments.length} commitments${env.plate?.updated_at ? `, updated ${when(env.plate.updated_at)}` : ''})</summary>
+      ${commitments.length ? `<table class="records"><thead><tr><th>Commitment</th><th>To</th><th>Due</th><th>Status</th></tr></thead><tbody>${commitments.map(c => `<tr><td>${esc(c.what)}<div class="meta">${(c.sources || []).map(s => esc(s.ref)).join(', ')}</div></td><td>${esc(c.to_whom)}</td><td>${esc(c.due || '')}</td><td>${esc(c.status)}</td></tr>`).join('')}</tbody></table>` : '<p class="empty">No commitments recorded.</p>'}
+      ${env.plate?.priorities?.length ? `<h3>Priorities</h3><ol>${env.plate.priorities.map(p => `<li>${esc(p)}</li>`).join('')}</ol>` : ''}
+    </details>
+    <details${open('process')}><summary>Processes (${processes.length})</summary>
+      ${processes.length ? processes.map(f => `<div class="entry"><strong>${esc(f.name)}</strong><div class="meta">Trigger: ${esc(f.trigger || 'not recorded')} · Completion: ${esc(f.completion || 'not recorded')} · ${(f.examples || []).length} examples</div>${f.steps?.length ? `<ol>${f.steps.map(s => `<li>${esc(s)}</li>`).join('')}</ol>` : ''}</div>`).join('') : '<p class="empty">No processes recorded.</p>'}
+    </details>`;
 }
 $('#goals').addEventListener('click', event => {
   const id = event.target.dataset?.task;
