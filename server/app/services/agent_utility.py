@@ -234,6 +234,9 @@ FILTERS = """
 """
 
 
+DOCUMENT = "(search_document || to_tsvector('english', coalesce(payload->>'distinct_aspects', '')))"
+
+
 def search_cases(payload: dict) -> dict:
     params = {
         "query": payload["query"], "source_kind": payload.get("source_kind"),
@@ -254,15 +257,15 @@ def search_cases(payload: dict) -> dict:
         vector = _embedding(payload["query"])
     except Exception as exc:
         degradation.append(f"query_embedding_unavailable:{type(exc).__name__}")
-    # Published variants match too, and count for their case.
+    # Published variants match too, by their text and their distinct aspects, and count for their case.
     match_filters = FILTERS.replace("status = 'recorded'", "status IN ('recorded', 'variant')")
     candidates = max(params["limit"] * 5, 50)
     lexical_sql = f"""
         SELECT id, variant_of, row_number() OVER (ORDER BY
-            ts_rank_cd(search_document, websearch_to_tsquery('english', :query)) DESC,
+            ts_rank_cd({DOCUMENT}, websearch_to_tsquery('english', :query)) DESC,
             similarity(title, :query) DESC, created_at DESC, id) AS rank
         FROM agent_utility_cases WHERE {match_filters}
-          AND (search_document @@ websearch_to_tsquery('english', :query) OR title % :query)
+          AND ({DOCUMENT} @@ websearch_to_tsquery('english', :query) OR title % :query)
     """
     with SessionLocal() as db:
         lexical = db.execute(text(lexical_sql), params).mappings().all()
@@ -371,6 +374,7 @@ def boost_case(payload: dict) -> dict:
 def resolve_case(payload: dict) -> dict:
     """Resolve a held submission once: variant, boost or distinct. Repeats return the first resolution."""
     held_id, action = payload["held_case_id"], payload["action"]
+    reembed = False
     with SessionLocal() as db:
         row = db.execute(text("SELECT status, resolution FROM agent_utility_cases WHERE id = CAST(:id AS uuid) FOR UPDATE"), {"id": held_id}).mappings().first()
         if row is None:
@@ -399,13 +403,27 @@ def resolve_case(payload: dict) -> dict:
                         payload = payload || jsonb_build_object('distinct_aspects', CAST(:aspects AS jsonb)), updated_at=now()
                     WHERE id=CAST(:id AS uuid)
                 """), {"id": held_id, "case": case_id, "r": json.dumps(resolution), "aspects": json.dumps(aspects)})
+                reembed = True
             else:
                 resolution = {"action": "boost", "case_id": case_id, "variant_id": variant_id}
                 _boost(db, case_id, variant_id, payload["booster"])
                 db.execute(text("UPDATE agent_utility_cases SET status='merged', variant_of=CAST(:case AS uuid), resolution=CAST(:r AS jsonb), updated_at=now() WHERE id=CAST(:id AS uuid)"), {"id": held_id, "case": case_id, "r": json.dumps(resolution)})
         db.commit()
+    if reembed:
+        # The variant is found by what makes it distinct; a failed embedding leaves its text searchable.
+        try:
+            with SessionLocal() as db:
+                case_payload = db.execute(text("SELECT payload FROM agent_utility_cases WHERE id=CAST(:id AS uuid)"), {"id": held_id}).scalar_one()
+            vector = _embedding(json.dumps(case_payload, ensure_ascii=False))
+            with SessionLocal() as db:
+                db.execute(text("UPDATE agent_utility_cases SET embedding=CAST(:vector AS vector), updated_at=now() WHERE id=CAST(:id AS uuid)"), {"id": held_id, "vector": vector})
+                db.commit()
+        except Exception as exc:
+            reembed = f"variant_embedding_unavailable:{type(exc).__name__}"
     result = read_case(held_id)
     result["status"] = "resolved"
+    if isinstance(reembed, str):
+        result["degradation"] = [reembed]
     return result
 
 
