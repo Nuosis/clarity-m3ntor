@@ -2,7 +2,7 @@
 // /api/tasks/:id; /api/events pushes a change notice whenever local records change.
 let data = null;
 let selectedTask = null;
-let view = 'tasks';
+let view = 'goals';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -33,11 +33,11 @@ function render() {
   const worker = data.worker;
   $('#worker').textContent = worker.enabled ? `Worker on${worker.next_run_at ? ` · next run ${when(worker.next_run_at)}` : ''}` : 'Worker off';
   $('#question-count').textContent = data.questions.pending.length ? `(${data.questions.pending.length})` : '';
-  renderRunning(); renderTasks(); renderQuestions(); renderAssessment(); renderRecommendations(); renderContext(); renderJournal();
+  renderRunning(); renderGoals(); renderTasks(); renderQuestions(); renderAssessment(); renderRecommendations(); renderContext(); renderJournal();
   restoreDrafts();
 }
 
-const JOB_LABELS = { poma_assessment: 'Assessment', poma_reassessment: 'Assessment', coaching: 'M3NT0R coaching', scheduled_task: 'Task', a2a_message: 'A2A request' };
+const JOB_LABELS = { goal_review: 'Goal review', poma_assessment: 'Assessment', poma_reassessment: 'Assessment', coaching: 'M3NT0R coaching', scheduled_task: 'Task', a2a_message: 'A2A request' };
 function renderRunning() {
   const box = $('#running');
   const jobs = data.running || [];
@@ -115,9 +115,74 @@ function renderTasks() {
   list.innerHTML = data.tasks.map(task => `
     <li data-id="${esc(task.id)}" class="${task.id === selectedTask ? 'selected' : ''}">
       <div class="title"><span>${esc(task.title)}</span>${status(task.status)}</div>
-      <div class="meta">${task.next_run_at ? `Next ${when(task.next_run_at)}` : task.last_run_at ? `Last run ${when(task.last_run_at)}` : ''}</div>
+      <div class="meta">${goalLabel(task)}${task.next_run_at ? `Next ${when(task.next_run_at)}` : task.last_run_at ? `Last run ${when(task.last_run_at)}` : ''}</div>
     </li>`).join('');
 }
+function goalLabel(task) {
+  const goal = task.goal_id && (data.goals || []).find(item => item.id === task.goal_id);
+  const stage = goal?.stages.find(item => item.key === task.stage);
+  return goal ? `${esc(goal.title)}${stage ? ` · ${esc(stage.name)}` : ''} · ` : '';
+}
+
+const PACE_LABELS = { hourly: 'Hourly', daily: 'Daily', yolo: 'YOLO' };
+const GOAL_STATUS = { active: 'active', waiting: 'waiting', improving: 'improving', maintaining: 'maintaining', stopped: 'stopped' };
+function renderGoals() {
+  const pace = data.pace || {};
+  const goals = data.goals || [];
+  const reviewing = pace.reviewing_job_id;
+  $('#goals').innerHTML = `
+    <form id="pace" class="card filters">
+      <label>Agent pace
+        <select name="pace">${Object.entries(PACE_LABELS).map(([value, label]) => `<option value="${value}"${pace.pace === value ? ' selected' : ''}>${label}</option>`).join('')}</select>
+      </label>
+      <label${pace.pace === 'daily' ? '' : ' hidden'}>at <input type="time" name="time" value="${esc(pace.time || '08:00')}"></label>
+      <button class="primary" type="submit">Save</button>
+      <span class="meta">${reviewing ? 'Reviewing now' : pace.pace === 'yolo' ? 'Reviews when the current stage\'s tasks are done or blocked' : pace.next_review_at ? `Next review ${when(pace.next_review_at)}` : ''}${pace.last_review_at ? ` · last ${when(pace.last_review_at)}` : ''}</span>
+    </form>
+    ${data.review_error ? `<p class="card" style="color: var(--bad)">${esc(data.review_error)}</p>` : ''}
+    ${goals.length ? goals.map(renderGoal).join('') : '<p class="empty">No goals.</p>'}`;
+  const form = $('#pace');
+  form.pace.addEventListener('change', () => { form.time.parentElement.hidden = form.pace.value !== 'daily'; });
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    try { data = await api('/api/pace', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pace: form.pace.value, time: form.time.value }) }); render(); }
+    catch (error) { showError(error); }
+  });
+  $('#goals').querySelectorAll('form.stop-goal').forEach(stop => stop.addEventListener('submit', async event => {
+    event.preventDefault();
+    try {
+      data = await api(`/api/goals/${encodeURIComponent(stop.dataset.id)}/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: stop.reason.value }) });
+      drafts.delete(draftKey(stop.reason));
+      render();
+    } catch (error) { showError(error); }
+  }));
+}
+function renderGoal(goal) {
+  const tasks = data.tasks.filter(task => task.goal_id === goal.id && (!goal.stage || task.stage === goal.stage.key));
+  return `<article class="card goal">
+    <div class="title"><h2>${esc(goal.title)}</h2> ${status(GOAL_STATUS[goal.status] || goal.status)}</div>
+    ${goal.outcome ? `<p>${esc(goal.outcome)}</p>` : ''}
+    <ol class="stages">${goal.stages.map(stage => `<li class="${stage.state}">${esc(stage.name)}</li>`).join('')}</ol>
+    ${goal.status !== 'stopped' && goal.stage ? `
+      <h3>Stage ${goal.stage.index} of ${goal.stages.length}: ${esc(goal.stage.name)}</h3>
+      <p>${esc(goal.stage.work)}</p>
+      <dl><dt>Done when</dt><dd>${esc(goal.stage.done_check)}</dd></dl>
+      ${tasks.length ? `<ul class="goal-tasks">${tasks.map(task => `<li><a href="#" data-task="${esc(task.id)}">${esc(task.title)}</a> ${status(task.status)}</li>`).join('')}</ul>` : '<p class="empty">No tasks for this stage yet.</p>'}` : ''}
+    ${goal.completed.length ? `<details><summary>Completed stages</summary>${goal.completed.map(item => `<div class="entry"><div class="meta">${esc(item.name)} · ${when(item.at)}</div><div class="content">${esc(item.evidence)}</div></div>`).join('')}</details>` : ''}
+    ${goal.stop_reason ? `<p class="meta">Stopped: ${esc(goal.stop_reason)}</p>` : ''}
+    ${goal.kind !== 'environment' && goal.status !== 'stopped' ? `<form class="stop-goal" data-id="${esc(goal.id)}">
+      <textarea name="reason" placeholder="Reason for stopping this goal" aria-label="Reason for stopping this goal" required></textarea>
+      <div class="actions"><button class="secondary" type="submit">Stop goal</button></div>
+    </form>` : ''}
+  </article>`;
+}
+$('#goals').addEventListener('click', event => {
+  const id = event.target.dataset?.task;
+  if (!id) return;
+  event.preventDefault();
+  document.querySelector('nav button[data-view="tasks"]').click();
+  showTask(id);
+});
 
 async function showTask(id) {
   selectedTask = id;

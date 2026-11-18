@@ -13,6 +13,7 @@ import { utilityTools, reportUtility, searchUtility, revokeUtility } from './cla
 import { clarityRequest } from './clarity-client.mjs';
 import { startA2AReceiver } from './a2a-receiver.mjs';
 import { taskTools, startTaskQueue } from './task-queue.mjs';
+import { goalTools } from './goals.mjs';
 
 // Local loopback MCP for the owner's harness: M3NT0R coaching and business
 // assessment (run as local background jobs), private records, utility cases,
@@ -185,7 +186,7 @@ function toolsChanged() {
 }
 const questionInstructions = 'At the start of a session, read today’s business journal with read_journal and check user_question_read. Before offering outstanding questions, today’s journal must have been read. When permitted and questions are pending, briefly ask whether the user has time to answer some Coach questions; continue their work if not. Record a no using user_question_set(action="defer") or add_journal(user_declined_questions=true): no more offers for four hours unless the user directly raises these questions. Set new business questions with user_question_set. Local journal and question contents are never report attachments.';
 // M3NT0R coaching jobs connect to /mcp/coach, which offers only these read tools.
-const COACH_READ_TOOLS = new Set(['search_utility', 'read_journal', 'get_coaching_context', 'user_question_read', 'list_tasks', 'get_task', 'list_recommendations', 'list_assessments', 'read_answered_questions']);
+const COACH_READ_TOOLS = new Set(['search_utility', 'read_journal', 'get_coaching_context', 'user_question_read', 'list_tasks', 'get_task', 'list_recommendations', 'list_assessments', 'read_answered_questions', 'list_goals']);
 async function mcp(req, res, coach = false) {
   const sessionId = req.headers['mcp-session-id'];
   const session = mcpSessions.get(sessionId);
@@ -213,7 +214,7 @@ async function mcp(req, res, coach = false) {
   if (call.method !== 'ping' && !session) return json(res,404,{error:'MCP session is missing or expired; initialize again.'});
   if (call.method === 'ping') result = {};
   else if (call.method === 'tools/list') {
-    const all = [...m3ntorTools, ...utilityTools, a2aStatusTool, ...taskTools, ...tools, ...businessTools(await questionState(cwd))];
+    const all = [...m3ntorTools, ...utilityTools, a2aStatusTool, ...taskTools, ...goalTools, ...tools, ...businessTools(await questionState(cwd))];
     result = { tools: coach ? all.filter(tool => COACH_READ_TOOLS.has(tool.name)) : all };
   }
   else if (call.method === 'tools/call') {
@@ -232,8 +233,9 @@ async function mcp(req, res, coach = false) {
         if (receipt.saved) receipt.submission = await submitAssessment(cwd, input, coachingProfile, receipt.assessedAt);
         receipt.submitted = receipt.submission?.saved === true;
         if (receipt.saved) receipt.utility_question = await askAssessmentUtility(input, receipt);
+        if (receipt.saved) taskQueue.poke();
         result = { ...(!receipt.saved || !receipt.submitted ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(receipt) }] };
-      } else if (taskTools.some(tool => tool.name === name)) {
+      } else if (taskTools.some(tool => tool.name === name) || goalTools.some(tool => tool.name === name)) {
         result = { content: [{ type: 'text', text: JSON.stringify(await taskQueue.call(name, input)) }] };
       } else if (name === 'a2a_status') {
         result = { content: [{ type: 'text', text: JSON.stringify(a2aReceiver.status()) }] };
@@ -249,7 +251,7 @@ async function mcp(req, res, coach = false) {
         if(input.user_declined_questions) toolsChanged();
         result={content:[{type:'text',text:JSON.stringify(added)}]};
       } else if (name === 'user_question_set' || name === 'suser_question_set') {
-        const updated=await setUserQuestions(cwd,input);toolsChanged();
+        const updated=await setUserQuestions(cwd,input);toolsChanged();taskQueue.poke();
         if (input.action === 'answer') await queueUseCaseResearch(input.question_id, input.answer).catch(error => console.error('Use case research task failed:', error.message));
         result={content:[{type:'text',text:JSON.stringify(updated)}]};
       } else if (name === 'user_question_read' || /^user_questions_\d+$/.test(name)) {
@@ -347,6 +349,7 @@ async function overview() {
     questions: { pending: questions.pending, answered: questions.questions.filter(q => q.status !== 'pending').slice(-20).reverse(), deferred_until: questions.deferred ? questions.deferUntil : null },
     assessments: await assessments(),
     recommendations: { open: tasks.filter(task => task.category === 'recommendation'), history: decisions },
+    ...taskQueue.goals(),
     journal,
   };
 }
@@ -379,7 +382,7 @@ async function ownerApi(req, res, url) {
     const input = await body(req);
     if (!['answer', 'dismiss'].includes(input.action)) throw new Error('Use answer or dismiss.');
     await setUserQuestions(cwd, { action: input.action, question_id: parts[2], answer: input.answer, reason: input.reason });
-    toolsChanged();
+    toolsChanged(); taskQueue.poke();
     if (input.action === 'answer') await queueUseCaseResearch(parts[2], input.answer).catch(error => console.error('Use case research task failed:', error.message));
     return json(res, 200, await overview());
   }
@@ -396,6 +399,16 @@ async function ownerApi(req, res, url) {
   if (req.method === 'POST' && parts[1] === 'use-cases' && parts[2] && parts[3] === 'revoke') {
     try { return json(res, 200, await revokeUtility(parts[2])); }
     catch (error) { return json(res, /HTTP 403/.test(error.message) ? 403 : 502, { error: /HTTP 403/.test(error.message) ? 'Only use cases your business submitted can be revoked.' : error.message }); }
+  }
+  if (req.method === 'POST' && parts[1] === 'goals' && parts[2] && parts[3] === 'stop') {
+    const input = await body(req);
+    await taskQueue.call('stop_goal', { goal_id: parts[2], reason: input.reason });
+    return json(res, 200, await overview());
+  }
+  if (req.method === 'POST' && url.pathname === '/api/pace') {
+    const input = await body(req);
+    taskQueue.call('set_pace', { pace: input.pace, ...(input.time ? { time: input.time } : {}) });
+    return json(res, 200, await overview());
   }
   if (req.method === 'POST' && parts[1] === 'tasks' && parts[2] && parts[3] === 'decline') {
     const input = await body(req);
@@ -426,7 +439,7 @@ const server = http.createServer(async (req, res) => {
 // This service holds the installation's A2A stream for as long as it runs.
 const a2aReceiver = startA2AReceiver({ cwd, harness, mcpUrl });
 // The owner's action queue runs due tasks for as long as this service runs.
-const taskQueue = startTaskQueue({ cwd, harness, mcpUrl });
+const taskQueue = startTaskQueue({ cwd, harness, mcpUrl, latestAssessment: async () => (await assessments())[0] || null });
 retryPendingSubmissions().then(left => { if (left) scheduleSubmissionRetry(); }, error => { console.error('Assessment submission retry failed:', error.message); scheduleSubmissionRetry(); });
 server.listen(port, '127.0.0.1', () => console.log(`Clarity M3NT0R MCP → ${mcpUrl} · owner view → ${base}/`));
 for (const signal of ['SIGTERM','SIGINT']) process.on(signal, () => {

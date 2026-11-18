@@ -21,7 +21,8 @@
   </header>
   <div id="running" role="status" hidden></div>
   <nav>
-    <button data-view="tasks" class="active">Tasks</button>
+    <button data-view="goals" class="active">Goals</button>
+    <button data-view="tasks">Tasks</button>
     <button data-view="questions">Questions <span id="question-count" class="count"></span></button>
     <button data-view="assessment">Assessment</button>
     <button data-view="recommendations">Recommendations</button>
@@ -30,7 +31,8 @@
     <button data-view="use-cases">Use cases</button>
   </nav>
   <main>
-    <section id="tasks" class="view split">
+    <section id="goals" class="view"></section>
+    <section id="tasks" class="view split" hidden>
       <ul id="task-list" class="list"></ul>
       <article id="task-detail" class="detail"><p class="empty">Select a task.</p></article>
     </section>

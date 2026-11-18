@@ -92,6 +92,11 @@ export async function startTaskJob(task, environment) {
   return createJob({ context: { task_id: task.id, title: task.title, category: task.category } }, environment, { identity: 'scheduled_task', question, promptId: null, jobId: task.job_id });
 }
 
+// The agent's review of its active goal, run in the owner's harness with the local tools.
+export async function startGoalReviewJob({ jobId, question, context }, environment) {
+  return createJob({ context }, environment, { identity: 'goal_review', question, promptId: null, jobId });
+}
+
 // An incoming A2A message for this installation's agent, run in the owner's harness.
 export async function startA2AJob(message, environment) {
   const question = `From agent: ${message.from_agent}\nSession: ${message.session_id}\nMessage ID: ${message.id}\n\n${message.message}`;

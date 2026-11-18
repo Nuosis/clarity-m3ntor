@@ -112,3 +112,14 @@ button.secondary:hover { background: var(--panel-2); }
 button.danger { font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 6px; cursor: pointer; background: var(--panel); color: var(--bad); border: 1px solid var(--bad); transition: background-color 150ms ease-out; }
 .card > .title { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
 .card > .title h2 { margin-bottom: 4px; }
+.stages { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 12px 0; counter-reset: stage; }
+.stages li { counter-increment: stage; font-size: 12px; padding: 2px 10px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); background: var(--panel-2); }
+.stages li::before { content: counter(stage) ". "; }
+.stages li.done { color: var(--ok); }
+.stages li.current { background: var(--accent-soft); color: var(--accent-strong); border-color: transparent; font-weight: 600; }
+.goal-tasks { padding-left: 20px; }
+.goal-tasks li { margin-bottom: 4px; }
+.goal-tasks a { color: var(--accent-strong); }
+.status.active, .status.improving { color: var(--accent-strong); }
+.status.maintaining { color: var(--ok); }
+.status.waiting, .status.stopped { color: var(--muted); }
