@@ -149,16 +149,18 @@ function current() {
     return { loaded: true, file: prop('FragmentPath') || file, port: Number(prop('Environment').match(/(?:^|\s)PORT=(\d+)/)?.[1]) || null, pid: Number(prop('MainPID')) || null };
   }
   // Follow the registered task's own action to the script it runs: wscript <.vbs> -> <.cmd>, or a .cmd directly.
-  const q = run('schtasks', ['/Query', '/TN', label, '/XML']);
-  if (!q.ok) return null;
-  const unxml = (v) => v?.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').trim();
-  const command = unxml(q.out.match(/<Command>([\s\S]*?)<\/Command>/)?.[1]) || '';
-  const argsText = unxml(q.out.match(/<Arguments>([\s\S]*?)<\/Arguments>/)?.[1]) || '';
+  // PowerShell writes the action as UTF-8, so non-ASCII profile paths survive any console code page.
+  const ps = `[Console]::OutputEncoding=[Text.Encoding]::UTF8; $t=Get-ScheduledTask -TaskName '${label.replace(/'/g, "''")}' -ErrorAction Stop; $a=$t.Actions | Select-Object -First 1; "$($a.Execute)\`n$($a.Arguments)"`;
+  const q = run('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps]);
+  if (!q.ok && !run('schtasks', ['/Query', '/TN', label]).ok) return null;
+  const [command = '', argsText = ''] = q.ok ? q.out.replace(/^﻿/, '').split(/\r?\n/).map((v) => v.trim()) : [];
   const target = (/\.(cmd|bat)"?$/i.test(command) ? command : argsText).replace(/^"+|"+$/g, '');
   let script = null;
   if (/\.vbs$/i.test(target) && existsSync(target)) script = readFileSync(target, 'utf8').match(/"""(.+?)"""/)?.[1] || null;
   else if (/\.(cmd|bat)$/i.test(target)) script = target;
   if (script && !existsSync(script)) script = null;
+  // Fall back to this installer's default script location.
+  if (!script) { const fallback = path.join(path.dirname(file), `${label}.cmd`); if (existsSync(fallback)) script = fallback; }
   windowsScript = script;
   const port = script ? Number(readFileSync(script, 'utf8').match(/set "PORT=(\d+)"/)?.[1]) || null : null;
   return { loaded: true, file: script, task_action: `${command} ${argsText}`.trim(), port, pid: null };
