@@ -34,6 +34,22 @@ export M3NTOR_HARNESS=codex
 npm start
 ```
 
+### Run as a service
+
+To start at login, restart after a crash and keep one port, install it under the
+operating system's service manager (macOS LaunchAgent `com.clarity.m3ntor`, Linux
+`systemd --user` unit `clarity-m3ntor`, Windows current-user logon task
+`clarity-m3ntor`; no administrator rights):
+
+```sh
+node install-service.mjs --workspace /path/to/business/workspace --harness codex --port 4318
+```
+
+It prints one JSON status (label, definition file, port, URL, loaded, responding).
+An existing definition is kept with its settings; `--replace` rewrites it. Logs go to
+`<workspace>/.clarity_coach/logs/`. On Linux without `loginctl enable-linger` the
+service runs only while the owner is logged in.
+
 The MCP URL in this example is `http://127.0.0.1:4318/mcp/local`, the service's
 only endpoint. It exposes coaching and assessment jobs, local context, journal,
 question, utility and `a2a_status` tools. There is no UI.
@@ -81,10 +97,17 @@ agent did and the result; the questions waiting on the owner (answer or dismiss)
 the goals with their stages, tasks and evidence, and the agent's pace; the latest POMA
 assessment; and the business journal. It updates when local records change.
 
-### Desktop app
+### Install as an app
 
-`desktop/` wraps the owner view in a Tauri app. Build it once (requires Rust and the
-Tauri CLI: `cargo install tauri-cli --version "^2"`):
+The owner view installs as an app with no build or signing: in Chrome or Edge, open
+`http://127.0.0.1:<port>/` and use the Install button in the address bar; in Safari,
+choose File > Add to Dock. Keep the service on a fixed port (see Run as a service) so
+the installed app keeps its address.
+
+### Desktop app (developers)
+
+`desktop/` is an optional Tauri wrapper for developers; the bootstrap does not build
+it. Build it with Rust and the Tauri CLI (`cargo install tauri-cli --version "^2"`):
 
 ```sh
 cd desktop/src-tauri

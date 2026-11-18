@@ -20,18 +20,14 @@ git clone https://github.com/Nuosis/clarity-m3ntor.git "$M3NTOR_SOURCE"
 
 Resolve `M3NTOR_SOURCE` to the actual installation directory before running the command. For an existing checkout inspect its branch and local edits before updating; preserve and finish unrelated work rather than resetting it. Read that checkout's README and `ACCESS-PATTERN.md`; use its supported Node.js version (currently Node.js 22 or newer). The current package has no dependency-install step.
 
-Determine the current business workspace and harness CLI (`codex` or `claude`). Reuse a matching running service; otherwise choose an unused loopback port and start the package in a managed background process. For a shell-managed initial start, resolve the variables below from this environment:
+Determine the current business workspace and harness CLI (`codex` or `claude`). Reuse a matching running service; otherwise choose an unused loopback port and install the package under the operating system's service manager (macOS LaunchAgent, Linux `systemd --user`, Windows current-user logon task), so it starts at login, restarts after a crash and keeps that port:
 
 ```sh
-umask 077
-mkdir -p "$M3NTOR_WORKSPACE/.clarity_coach/logs"
-PORT="$M3NTOR_PORT" M3NTOR_WORKSPACE="$M3NTOR_WORKSPACE" \
-M3NTOR_HARNESS="$M3NTOR_HARNESS" \
-nohup node "$M3NTOR_SOURCE/server.mjs" \
-  >> "$M3NTOR_WORKSPACE/.clarity_coach/logs/mcp.log" 2>&1 &
+node "$M3NTOR_SOURCE/install-service.mjs" --workspace "$M3NTOR_WORKSPACE" \
+  --harness "$M3NTOR_HARNESS" --port "$M3NTOR_PORT"
 ```
 
-Record the actual process/service, workspace, port and URL `http://127.0.0.1:<port>/mcp/local`. Bind only to loopback. Preserve an existing service and its settings instead of starting duplicates. Use the operating system's existing service manager for continued operation and restart recovery.
+It prints one JSON status with the label, definition file, port, URL, whether it is loaded and whether the service is responding. An existing definition is kept with its port and settings; pass `--replace` only when it points at the wrong source, workspace or harness. Stop any shell-started copy on the same port first. Read back that the service is responding, then end the service's node process and confirm the service manager brings it back on the same port (allow up to 30 seconds). Record the definition file, port and URL `http://127.0.0.1:<port>/mcp/local`, and both read-backs. Bind only to loopback. On Linux, report the returned `linger` value: without it the service runs only while the owner is logged in.
 
 Register that URL under `clarity_m3ntor` in the CURRENT harness using its supported configuration scope. Check for an existing entry and preserve unrelated configuration. Examples, substituting the actual port:
 
@@ -122,7 +118,7 @@ Consult `ask_m3ntor` with a question and the full business context it needs (it 
 
 ## Owner view
 
-The service serves the owner's view at `http://127.0.0.1:<port>/`: the task queue (each task's contract, runs, what the agent did and the result), questions waiting on the owner, the goals with each one's stages, tasks and evidence and the agent's pace (hourly, daily or YOLO), the latest POMA assessment, and the business journal. Tell the owner its address. If they want a desktop app, build `desktop/` as the README describes and tell them where the app is.
+The service serves the owner's view at `http://127.0.0.1:<port>/`: the task queue (each task's contract, runs, what the agent did and the result), questions waiting on the owner, the goals with each one's stages, tasks and evidence and the agent's pace (hourly, daily or YOLO), the latest POMA assessment, and the business journal. Tell the owner its address and that it installs as an app: in Chrome or Edge, open the address and use the Install button in the address bar; in Safari, choose File > Add to Dock.
 
 ## 6. Report the bootstrap result
 
