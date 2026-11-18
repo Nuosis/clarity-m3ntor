@@ -421,6 +421,15 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   return {
     // Something outside the queue changed (an owner answer, a saved assessment).
     poke() { schedule(); },
+    // The owner's Run: one goal review now, whatever the pace and even if nothing changed.
+    async runReview() {
+      if (setting('goal_review_job') || reviewStarting) throw new Error('A goal review is already running.');
+      const goal = activeGoal();
+      if (!goal) throw new Error('There is no active goal to review.');
+      await startReview(goal, reviewState(goal));
+      if (!setting('goal_review_job')) throw new Error(setting('goal_review_error') || 'The goal review did not start.');
+      return pace();
+    },
     goals: () => ({ goals: listGoals(), pace: pace(), review_error: setting('goal_review_error') }),
     // Task with its runs, for the owner UI.
     detail(taskId) {

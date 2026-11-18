@@ -123,3 +123,4 @@ button.danger { font: inherit; font-size: 13px; padding: 4px 12px; border-radius
 .status.active, .status.improving { color: var(--accent-strong); }
 .status.maintaining { color: var(--ok); }
 .status.waiting, .status.stopped { color: var(--muted); }
+button.primary:disabled, button.secondary:disabled { opacity: 0.5; cursor: default; }

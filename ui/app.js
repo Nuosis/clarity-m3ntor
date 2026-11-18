@@ -136,7 +136,8 @@ function renderGoals() {
         <select name="pace">${Object.entries(PACE_LABELS).map(([value, label]) => `<option value="${value}"${pace.pace === value ? ' selected' : ''}>${label}</option>`).join('')}</select>
       </label>
       <label${pace.pace === 'daily' ? '' : ' hidden'}>at <input type="time" name="time" value="${esc(pace.time || '08:00')}"></label>
-      <button class="primary" type="submit">Save</button>
+      <button class="secondary" type="submit">Save</button>
+      <button class="primary" type="button" id="run-review"${reviewing ? ' disabled' : ''}>Run</button>
       <span class="meta">${reviewing ? 'Reviewing now' : pace.pace === 'yolo' ? 'Reviews when the current stage\'s tasks are done or blocked' : pace.next_review_at ? `Next review ${when(pace.next_review_at)}` : ''}${pace.last_review_at ? ` · last ${when(pace.last_review_at)}` : ''}</span>
     </form>
     ${data.review_error ? `<p class="card" style="color: var(--bad)">${esc(data.review_error)}</p>` : ''}
@@ -147,6 +148,11 @@ function renderGoals() {
     event.preventDefault();
     try { data = await api('/api/pace', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pace: form.pace.value, time: form.time.value }) }); render(); }
     catch (error) { showError(error); }
+  });
+  $('#run-review').addEventListener('click', async () => {
+    $('#run-review').disabled = true;
+    try { data = await api('/api/goals/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); render(); }
+    catch (error) { $('#run-review').disabled = false; showError(error); }
   });
   $('#goals').querySelectorAll('form.stop-goal').forEach(stop => stop.addEventListener('submit', async event => {
     event.preventDefault();
