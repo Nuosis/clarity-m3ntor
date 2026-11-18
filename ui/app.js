@@ -359,6 +359,7 @@ function restoreDrafts() {
 }
 let pending = false;
 const events = new EventSource('/api/events');
+events.addEventListener('reload', () => location.reload());
 events.addEventListener('changed', () => {
   if (document.activeElement?.tagName === 'TEXTAREA') { pending = true; return; }
   load();

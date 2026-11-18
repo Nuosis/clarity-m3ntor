@@ -364,6 +364,9 @@ mkdirSync(clarityDir, { recursive: true, mode: 0o700 });
 mkdirSync(jobRoot, { recursive: true, mode: 0o700 });
 const notifyUi = () => { clearTimeout(uiChangeTimer); uiChangeTimer = setTimeout(() => { for (const res of uiListeners) res.write('event: changed\ndata: {}\n\n'); }, 300); };
 try { watch(jobRoot, { recursive: true }, notifyUi); } catch (error) { console.error('Job change watch unavailable:', error.message); }
+// When the owner view's own files change, open pages reload to pick up the new version.
+let uiReloadTimer = null;
+try { watch(path.join(root, 'ui'), () => { clearTimeout(uiReloadTimer); uiReloadTimer = setTimeout(() => { for (const res of uiListeners) res.write('event: reload\ndata: {}\n\n'); }, 300); }); } catch {}
 try { watch(clarityDir, { recursive: true }, () => { clearTimeout(uiChangeTimer); uiChangeTimer = setTimeout(() => { for (const res of uiListeners) res.write('event: changed\ndata: {}\n\n'); }, 300); }); }
 catch (error) { console.error('Owner view change watch unavailable:', error.message); }
 async function ownerApi(req, res, url) {
