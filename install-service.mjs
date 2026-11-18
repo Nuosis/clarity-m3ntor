@@ -102,7 +102,7 @@ function ownsPort(holder, servicePid) {
     const r = run('powershell', ['-NoProfile', '-Command', `$p=Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; "$($p.ParentProcessId)|$($p.CommandLine)"`]);
     if (!r.ok) return false;
     const [parent, ...rest] = r.out.trim().split('|');
-    if (rest.join('|').toLowerCase().includes(`${label}.cmd`.toLowerCase())) return true;
+    if (rest.join('|').toLowerCase().includes((windowsScript || `${label}.cmd`).toLowerCase())) return true;
     pid = Number(parent);
   }
   return false;
@@ -148,17 +148,29 @@ function current() {
     if (!r.ok || prop('LoadState') !== 'loaded') return existsSync(file) ? { loaded: false, file, port: unitPort(readFileSync(file, 'utf8')) } : null;
     return { loaded: true, file: prop('FragmentPath') || file, port: Number(prop('Environment').match(/(?:^|\s)PORT=(\d+)/)?.[1]) || null, pid: Number(prop('MainPID')) || null };
   }
-  const q = run('schtasks', ['/Query', '/TN', label, '/FO', 'LIST']);
+  // Follow the registered task's own action to the script it runs: wscript <.vbs> -> <.cmd>, or a .cmd directly.
+  const q = run('schtasks', ['/Query', '/TN', label, '/XML']);
   if (!q.ok) return null;
-  const cmd = path.join(path.dirname(file), `${label}.cmd`);
-  const port = existsSync(cmd) ? Number(readFileSync(cmd, 'utf8').match(/set "PORT=(\d+)"/)?.[1]) || null : null;
-  return { loaded: true, file: existsSync(file) ? file : null, port, pid: null };
+  const unxml = (v) => v?.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').trim();
+  const command = unxml(q.out.match(/<Command>([\s\S]*?)<\/Command>/)?.[1]) || '';
+  const argsText = unxml(q.out.match(/<Arguments>([\s\S]*?)<\/Arguments>/)?.[1]) || '';
+  const target = (/\.(cmd|bat)"?$/i.test(command) ? command : argsText).replace(/^"+|"+$/g, '');
+  let script = null;
+  if (/\.vbs$/i.test(target) && existsSync(target)) script = readFileSync(target, 'utf8').match(/"""(.+?)"""/)?.[1] || null;
+  else if (/\.(cmd|bat)$/i.test(target)) script = target;
+  if (script && !existsSync(script)) script = null;
+  windowsScript = script;
+  const port = script ? Number(readFileSync(script, 'utf8').match(/set "PORT=(\d+)"/)?.[1]) || null : null;
+  return { loaded: true, file: script, task_action: `${command} ${argsText}`.trim(), port, pid: null };
 }
 function plistPort(f) { const r = run('/usr/bin/plutil', ['-extract', 'EnvironmentVariables.PORT', 'raw', '-o', '-', f]); return r.ok ? Number(r.out.trim()) || null : null; }
 function unitPort(text) { return Number(text.match(/^Environment="?PORT=(\d+)"?/m)?.[1]) || null; }
 
+let windowsScript = null; // the .cmd the registered Windows task runs
 const before = current();
 const keep = Boolean(before) && !opts.replace;
+// A kept service must be reported by its definition and port, and then verified.
+if (keep && (!before.file || !before.port)) finish({ status: 'error', platform, label, file: before.file || null, port: before.port || null, task_action: before.task_action, error: 'A service with this label exists but its definition or port could not be read. Inspect it, or rerun with --replace and --port.' });
 const port = keep ? before.port : Number(opts.port);
 const status = { status: keep ? 'existing' : before ? 'replaced' : 'installed', platform, label, file: keep ? before.file : file, port, url: port ? `http://127.0.0.1:${port}/` : null, mcp_url: port ? `http://127.0.0.1:${port}/mcp/local` : null };
 if (!keep && before?.file && before.file !== file) status.previous_file = before.file;
@@ -173,7 +185,8 @@ if (!keep) {
   if (missing.length) finish({ ...status, status: 'missing_input', missing });
   if (!existsSync(path.join(source, 'server.mjs'))) finish({ ...status, status: 'error', error: `server.mjs not found in ${source}` });
   const holder = portHolder(port);
-  if (holder && !(before?.pid && holder.pid === before.pid)) finish({ ...status, status: 'port_in_use', holder });
+  const replacingOwnListener = before && (before.pid ? holder?.pid === before.pid : platform === 'win32' && ownsPort(holder, null));
+  if (holder && !replacingOwnListener) finish({ ...status, status: 'port_in_use', holder });
 
   // The service runs the harness CLI, so its PATH must reach node and the harness.
   const harnessPath = which(harness);
@@ -287,6 +300,7 @@ if (platform === 'win32') {
   if (!keep) {
     mkdirSync(logs, { recursive: true });
     run('schtasks', ['/End', '/TN', label]);
+    windowsScript = cmd;
     // The script loops so a crashed server restarts within 10 seconds.
     writePrivate(cmd, `@echo off\r\n${Object.entries(env).map(([k, v]) => `set "${k}=${v}"`).join('\r\n')}\r\ncd /d "${workspace}"\r\n:loop\r\n"${node}" "${path.join(source, 'server.mjs')}" >> "${path.join(logs, 'mcp.log')}" 2>> "${path.join(logs, 'mcp.stderr.log')}"\r\ntimeout /t 10 /nobreak > nul\r\ngoto loop\r\n`, 0o700);
     // wscript keeps the console window hidden.
