@@ -58,17 +58,19 @@ HELD_NEXT = ("This case is held, not published, because similar cases exist. Com
              "variant matches) when nothing material differs; or action distinct when it is a different practice.")
 
 
-def similar_cases(case_id: str) -> list[dict]:
+def similar_cases(case_id: str, db=None) -> list[dict]:
     """Published cases close to this case, each with its variants and boosts."""
-    with SessionLocal() as db:
-        rows = db.execute(text(f"""
-            SELECT {CASE_COLUMNS}, 1 - (c.embedding <=> h.embedding) AS similarity
-            FROM agent_utility_cases c, (SELECT embedding FROM agent_utility_cases WHERE id = CAST(:id AS uuid)) h
-            WHERE c.status = 'recorded' AND c.id <> CAST(:id AS uuid) AND c.embedding IS NOT NULL AND h.embedding IS NOT NULL
-            ORDER BY c.embedding <=> h.embedding, c.id LIMIT :limit
-        """), {"id": case_id, "limit": SIMILAR_CASE_LIMIT}).mappings().all()
-        found = [(row, float(row["similarity"])) for row in rows if float(row["similarity"]) >= SIMILAR_CASE_SIMILARITY]
-        cases = with_variants_and_boosts(db, [serialize_case(row) for row, _ in found])
+    if db is None:
+        with SessionLocal() as session:
+            return similar_cases(case_id, session)
+    rows = db.execute(text(f"""
+        SELECT {CASE_COLUMNS}, 1 - (c.embedding <=> h.embedding) AS similarity
+        FROM agent_utility_cases c, (SELECT embedding FROM agent_utility_cases WHERE id = CAST(:id AS uuid)) h
+        WHERE c.status = 'recorded' AND c.id <> CAST(:id AS uuid) AND c.embedding IS NOT NULL AND h.embedding IS NOT NULL
+        ORDER BY c.embedding <=> h.embedding, c.id LIMIT :limit
+    """), {"id": case_id, "limit": SIMILAR_CASE_LIMIT}).mappings().all()
+    found = [(row, float(row["similarity"])) for row in rows if float(row["similarity"]) >= SIMILAR_CASE_SIMILARITY]
+    cases = with_variants_and_boosts(db, [serialize_case(row) for row, _ in found])
     return [{"case_id": case["id"], "similarity": similarity, "case": case} for case, (_, similarity) in zip(cases, found)]
 
 
@@ -210,10 +212,13 @@ def embed_case(case_id: str) -> dict:
         result = read_case(case_id)
         result["degradation"] = ["similarity_check_unavailable"]
         return result
-    if similar_cases(case_id):
-        with SessionLocal() as db:
+    # One similarity decision at a time, so two similar submissions cannot hold each other
+    # and leave neither published: the later one sees the earlier as published or held.
+    with SessionLocal() as db:
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext('agent_utility_similarity'))"))
+        if similar_cases(case_id, db):
             db.execute(text("UPDATE agent_utility_cases SET status='held', updated_at=now() WHERE id=CAST(:id AS uuid) AND status='recorded'"), {"id": case_id})
-            db.commit()
+        db.commit()
     return read_case(case_id)
 
 
@@ -249,42 +254,56 @@ def search_cases(payload: dict) -> dict:
         vector = _embedding(payload["query"])
     except Exception as exc:
         degradation.append(f"query_embedding_unavailable:{type(exc).__name__}")
+    # Published variants match too, and count for their case.
+    match_filters = FILTERS.replace("status = 'recorded'", "status IN ('recorded', 'variant')")
+    candidates = max(params["limit"] * 5, 50)
     lexical_sql = f"""
-        SELECT id, row_number() OVER (ORDER BY
+        SELECT id, variant_of, row_number() OVER (ORDER BY
             ts_rank_cd(search_document, websearch_to_tsquery('english', :query)) DESC,
             similarity(title, :query) DESC, created_at DESC, id) AS rank
-        FROM agent_utility_cases WHERE {FILTERS}
+        FROM agent_utility_cases WHERE {match_filters}
           AND (search_document @@ websearch_to_tsquery('english', :query) OR title % :query)
     """
     with SessionLocal() as db:
         lexical = db.execute(text(lexical_sql), params).mappings().all()
         dense = []
-        vector_count = db.execute(text(f"SELECT count(*) FROM agent_utility_cases WHERE {FILTERS} AND embedding IS NOT NULL"), params).scalar_one()
+        vector_count = db.execute(text(f"SELECT count(*) FROM agent_utility_cases WHERE {match_filters} AND embedding IS NOT NULL"), params).scalar_one()
         if vector is not None and vector_count:
             try:
                 # Use a savepoint so a vector-query failure leaves lexical retrieval available.
                 with db.begin_nested():
                     dense = db.execute(text(f"""
-                        SELECT id, row_number() OVER (ORDER BY embedding <=> CAST(:vector AS vector), id) AS rank,
+                        SELECT id, variant_of, row_number() OVER (ORDER BY embedding <=> CAST(:vector AS vector), id) AS rank,
                                1 - (embedding <=> CAST(:vector AS vector)) AS similarity
-                        FROM agent_utility_cases WHERE {FILTERS} AND embedding IS NOT NULL
-                        ORDER BY embedding <=> CAST(:vector AS vector), id LIMIT :limit
-                    """), {**params, "vector": vector}).mappings().all()
+                        FROM agent_utility_cases WHERE {match_filters} AND embedding IS NOT NULL
+                        ORDER BY embedding <=> CAST(:vector AS vector), id LIMIT :candidates
+                    """), {**params, "vector": vector, "candidates": candidates}).mappings().all()
             except Exception as exc:
                 degradation.append(f"vector_retrieval_unavailable:{type(exc).__name__}")
         elif vector is not None:
             degradation.append("no_embedded_cases_for_filters")
         scores, details = {}, {}
+        # A case takes the best rank among itself and its variants in each retrieval.
+        lexical_best, dense_best = {}, {}
         for row in lexical:
-            cid = str(row["id"])
-            scores[cid] = 1.0 / (60 + row["rank"])
-            details[cid] = {"lexical_rank": row["rank"]}
+            cid = str(row["variant_of"] or row["id"])
+            lexical_best.setdefault(cid, row["rank"])
         for row in dense:
-            cid = str(row["id"])
-            if cid not in scores and float(row["similarity"]) < MIN_VECTOR_SIMILARITY:
+            cid = str(row["variant_of"] or row["id"])
+            if cid not in dense_best or float(row["similarity"]) > dense_best[cid][1]:
+                dense_best[cid] = (row["rank"], float(row["similarity"]))
+        for cid, rank in lexical_best.items():
+            scores[cid] = 1.0 / (60 + rank)
+            details[cid] = {"lexical_rank": rank}
+        for cid, (rank, similarity) in dense_best.items():
+            if cid not in scores and similarity < MIN_VECTOR_SIMILARITY:
                 continue
-            scores[cid] = scores.get(cid, 0) + 1.0 / (60 + row["rank"])
-            details.setdefault(cid, {}).update(vector_rank=row["rank"], vector_similarity=float(row["similarity"]))
+            scores[cid] = scores.get(cid, 0) + 1.0 / (60 + rank)
+            details.setdefault(cid, {}).update(vector_rank=rank, vector_similarity=similarity)
+        # A variant's case must itself be published.
+        if scores:
+            published = {str(row[0]) for row in db.execute(text("SELECT id FROM agent_utility_cases WHERE status = 'recorded' AND id = ANY(CAST(:ids AS uuid[]))"), {"ids": list(scores)}).all()}
+            scores = {cid: score for cid, score in scores.items() if cid in published}
         # Boosts raise a matching case's rank; they never add a case that did not match.
         boosts = boost_counts(db, list(scores))
         for cid in scores:

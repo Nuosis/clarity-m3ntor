@@ -18,13 +18,15 @@ for relative in (
     "app/services/agent_utility.py",
     "app/workflows/agent_utility_workflow.py",
     "app/alembic/versions/0065_agent_utility_cases.py",
+    "app/alembic/versions/0068_agent_utility_variants_boosts.py",
 ):
     dest = args.target / relative
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source / relative, dest)
-dest = args.target / "app/database/migrations/0065_agent_utility_cases.sql"
-dest.parent.mkdir(parents=True, exist_ok=True)
-shutil.copyfile(source / "migrations/0065_agent_utility_cases.sql", dest)
+for name in ("0065_agent_utility_cases.sql", "0068_agent_utility_variants_boosts.sql"):
+    dest = args.target / "app/database/migrations" / name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source / "migrations" / name, dest)
 
 router = args.target / "app/api/router.py"
 content = router.read_text()
@@ -46,9 +48,10 @@ registry.write_text(content)
 for relative in (
     "app/api/agent_utility_api.py", "app/services/agent_utility.py", "app/workflows/agent_utility_workflow.py",
     "app/alembic/versions/0065_agent_utility_cases.py", "app/database/migrations/0065_agent_utility_cases.sql",
+    "app/alembic/versions/0068_agent_utility_variants_boosts.py", "app/database/migrations/0068_agent_utility_variants_boosts.sql",
     "app/api/router.py", "app/workflows/workflow_registry.py",
 ):
     print(hashlib.sha256((args.target / relative).read_bytes()).hexdigest(), relative)
 
-print("Source installed only; production does not hot reload. Activate committed source with an API-only restart:")
+print("Source installed only. Apply migrations/0065 and 0068 SQL (in order) before activating; production does not hot reload. Activate committed source with an API-only restart:")
 print("ssh clarity 'sudo docker restart --time 30 clarity_backend_api'")
