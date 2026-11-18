@@ -68,12 +68,17 @@ async function loadUseCases() {
 }
 function renderCase(item) {
   const list = (title, values) => values?.length ? `<h3>${title}</h3><ul>${values.map(v => `<li>${esc(v)}</li>`).join('')}</ul>` : '';
-  return `<article class="card case">
+  const variants = item.variants?.length ? `<details>
+      <summary>${item.variants.length} variant${item.variants.length === 1 ? '' : 's'}</summary>
+      <div class="prose">${item.variants.map(v => `<h3>${esc(v.title)}${v.boosts ? ` <span class="chip boosts">${v.boosts} boost${v.boosts === 1 ? '' : 's'}</span>` : ''}</h3>${list('Differs by', v.distinct_aspects)}`).join('')}</div>
+    </details>` : '';
+  return `<article class="card case${item.boosts ? ' boosted' : ''}">
     <div class="head">
       <h2>${esc(item.title)}</h2>
       ${item.own ? `<button class="danger" type="button" data-revoke="${esc(item.id)}">Revoke</button>` : ''}
     </div>
     <div class="labels">
+      ${item.boosts ? `<span class="chip boosts">${item.boosts} boost${item.boosts === 1 ? '' : 's'}</span>` : ''}
       ${item.own ? '<span class="chip own">Your business</span>' : ''}
       ${(item.poma_labels || []).map(l => `<span class="chip poma">${esc(l)}</span>`).join('')}
       ${(item.tags || []).map(t => `<span class="chip">${esc(t)}</span>`).join('')}
@@ -91,6 +96,7 @@ function renderCase(item) {
         ${list('Limitations', item.evidence?.limitations)}
       </div>
     </details>
+    ${variants}
   </article>`;
 }
 $('#case-filters').addEventListener('submit', event => {

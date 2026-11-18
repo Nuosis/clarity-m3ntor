@@ -106,6 +106,9 @@ button.secondary:hover { background: var(--panel-2); }
 .chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }
 .chip.poma { background: var(--accent-soft); color: var(--accent-strong); border-color: transparent; }
 .chip.own { background: var(--accent-strong); color: var(--panel); border-color: transparent; font-weight: 600; }
+.chip.boosts { background: var(--accent); color: #fff; border-color: transparent; font-weight: 600; }
+.case.boosted { box-shadow: inset 4px 0 0 var(--accent); }
+.case.boosted h2 { color: var(--accent-strong); }
 .case details { margin-top: 8px; }
 .case summary { cursor: pointer; color: var(--accent-strong); }
 .case .head { display: flex; justify-content: space-between; align-items: start; gap: 12px; }

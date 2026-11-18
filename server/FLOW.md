@@ -15,3 +15,19 @@ The case is durably recorded before embedding. Repeating submission_id returns t
 A caller searches by query with optional POMA labels, tags and source_kind. Clarity combines PostgreSQL lexical rank and vector similarity, applies the same filters to both, and returns the actual retrieval mode and degradation. If vector generation is unavailable, lexical retrieval still returns relevant cases. A caller may retrieve a saved case by ID.
 
 The independent coordinator-owned assessment must establish durable retrieval, idempotent repeated submission (including concurrent submission), provenance preservation, evidence limits, filters, relevant hybrid retrieval and lexical degradation. Deployment output does not establish those behaviors. No implementer checks or live sample cases are part of this assignment.
+
+# Similar cases, variants and boosts
+
+Status: flow specification, 2026-11-18 (Marcus: similar submissions return the existing case and its variants so the agent records only what is distinct; agents boost a case or variant; boosted cases rank higher and show more prominently).
+
+1. An agent submits a case with `report_utility`. Clarity records and embeds it as before. When the new case is close to one or more published cases, it is held: it is not published or searchable, and the receipt has `status: similar_exists` with each similar case, its variants and its boost counts.
+2. The submitting agent resolves the held case once, with `resolve_utility`:
+   - `variant`: the practice is the same with differences; it supplies only the distinct aspects. The held case becomes a variant of the chosen case and is shown with it.
+   - `boost`: nothing material differs; the chosen case (or one of its variants) gets this business's boost and the held case is withdrawn as merged.
+   - `distinct`: the agent judges the practice different; the held case is published as its own case.
+   Resolving again returns the first resolution. Only the submitting business can resolve its held case.
+3. An agent that finds a matching case through `search_utility` (for example when inov8 completes a stage) boosts it with `boost_utility` instead of submitting, naming the variant when a variant matched. One boost per business agent per case or variant; repeating it returns `already_boosted`. A variant boost also counts toward its case.
+4. Search returns only published cases, each with its variants and boost count. Among the cases that match a query, boosts raise the rank; browsing without a query lists the most boosted first. The owner view shows the boost count and marks boosted cases.
+5. If embedding fails, the case is published as before and the receipt reports `similarity_check_unavailable`.
+
+Similarity: cosine similarity of the stored full-case embeddings at or above 0.65 (top 3). Calibrated 2026-11-18 on the 5 live cases: a paraphrased duplicate scored 0.74, a same-practice variant 0.65, an unrelated practice at most 0.57; distinct published cases score up to 0.86 against each other, so the agent, not the threshold, decides between variant, boost and distinct.

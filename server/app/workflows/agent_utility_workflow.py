@@ -12,7 +12,7 @@ from core.workflow import Workflow
 
 class UtilityEvent(BaseModel):
     id: str
-    operation: Literal["submit", "search", "get"]
+    operation: Literal["submit", "search", "get", "revoke", "boost", "resolve"]
     payload: dict
 
 

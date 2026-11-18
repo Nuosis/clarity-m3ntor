@@ -9,7 +9,7 @@ import { savePomaReassessment } from './assessment-store.mjs';
 import { readJournal, addJournal, questionState, setUserQuestions, readUserQuestions, businessTools } from './business-journal.mjs';
 import { coachIdentity } from './coach-identity.mjs';
 import { m3ntorTools, askM3ntor, assessPoma, getM3ntorResult, jobDirectory, jobRoot } from './m3ntor-jobs.mjs';
-import { utilityTools, reportUtility, searchUtility, revokeUtility } from './clarity-utility.mjs';
+import { utilityTools, reportUtility, searchUtility, revokeUtility, boostUtility, resolveUtility } from './clarity-utility.mjs';
 import { clarityRequest } from './clarity-client.mjs';
 import { startA2AReceiver } from './a2a-receiver.mjs';
 import { taskTools, startTaskQueue } from './task-queue.mjs';
@@ -119,8 +119,8 @@ async function queueUseCaseResearchNow(questionId, answer) {
   const created = await taskQueue.call('set_task', {
     title: 'Write up what has been most useful',
     category: 'use_case',
-    instruction: `The owner answered "Have I been useful in getting your work done? If yes, what has felt the most useful?" with: "${answer.trim()}" (question ${questionId}).\n\nIf the owner said nothing has been useful, journal that with add_journal and stop. Otherwise research the solution they named as it works in this business: find it in the journal, tasks, local files, scripts, configuration and earlier agent sessions. Work out what it does, what triggers it, the steps it takes, the tools and access it needs, and the result it produces, in enough detail that another business's agent could replicate it. Then submit it with report_utility: a new UUID submission_id; title; summary; process (the steps); prerequisites; agent_actions; outcome; owner_feedback (the owner's words above); poma_labels; tags; evidence (kind owner_reported, with limitations); source_kind user_reported. Keep it non-sensitive: no names of people or customers, contact details, amounts, credentials, hostnames or file paths. Report the case_id returned.`,
-    success: 'report_utility returned a case_id for a replicable, non-sensitive write-up of the solution the owner named (or the owner said nothing was useful and that is journaled).',
+    instruction: `The owner answered "Have I been useful in getting your work done? If yes, what has felt the most useful?" with: "${answer.trim()}" (question ${questionId}).\n\nIf the owner said nothing has been useful, journal that with add_journal and stop. Otherwise research the solution they named as it works in this business: find it in the journal, tasks, local files, scripts, configuration and earlier agent sessions. Work out what it does, what triggers it, the steps it takes, the tools and access it needs, and the result it produces, in enough detail that another business's agent could replicate it. First search_utility for it: when a case already matches, boost it with boost_utility (with variant_id when a variant matches), report the case_id and stop. Otherwise submit it with report_utility: a new UUID submission_id; title; summary; process (the steps); prerequisites; agent_actions; outcome; owner_feedback (the owner's words above); poma_labels; tags; evidence (kind owner_reported, with limitations); source_kind user_reported. Keep it non-sensitive: no names of people or customers, contact details, amounts, credentials, hostnames or file paths. If the receipt says similar_exists, resolve it with resolve_utility (variant with only the distinct aspects, boost, or distinct). Report the case_id returned.`,
+    success: 'report_utility or boost_utility returned a case_id (a held submission resolved with resolve_utility) for a replicable, non-sensitive write-up of the solution the owner named (or the owner said nothing was useful and that is journaled).',
     constraints: ['Read-only research: change nothing in the business while researching.', 'Share only the non-sensitive write-up; private records stay local.'],
   });
   return created.task.id;
@@ -246,8 +246,8 @@ async function mcp(req, res, coach = false) {
         result = { content: [{ type: 'text', text: JSON.stringify(await taskQueue.call(name, input)) }] };
       } else if (name === 'a2a_status') {
         result = { content: [{ type: 'text', text: JSON.stringify(a2aReceiver.status()) }] };
-      } else if (name === 'report_utility' || name === 'search_utility') {
-        const response = await (name === 'report_utility' ? reportUtility(input) : searchUtility(input));
+      } else if (['report_utility', 'search_utility', 'boost_utility', 'resolve_utility'].includes(name)) {
+        const response = await ({ report_utility: reportUtility, search_utility: searchUtility, boost_utility: boostUtility, resolve_utility: resolveUtility })[name](input);
         result = { content: [{ type: 'text', text: JSON.stringify(response) }] };
       } else if (name === 'read_journal') {
         const journal=await readJournal(cwd,input);
@@ -407,7 +407,7 @@ async function ownerApi(req, res, url) {
     try {
       const found = await searchUtility({ query: url.searchParams.get('q') || '', poma_labels: labels, tags, ...(source ? { source_kind: source } : {}), limit: 50 });
       if (found.status !== 'ok' || !Array.isArray(found.results)) return json(res, 502, { error: `The use case library is unavailable: ${found.error || found.status || 'no results returned'}` });
-      return json(res, 200, { cases: (found.results || []).map(item => ({ ...item.case, own: item.own === true })), mode: found.retrieval_mode });
+      return json(res, 200, { cases: (found.results || []).map(item => ({ ...item.case, boosts: item.case?.boosts ?? item.boosts ?? 0, own: item.own === true })), mode: found.retrieval_mode });
     } catch (error) { return json(res, 502, { error: `The use case library is unavailable: ${error.message}` }); }
   }
   if (req.method === 'POST' && parts[1] === 'use-cases' && parts[2] && parts[3] === 'revoke') {

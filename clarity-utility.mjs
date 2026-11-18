@@ -8,7 +8,7 @@ const searchFields = ['query', 'poma_labels', 'tags', 'source_kind', 'limit'];
 export const utilityTools = [
   {
     name: 'report_utility',
-    description: 'Use when agentic work has proven useful to the owner (a stage or goal completed, a task delivered, or the owner says something helped) and the practice could help another business: submit it to the shared Clarity utility library. Search with search_utility first and skip when a matching case already exists. Describe how the work was useful, the process, prerequisites, actions, outcome and evidence limits so another business\'s agent could repeat it. Keep owner testimony, measured results and web examples distinct. Send summaries and source references only: no names of people or customers, contact details, amounts, credentials, hostnames or file paths. Returns the API receipt with its case_id, or the actual failure.',
+    description: 'Use when agentic work has proven useful to the owner (a stage or goal completed, a task delivered, or the owner says something helped) and the practice could help another business: submit it to the shared Clarity utility library. Search with search_utility first; when a matching case exists, boost it with boost_utility instead of submitting. When the library holds similar cases the submission is held and the receipt has status similar_exists with those cases and their variants: resolve it with resolve_utility. Describe how the work was useful, the process, prerequisites, actions, outcome and evidence limits so another business\'s agent could repeat it. Keep owner testimony, measured results and web examples distinct. Send summaries and source references only: no names of people or customers, contact details, amounts, credentials, hostnames or file paths. Returns the API receipt with its case_id (status similar_exists when held), or the actual failure.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -46,7 +46,7 @@ export const utilityTools = [
   },
   {
     name: 'search_utility',
-    description: 'Use before recommending, planning or building a practice, and before report_utility to avoid a duplicate: search the shared Clarity utility library for agentic practices other businesses found useful. Returns the matching cases with their evidence and limitations; a failed request is reported as a failure, not as no results.',
+    description: 'Use before recommending, planning or building a practice, and before report_utility to avoid a duplicate: search the shared Clarity utility library for agentic practices other businesses found useful. Returns the matching cases with their evidence, limitations, variants and boosts (how many agents found the case useful); boosted cases rank higher. A failed request is reported as a failure, not as no results.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -61,9 +61,40 @@ export const utilityTools = [
     },
     annotations: { readOnlyHint: true },
   },
+  {
+    name: 'boost_utility',
+    description: 'Use when a case found with search_utility matches a practice that proved useful here (instead of submitting a duplicate with report_utility): boost the case, naming the variant when a variant is the closer match. One boost per agent per case or variant; repeating returns already_boosted. Boosted cases rank higher for every business.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        case_id: { type: 'string', description: 'The case_id from search_utility.' },
+        variant_id: { type: 'string', description: 'The variant_id when one of the case\'s variants matches; omit to boost the case.' },
+      },
+      required: ['case_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'resolve_utility',
+    description: 'Use when report_utility returns status similar_exists: compare your held case with each similar case and its variants, then resolve it once. variant: the same practice with differences; give the case_id and only the aspects of yours that differ. boost: nothing material differs; give the case_id (and variant_id when a variant matches). distinct: a different practice; it is published as its own case.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        held_case_id: { type: 'string', description: 'The case_id report_utility returned for your held submission.' },
+        action: { type: 'string', enum: ['variant', 'boost', 'distinct'], description: 'How your practice relates to the similar case.' },
+        case_id: { type: 'string', description: 'variant or boost: the similar case\'s case_id.' },
+        variant_id: { type: 'string', description: 'boost only: the matching variant\'s variant_id.' },
+        distinct_aspects: strings('variant only: each way your practice differs from the case and its other variants, one per item.'),
+      },
+      required: ['held_case_id', 'action'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 const select = (input, fields) => Object.fromEntries(fields.filter(field => Object.hasOwn(input, field)).map(field => [field, input[field]]));
 export const reportUtility = input => clarityRequest('POST', '/agent/utility/cases', select(input, reportFields));
 export const searchUtility = input => clarityRequest('POST', '/agent/utility/search', select(input, searchFields));
+export const boostUtility = input => clarityRequest('POST', `/agent/utility/cases/${encodeURIComponent(input.case_id)}/boost`, select(input, ['variant_id']));
+export const resolveUtility = input => clarityRequest('POST', `/agent/utility/cases/${encodeURIComponent(input.held_case_id)}/resolve`, select(input, ['action', 'case_id', 'variant_id', 'distinct_aspects']));
 export const revokeUtility = caseId => clarityRequest('POST', `/agent/utility/cases/${encodeURIComponent(caseId)}/revoke`, {});
