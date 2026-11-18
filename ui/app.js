@@ -118,10 +118,13 @@ function renderContext() {
     : '<p class="empty">No business context recorded yet.</p>';
 }
 
+const FINISHED = new Set(['completed', 'done']);
+const openTasks = () => data.tasks.filter(task => !FINISHED.has(task.status));
 function renderTasks() {
   const list = $('#task-list');
-  if (!data.tasks.length) { list.innerHTML = '<li class="empty">No tasks.</li>'; return; }
-  list.innerHTML = data.tasks.map(task => `
+  const tasks = openTasks();
+  if (!tasks.length) { list.innerHTML = '<li class="empty">No open tasks.</li>'; return; }
+  list.innerHTML = tasks.map(task => `
     <li data-id="${esc(task.id)}" class="${task.id === selectedTask ? 'selected' : ''}">
       <div class="title"><span>${esc(task.title)}</span>${status(task.status)}</div>
       <div class="meta">${goalLabel(task)}${task.next_run_at ? `Next ${when(task.next_run_at)}` : task.last_run_at ? `Last run ${when(task.last_run_at)}` : ''}</div>
@@ -185,7 +188,7 @@ function renderSettings() {
   });
 }
 function renderGoal(goal) {
-  const tasks = data.tasks.filter(task => task.goal_id === goal.id && (!goal.stage || task.stage === goal.stage.key));
+  const tasks = openTasks().filter(task => task.goal_id === goal.id && (!goal.stage || task.stage === goal.stage.key));
   return `<article class="card goal">
     <div class="title"><h2>${esc(goal.title)}</h2> ${status(GOAL_STATUS[goal.status] || goal.status)}</div>
     ${goal.outcome ? `<p>${esc(goal.outcome)}</p>` : ''}
