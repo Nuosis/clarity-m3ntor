@@ -281,7 +281,9 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       recurrence, goal_id: goal.id, stage: 'improve', category: 'other',
     };
     const existing = findImproveTask(goal);
-    if (existing) update(existing.id, { ...fields, status: 'queued', next_run_at: nextFor({ recurrence }, new Date()), consecutive_failures: 0, pause_reason: null });
+    // A running task keeps its in-flight status; settling it schedules the next weekly run.
+    if (existing && ['delivered', 'executing', 'finalizing', 'clearing'].includes(existing.status)) update(existing.id, fields);
+    else if (existing) update(existing.id, { ...fields, status: 'queued', next_run_at: nextFor({ recurrence }, new Date()), consecutive_failures: 0, pause_reason: null });
     else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, success, category, goal_id, stage) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(improveTaskId(goal), fields.title, fields.instruction, recurrence, nextFor({ recurrence }, new Date()), 'queued', now(), now(), fields.success, fields.category, goal.id, 'improve');
   }
