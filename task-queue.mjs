@@ -423,13 +423,23 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   function newestMtime(dir, filter = () => true) {
     try { return Math.max(0, ...readdirSync(dir).filter(filter).map(name => statSync(path.join(dir, name)).mtimeMs)); } catch { return 0; }
   }
+  // The owner's notes from the last 14 days (the free-text box in the owner view), newest first.
+  function ownerNotes() {
+    const notes = [];
+    try {
+      for (const file of readdirSync(path.join(directory, 'journal')).filter(name => name.endsWith('.json')).sort().slice(-14)) {
+        for (const entry of JSON.parse(readFileSync(path.join(directory, 'journal', file), 'utf8')).entries || []) if (entry.source === 'owner_note') notes.push({ note: entry.content, at: entry.createdAt });
+      }
+    } catch {}
+    return notes.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  }
   function reviewState(goal) {
     const stage = stagesFor(goal.kind)[goal.stage];
     const tasks = stageTasks(goal.id, stage.key).map(task => [task.id, task.status, task.last_run_at]);
     let answered = 0;
     try { answered = JSON.parse(readFileSync(path.join(directory, 'user_questions.json'), 'utf8')).questions.filter(q => q.status !== 'pending').length; } catch {}
     const goals = db.prepare('SELECT id, status, stage, position FROM goals ORDER BY id').all();
-    return JSON.stringify({ goal: goal.id, stage: goal.stage, tasks, answered, goals, assessment: newestMtime(path.join(directory, 'assessment')) });
+    return JSON.stringify({ goal: goal.id, stage: goal.stage, tasks, answered, notes: ownerNotes().length, goals, assessment: newestMtime(path.join(directory, 'assessment')) });
   }
   const BLOCKED_OR_DONE = new Set(['completed', 'done', 'failed', 'paused']);
   let reviewTimer = null, reviewStarting = false;
@@ -484,7 +494,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       // The owner's answers are direction: the review gets the latest ones (newest first).
       let ownerAnswers = [];
       try { ownerAnswers = JSON.parse(readFileSync(path.join(directory, 'user_questions.json'), 'utf8')).questions.filter(q => q.status === 'answered' && q.answer).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, 20).map(q => ({ question: q.question, answer: q.answer, answered_at: q.updatedAt })); } catch {}
-      await startGoalReviewJob({ jobId, question, context: { owner_answers: ownerAnswers, ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl, ...agentRun() });
+      await startGoalReviewJob({ jobId, question, context: { owner_answers: ownerAnswers, owner_notes: ownerNotes().slice(0, 20), ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl, ...agentRun() });
       setSetting('goal_review_state', state);
       setSetting('goal_last_review_at', now());
       if (pace().pace !== 'yolo') setSetting('goal_next_review_at', nextClock().toISOString());

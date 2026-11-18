@@ -281,7 +281,7 @@ function renderRun(run) {
 function renderQuestions() {
   const { pending } = data.questions;
   $('#questions').innerHTML = `
-    <h2>Waiting on you</h2>
+    ${pending.length ? '<h2>Waiting on you</h2>' : ''}
     ${pending.length ? pending.map(q => `
       <form class="card question" data-id="${esc(q.id)}">
         <div class="prose">${window.renderMarkdown(q.question)}</div>
@@ -290,8 +290,23 @@ function renderQuestions() {
           <button class="primary" type="submit" value="answer">Answer</button>
           <button class="secondary" type="submit" value="dismiss">Dismiss</button>
         </div>
-      </form>`).join('') : '<p class="empty">No questions waiting.</p>'}
+      </form>`).join('') : `<form class="card note">
+        <label for="owner-note"><strong>Tell me what else I can do for you</strong></label>
+        <textarea id="owner-note" name="note"></textarea>
+        <div class="actions"><button class="primary" type="submit">Send</button></div>
+      </form>`}
 `;
+  document.querySelector('form.note')?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const form = event.target;
+    if (!form.note.value.trim()) { showError(new Error('Write something first.')); return; }
+    try {
+      data = await api('/api/notes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note: form.note.value }) });
+      drafts.delete(draftKey(form.note));
+      render();
+      showError(new Error('Sent. The next goal review will take it into account.'), 3000);
+    } catch (error) { showError(error); }
+  });
   document.querySelectorAll('form.question').forEach(form => form.addEventListener('submit', async event => {
     event.preventDefault();
     const action = event.submitter?.value || 'answer';

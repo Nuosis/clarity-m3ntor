@@ -419,6 +419,13 @@ async function ownerApi(req, res, url) {
     await taskQueue.call('stop_goal', { goal_id: parts[2], reason: input.reason });
     return json(res, 200, await overview());
   }
+  if (req.method === 'POST' && url.pathname === '/api/notes') {
+    const input = await body(req);
+    if (!input.note?.trim()) throw new Error('Write something first.');
+    await addJournal(cwd, { kind: 'owner_note', source: 'owner_note', content: input.note.trim() });
+    taskQueue.poke();
+    return json(res, 200, await overview());
+  }
   if (req.method === 'POST' && url.pathname === '/api/goals/run') {
     await taskQueue.runReview();
     return json(res, 200, await overview());
