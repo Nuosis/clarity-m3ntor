@@ -50,7 +50,7 @@ async function fetchPrompt(source) {
 const LOCAL_TOOLS = ['ask_m3ntor', 'assess_poma', 'reassess_poma', 'get_m3ntor_result', 'report_utility', 'search_utility', 'a2a_status',
   'set_task', 'list_tasks', 'clear_task', 'start_task_worker', 'stop_task_worker', 'save_poma_reassessment', 'get_coaching_context',
   'read_journal', 'add_journal', 'user_question_set', 'user_question_read',
-  'list_goals', 'set_goal', 'complete_stage', 'reopen_stage', 'stop_goal', 'set_pace',
+  'list_goals', 'set_goal', 'complete_stage', 'reopen_stage', 'stop_goal', 'set_pace', 'run_goal_review',
   'read_environment', 'record_source', 'set_plate', 'record_process',
   'get_task', 'list_assessments', 'list_running_jobs', 'read_answered_questions', 'revoke_utility'];
 const COACH_READ_TOOLS = ['search_utility', 'read_journal', 'get_coaching_context', 'user_question_read', 'list_tasks', 'get_task', 'list_assessments', 'read_answered_questions', 'list_goals', 'read_environment'];
@@ -91,7 +91,8 @@ async function runHarness(request, prompt) {
       ? ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: {} }), '--permission-mode', 'plan', '--disallowedTools', 'Edit,Write,NotebookEdit']
       : request.full_access
         ? ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } }), '--permission-mode', 'bypassPermissions']
-        : ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } }), '--allowedTools', 'mcp__clarity_m3ntor']));
+        // Like Codex's workspace sandbox with network: shell, files and web, so tasks can reach the owner's sources.
+        : ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } }), '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__clarity_m3ntor,Bash,Read,Grep,Glob,Edit,Write,WebFetch,WebSearch']));
   const context = typeof request.context === 'string' ? request.context : JSON.stringify(request.context, null, 2);
   const assessment = ['poma_assessment', 'poma_reassessment'].includes(request.task);
   const persistence = assessment ? `\n## Local persistence identity\n\nUse revision_id ${request.job_id} with clarity_m3ntor.save_poma_reassessment for this task. Reuse that same ID when reconciling a save. The local service writes the authorized artifacts even if this harness filesystem is read-only; retain actual per-artifact receipts.\n` : '';

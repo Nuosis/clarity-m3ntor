@@ -233,7 +233,8 @@ async function mcp(req, res, coach = false) {
         if (receipt.saved) receipt.submission = await submitAssessment(cwd, input, coachingProfile, receipt.assessedAt);
         receipt.submitted = receipt.submission?.saved === true;
         if (receipt.saved) receipt.utility_question = await askAssessmentUtility(input, receipt);
-        if (receipt.saved) taskQueue.poke();
+        // The working environment's source list starts from the first saved assessment's information centres.
+        if (receipt.saved) { await seedSources(cwd).catch(error => console.error('Seeding the source list failed:', error.message)); taskQueue.poke(); }
         result = { ...(!receipt.saved || !receipt.submitted ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(receipt) }] };
       } else if (taskTools.some(tool => tool.name === name) || goalTools.some(tool => tool.name === name)) {
         result = { content: [{ type: 'text', text: JSON.stringify(await taskQueue.call(name, input)) }] };

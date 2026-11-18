@@ -534,6 +534,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
             return { task_id: task.id, action: input.action, reason_journaled: Boolean(entry), worker: workerState() };
           });
       }
+      if (name === 'run_goal_review') return this.runReview();
       if (name === 'list_goals') return { goals: listGoals(), pace: pace(), review_error: setting('goal_review_error') };
       if (name === 'set_goal') return { goal: setGoal(input), goals: listGoals() };
       if (name === 'complete_stage') return completeStage(input.goal_id, input.evidence).then(goal => ({ goal }));

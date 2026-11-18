@@ -63,6 +63,16 @@ globally, change authentication, restart another service, or start model work.
 The HTTP server listens only on loopback and checks the request Host/Origin.
 Keep it local; this package does not add remote-user authentication.
 
+## Goals
+
+The service works on one goal at a time, each built through fixed stages. The first goal is the **working environment**:
+
+1. **Infrastructure**: the systems the owner's work depends on are listed (seeded from the assessment), each needed one is read back directly, and the homes for to-dos, documented flows and failure notices are recorded.
+2. **Process**: the owner's flows are recorded with each step's signal and failure conditions.
+3. **Observability**: a recurring routine places current work at its step, keeps the to-do home current and sends new failures to the owner.
+
+The service checks each stage against its records (`.clarity_coach/environment/`) before the goal moves on. Goal reviews (`run_goal_review`, or Run in Settings) write the next tasks; the worker runs them one at a time. Later goals cover Agency, Measurement and capabilities the owner asks for, once Process and Observability reach 8.
+
 ## Owner view
 
 The service also serves the owner's view at `http://127.0.0.1:<port>/` (same
