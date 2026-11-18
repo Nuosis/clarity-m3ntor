@@ -253,11 +253,16 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   }
   // USER-AUTHORIZED — Marcus, November 18, 2026: a completed goal is journaled and marked
   // inactive, and inactive goals are not rendered. Goals finished before then become inactive.
-  for (const goal of db.prepare("SELECT * FROM goals WHERE status IN ('improving', 'maintaining')").all()) {
-    db.prepare("UPDATE goals SET status = 'inactive', updated_at = ? WHERE id = ?").run(now(), goal.id);
+  // The entry has a fixed id and date (the last stage's completion), so writing it again changes nothing.
+  const journalGoalCompleted = goal => {
     const done = JSON.parse(goal.completed);
-    journalOnce(cwd, `goal-completed-${goal.id}-${done.length}`, { kind: 'success', source: 'goals', content: `Goal completed: ${goal.title}\nOutcome: ${goal.outcome}\n${done.map(item => `- ${item.name}: ${item.evidence}`).join('\n')}`, metadata: { goal_id: goal.id } })
-      .catch(error => console.error('Journaling a completed goal failed:', error.message));
+    const at = done.at(-1)?.at || goal.updated_at;
+    return journalOnce(cwd, `goal-completed-${goal.id}-${done.length}`, { date: businessDate(new Date(at)), kind: 'success', source: 'goals', content: `Goal completed: ${goal.title}\nOutcome: ${goal.outcome}\n${done.map(item => `- ${item.name}: ${item.evidence}`).join('\n')}`, metadata: { goal_id: goal.id } });
+  };
+  db.prepare("UPDATE goals SET status = 'inactive', updated_at = ? WHERE status IN ('improving', 'maintaining')").run(now());
+  // Every start re-writes completed goals' entries, so a missed or failed write is recovered.
+  for (const goal of db.prepare("SELECT * FROM goals WHERE status = 'inactive' AND completed != '[]'").all()) {
+    journalGoalCompleted(goal).catch(error => console.error('Journaling a completed goal failed:', error.message));
   }
   // One goal is active at a time; when none is, the next waiting goal by position starts.
   function activeGoal() {
@@ -316,7 +321,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const nextGoal = activeGoal();
     if (nextGoal && !stageTasks(nextGoal.id, stagesFor(nextGoal.kind)[nextGoal.stage].key).length) setSetting('goal_next_review_at', now());
     await journalOnce(cwd, `goal-stage-${goal.id}-${stage.key}-${completed.length}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": ${stage.name} stage done.\n${evidence.trim()}`, metadata: { goal_id: goal.id, stage: stage.key } });
-    if (goalCompleted) await journalOnce(cwd, `goal-completed-${goal.id}-${completed.length}`, { kind: 'success', source: 'goals', content: `Goal completed: ${goal.title}\nOutcome: ${goal.outcome}\n${completed.map(item => `- ${item.name}: ${item.evidence}`).join('\n')}`, metadata: { goal_id: goal.id } });
+    if (goalCompleted) await journalGoalCompleted(getGoal(goal.id));
     activeGoal(); schedule();
     return goalView(getGoal(goal.id));
   }
