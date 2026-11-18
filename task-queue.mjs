@@ -288,7 +288,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   db.prepare("UPDATE goals SET status = 'inactive', updated_at = ? WHERE status IN ('improving', 'maintaining')").run(now());
   // A completed function goal missing its weekly Improve check (completed before this, or interrupted) gets one.
   for (const goal of db.prepare("SELECT * FROM goals WHERE status = 'inactive' AND kind = 'function'").all()) {
-    if (stagesFor(goal.kind)[goal.stage]?.key === 'improve' && !findImproveTask(goal)) ensureImproveTask(goal);
+    // An existing row counts only if it recurs; a cleared recurring check (status done) stays the owner's decision.
+    if (stagesFor(goal.kind)[goal.stage]?.key === 'improve' && !findImproveTask(goal)?.recurrence) ensureImproveTask(goal);
   }
   // Every start re-writes completed goals' entries, so a missed or failed write is recovered.
   for (const goal of db.prepare("SELECT * FROM goals WHERE status = 'inactive' AND completed != '[]'").all()) {
@@ -350,7 +351,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     // A stage reached with no work planned for it gets a review now, whatever the pace.
     const nextGoal = activeGoal();
     if (nextGoal && !stageTasks(nextGoal.id, stagesFor(nextGoal.kind)[nextGoal.stage].key).length) setSetting('goal_next_review_at', now());
-    await journalOnce(cwd, `goal-stage-${goal.id}-${stage.key}-${completed.length}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": ${stage.name} stage done.\n${evidence.trim()}`, metadata: { goal_id: goal.id, stage: stage.key } });
+    await journalOnce(cwd, `goal-stage-${goal.id}-${stage.key}-${completed.at(-1).at}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": ${stage.name} stage done.\n${evidence.trim()}`, metadata: { goal_id: goal.id, stage: stage.key } });
     if (goalCompleted && nextStage) ensureImproveTask(getGoal(goal.id));
     if (goalCompleted) await journalGoalCompleted(getGoal(goal.id));
     activeGoal(); schedule();
@@ -366,12 +367,14 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     updateGoal(goal.id, { stage: index, status: 'active', completed: JSON.stringify(JSON.parse(goal.completed).filter(item => stagesFor(goal.kind).findIndex(stage => stage.key === item.stage) < index)) });
     // The weekly Improve check pauses until the goal completes again (a run in progress still records its result),
     // and the reopened stages' earlier tasks become history, so each stage is checked on new work.
-    db.prepare("UPDATE tasks SET status = 'done', next_run_at = NULL, updated_at = ? WHERE goal_id = ? AND stage = 'improve' AND status NOT IN ('finalizing', 'clearing')").run(now(), goal.id);
     const reopened = stagesFor(goal.kind).slice(index).map(stage => stage.key).filter(key => key !== 'improve');
-    const marks = reopened.map(() => '?').join(', ');
-    // Set-aside tasks stop recurring too (a run in progress still records its result).
-    db.prepare(`UPDATE tasks SET status = 'done', next_run_at = NULL, updated_at = ? WHERE goal_id = ? AND stage IN (${marks}) AND status NOT IN ('completed', 'done', 'finalizing', 'clearing')`).run(now(), goal.id, ...reopened);
-    db.prepare(`UPDATE tasks SET stage = stage || '-before-reopen', updated_at = ? WHERE goal_id = ? AND stage IN (${marks})`).run(now(), goal.id, ...reopened);
+    const marks = ['improve', ...reopened].map(() => '?').join(', ');
+    // The Improve check and set-aside tasks stop recurring. A running one stays in flight, so the queue still
+    // runs one task at a time, and settles once without a next run; the rest are marked done.
+    db.prepare(`UPDATE tasks SET recurrence = NULL, next_run_at = NULL, updated_at = ? WHERE goal_id = ? AND stage IN (${marks}) AND status IN ('delivered', 'executing')`).run(now(), goal.id, 'improve', ...reopened);
+    db.prepare(`UPDATE tasks SET status = 'done', next_run_at = NULL, updated_at = ? WHERE goal_id = ? AND stage IN (${marks}) AND status NOT IN ('completed', 'done', 'delivered', 'executing', 'finalizing', 'clearing')`).run(now(), goal.id, 'improve', ...reopened);
+    const setAside = reopened.map(() => '?').join(', ');
+    db.prepare(`UPDATE tasks SET stage = stage || '-before-reopen', updated_at = ? WHERE goal_id = ? AND stage IN (${setAside})`).run(now(), goal.id, ...reopened);
     await journalOnce(cwd, `goal-reopen-${goal.id}-${Date.now()}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": Process stage reopened.\n${evidence}`, metadata: { goal_id: goal.id } });
     schedule();
     return goalView(getGoal(goal.id));
