@@ -478,24 +478,16 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       considerReview();
     }, Math.min(Math.max(new Date(due) - Date.now(), 0) + 50, 2 ** 31 - 1));
   }
-  // A review action (set_task for a goal, complete_stage, ask_m3ntor, a question to the owner) while a review runs.
-  function noteAction() { if (setting('goal_review_job')) setSetting('goal_action_at', now()); }
-  // Reviews that end with the same progress (stage, its score, what the done-check still misses) as the
-  // review before: after STUCK_AFTER of them the next review works on getting unstuck; after
-  // ASK_OWNER_AFTER the service asks the owner. A review that takes no action is stuck at once.
-  const STUCK_AFTER = 2, ASK_OWNER_AFTER = 4;
-  async function progress(goal) {
+  // ask_m3ntor during a review: the service waits for that job before deciding the stage is stuck.
+  function noteAction(jobId) { if (jobId && setting('goal_review_job')) setSetting('goal_m3ntor_job', jobId); }
+  // Work under way toward the stage's done-check: a stage task queued or running, or a question
+  // inov8 asked that the owner has not answered. A request to M3NT0R is not: it only advises.
+  async function underWay(goal) {
     const stage = stagesFor(goal.kind)[goal.stage];
-    const latest = stage.score ? await latestAssessment() : null;
-    const missing = goal.kind === 'environment' ? await environmentCheck(cwd, stage.key) : null;
-    return JSON.stringify({ goal: goal.id, status: goal.status, stage: goal.stage, completed: JSON.parse(goal.completed).length, score: latest?.ratings?.[stage.score]?.score ?? null, missing: missing || null });
+    if (stageTasks(goal.id, stage.key).some(task => ['queued', 'delivered', 'executing', 'finalizing'].includes(task.status))) return true;
+    return (await questionState(cwd)).pending.some(q => q.source === 'inov8');
   }
-  const stuckState = goal => {
-    const sameStage = setting('goal_review_handoff_stage') === `${goal.id}:${goal.stage}`;
-    const unchanged = sameStage ? Number(setting('goal_review_unchanged') || 0) : 0;
-    const noAction = sameStage ? Number(setting('goal_review_no_action') || 0) : 0;
-    return { sameStage, unchanged, noAction, stuck: unchanged >= STUCK_AFTER || noAction > 0 };
-  };
+  const STUCK_REASON = 'the last review left nothing under way toward the done-check: no stage task queued or running and no question waiting on the owner.';
   async function startReview(goal, state) {
     reviewStarting = true;
     const jobId = randomUUID();
@@ -505,7 +497,10 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     try {
       const view = goalView(goal);
       // The last review's conclusions stand; the review gets what changed since, not the stage's whole history.
-      const { sameStage, unchanged, noAction, stuck } = stuckState(goal);
+      const sameStage = setting('goal_review_handoff_stage') === `${goal.id}:${goal.stage}`;
+      const stuck = sameStage && setting('goal_stuck') === '1';
+      setSetting('goal_review_mode', stuck ? 'stuck' : 'normal');
+      setSetting('goal_stuck', null);
       const since = sameStage ? setting('goal_review_finished_at') : null;
       const tasks = stageTasks(goal.id, view.stage.key).map(task => ({ task_id: task.id, title: task.title, status: task.status, success: task.success, last_status: task.last_status, last_run_at: task.last_run_at, last_error: task.last_error, pause_reason: task.pause_reason, ...(since ? {} : { last_result: String(task.last_result || '').slice(-1500) }) }));
       const others = db.prepare("SELECT * FROM goals WHERE status IN ('waiting', 'inactive') ORDER BY position").all().map(g => ({ goal_id: g.id, title: g.title, status: g.status }));
@@ -528,7 +523,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         assessment: latest ? { revision_id: latest.revision_id, [view.stage.score]: latest.ratings?.[view.stage.score]?.score ?? null, new: String(latest.assessed_at || '') > since } : null,
       } : null;
       const lastReview = since ? { finished_at: since, conclusions: setting('goal_review_handoff') } : null;
-      const stuckContext = stuck ? { reviews_without_progress: unchanged + 1, last_review_took_no_action: noAction > 0, progress: JSON.parse(setting('goal_review_progress') || 'null') } : null;
+      const stuckContext = stuck ? { reason: STUCK_REASON, score: latest && view.stage.score ? latest.ratings?.[view.stage.score]?.score ?? null : null, done_check_missing: stillMissing || null } : null;
       await startGoalReviewJob({ jobId, question, context: { ...(lastReview ? { last_review: lastReview, changes_since_last_review: changes } : {}), ...(stuckContext ? { stuck: stuckContext } : {}), owner_answers: ownerAnswers, owner_notes: notes, ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl, ...agentRun() });
       setSetting('goal_review_state', state);
       setSetting('goal_last_review_at', now());
@@ -549,39 +544,55 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     setSetting('goal_stuck_question', id);
     await journalOnce(cwd, `goal-stuck-${id}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": stuck at ${stage.name}; asked the owner. ${reason}`, metadata: { goal_id: goal.id, stage: stage.key, question_id: id } });
   }
-  // After a review: keep its account for the next one, count reviews without progress or action, and act on being stuck.
+  // After a review: keep its account for the next one, then judge the stage by what the review left.
+  // Nothing under way toward the done-check means the stage is stuck: a stuck-mode review starts at
+  // once (after any M3NT0R answer the review asked for). A stuck-mode review that again leaves nothing
+  // under way makes the service ask the owner; reviews then wait for the answer.
   async function settleReview(goal, job, moved) {
     const reviewed = job.status === 'complete' && reportedDone(job.output);
-    if (!goal || !reviewed) return { forceNext: false };
+    if (!goal || !reviewed) return {};
     const stage = stagesFor(goal.kind)[goal.stage];
-    const started = setting('goal_review_started_at') || '';
-    const acted = moved || (setting('goal_action_at') || '') >= started;
-    // Work under way: a stage task still queued or running, or a question inov8 asked that the owner has not answered.
-    const inFlight = stageTasks(goal.id, stage.key).some(task => ['queued', 'delivered', 'executing', 'finalizing'].includes(task.status));
-    const pending = (await questionState(cwd)).pending.filter(q => q.source === 'inov8');
-    const sameStage = setting('goal_review_stage') === `${goal.id}:${goal.stage}`;
-    const signature = await progress(goal);
-    const unchanged = sameStage && signature === setting('goal_review_progress') ? Number(setting('goal_review_unchanged') || 0) + 1 : 0;
-    const noAction = !acted && !inFlight && !pending.length ? (sameStage ? Number(setting('goal_review_no_action') || 0) : 0) + 1 : 0;
+    const wasStuck = setting('goal_review_mode') === 'stuck';
     setSetting('goal_review_handoff', String(job.output || '').slice(0, 6000));
     setSetting('goal_review_handoff_stage', `${goal.id}:${goal.stage}`);
     setSetting('goal_review_finished_at', now());
-    setSetting('goal_review_progress', signature);
-    setSetting('goal_review_unchanged', String(unchanged));
-    setSetting('goal_review_no_action', String(noAction));
-    const askedPending = pending.some(q => q.id === setting('goal_stuck_question'));
-    if (!askedPending && (noAction >= 2 || unchanged >= ASK_OWNER_AFTER)) {
-      const reason = noAction >= 2 ? 'two reviews in a row ended without queuing work, completing the stage or asking anyone.' : `${unchanged + 1} reviews in a row ended with no progress on the done-check.`;
-      await askOwnerStuck(goal, reason, job.output);
-      setSetting('goal_review_no_action', '0');
-      setSetting('goal_review_unchanged', String(STUCK_AFTER));
-      return { forceNext: false };
+    return judgeStuck(goal, stage, job.output, wasStuck, moved);
+  }
+  async function judgeStuck(goal, stage, output, wasStuck, moved = false) {
+    if (moved || await underWay(goal)) { setSetting('goal_stuck', null); return {}; }
+    if (wasStuck) {
+      setSetting('goal_stuck', null); setSetting('goal_review_mode', 'normal');
+      await askOwnerStuck(goal, `a review working on getting it unstuck again left nothing under way toward the done-check.`, output);
+      return {};
     }
-    if (noAction === 1) {
-      await journalOnce(cwd, `goal-review-no-action-${job.job_id}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": the ${stage.name} review ended without an action; the next review starts now to get unstuck.`, metadata: { goal_id: goal.id, stage: stage.key } });
-      return { forceNext: true, error: 'The last goal review ended without queuing work, completing the stage or asking; the next review works on getting unstuck.' };
+    setSetting('goal_stuck', '1');
+    await journalOnce(cwd, `goal-stuck-${goal.id}-${stage.key}-${setting('goal_review_finished_at')}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": ${stage.name} is stuck; ${STUCK_REASON} A review working on getting it unstuck starts now.`, metadata: { goal_id: goal.id, stage: stage.key } });
+    const consult = setting('goal_m3ntor_job');
+    if (consult) {
+      let job; try { job = await getM3ntorResult(consult); } catch { job = null; }
+      if (job && !terminal.has(job.status)) return { waitFor: consult };
     }
-    return { forceNext: false };
+    return { startStuck: true };
+  }
+  // Start the stuck-mode review now, unless one is running or the worker is stopped.
+  function startStuckReview() {
+    const goal = activeGoal();
+    if (!goal || !enabled() || reviewStarting || setting('goal_review_job') || setting('goal_stuck') !== '1') return;
+    startReview(goal, reviewState(goal));
+  }
+  // The stuck-mode review waits for the M3NT0R answer the last review asked for.
+  function followConsult(jobId) {
+    let fsWatcher = null, liveness = null;
+    const check = async () => {
+      let job; try { job = await getM3ntorResult(jobId); } catch { job = { status: 'failed' }; }
+      if (!terminal.has(job.status)) return;
+      fsWatcher?.close(); clearInterval(liveness);
+      setSetting('goal_m3ntor_job', null);
+      startStuckReview();
+    };
+    try { fsWatcher = watch(jobDirectory(jobId), () => { check(); }); } catch {}
+    liveness = setInterval(check, 60000);
+    check();
   }
   function followReview(jobId) {
     let fsWatcher = null, liveness = null, busy = false;
@@ -597,13 +608,14 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         // stage unplanned: the next review starts now, whatever the pace.
         const moved = goal && setting('goal_review_stage') !== `${goal.id}:${goal.stage}`;
         const unplanned = moved && !stageTasks(goal.id, stagesFor(goal.kind)[goal.stage].key).length;
-        let settled = { forceNext: false };
+        let settled = {};
         try { settled = await settleReview(goal, job, moved); } catch (error) { console.error('Goal review settle failed:', error.message); }
-        if (goal && !unplanned && !settled.forceNext) setSetting('goal_review_state', reviewState(goal));
-        if (settled.forceNext) setSetting('goal_review_state', null);
-        if (unplanned || settled.forceNext) setSetting('goal_next_review_at', new Date().toISOString());
+        if (goal && !unplanned) setSetting('goal_review_state', reviewState(goal));
+        if (unplanned) setSetting('goal_next_review_at', new Date().toISOString());
         setSetting('goal_review_job', null);
-        setSetting('goal_review_error', job.status === 'complete' && reportedDone(job.output) ? settled.error || null : `The last goal review did not finish: ${job.error || statusLine(job.output) || 'no STATUS line'}`);
+        setSetting('goal_review_error', job.status === 'complete' && reportedDone(job.output) ? null : `The last goal review did not finish: ${job.error || statusLine(job.output) || 'no STATUS line'}`);
+        if (settled.waitFor) followConsult(settled.waitFor);
+        else if (settled.startStuck) startStuckReview();
         schedule();
       } finally { busy = false; }
     };
@@ -612,6 +624,26 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     check();
   }
   if (setting('goal_review_job')) followReview(setting('goal_review_job'));
+  else resumeStuck().catch(error => console.error('Stuck check failed:', error.message));
+  // At startup: a stuck stage resumes its stuck-mode review. A stage whose last review left nothing
+  // under way, with nothing new since (no task run, owner answer or note), is judged now.
+  async function resumeStuck() {
+    const goal = activeGoal();
+    if (!goal || setting('goal_review_handoff_stage') !== `${goal.id}:${goal.stage}`) return;
+    if (setting('goal_stuck') === '1') {
+      const consult = setting('goal_m3ntor_job');
+      if (consult) return followConsult(consult);
+      return startStuckReview();
+    }
+    const since = setting('goal_review_finished_at');
+    const stage = stagesFor(goal.kind)[goal.stage];
+    if (!since) return;
+    const ran = db.prepare('SELECT COUNT(*) AS n FROM runs JOIN tasks ON tasks.id = runs.task_id WHERE tasks.goal_id = ? AND tasks.stage = ? AND (runs.finished_at > ? OR runs.finished_at IS NULL)').get(goal.id, stage.key, since).n;
+    const answered = (await questionState(cwd)).questions.some(q => q.status !== 'pending' && String(q.updatedAt) > since);
+    if (ran || answered || ownerNotes().some(note => String(note.at) > since)) return;
+    const judged = await judgeStuck(goal, stage, setting('goal_review_handoff'), setting('goal_review_mode') === 'stuck');
+    if (judged.waitFor) followConsult(judged.waitFor); else if (judged.startStuck) startStuckReview();
+  }
   // Completed runs from before this was journaled (fixed entry ids, so repeats change nothing).
   for (const run of db.prepare("SELECT runs.job_id, runs.finished_at, runs.result, runs.task_id FROM runs JOIN tasks ON tasks.id = runs.task_id WHERE runs.status = 'completed' AND runs.finished_at IS NOT NULL AND tasks.remove_on_completion = 0").all()) {
     journalCompleted(get(run.task_id), run.job_id, run.finished_at, run.result);
@@ -668,7 +700,6 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         if (removeOnCompletion && recurrence) throw new Error('remove_on_completion applies to one-off tasks only.');
         if (existing) update(id, { title: input.title, instruction: input.instruction, recurrence, next_run_at: nextRun, status: 'queued', consecutive_failures: 0, pause_reason: null, remove_on_completion: removeOnCompletion, set_at: now(), ...contract });
         else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, remove_on_completion, success, constraints, category, goal_id, stage, set_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, input.title, input.instruction, recurrence, nextRun, 'queued', now(), now(), removeOnCompletion, contract.success, contract.constraints, contract.category, contract.goal_id, contract.stage, now());
-        if (contract.goal_id) noteAction();
         schedule();
         return { task: view(get(id)), created: !existing, worker: workerState() };
       }
@@ -700,7 +731,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       if (name === 'run_goal_review') return this.runReview();
       if (name === 'list_goals') return { goals: listGoals(), pace: pace(), review_error: setting('goal_review_error') };
       if (name === 'set_goal') return { goal: setGoal(input), goals: listGoals() };
-      if (name === 'complete_stage') return completeStage(input.goal_id, input.evidence).then(goal => { noteAction(); return { goal }; });
+      if (name === 'complete_stage') return completeStage(input.goal_id, input.evidence).then(goal => ({ goal }));
       if (name === 'reopen_stage') return reopenStage(input.goal_id, input.evidence).then(goal => ({ goal }));
       if (name === 'stop_goal') return stopGoal(input.goal_id, input.reason).then(goal => ({ goal, goals: listGoals() }));
       if (name === 'set_pace') {

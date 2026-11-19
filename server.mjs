@@ -229,7 +229,7 @@ async function mcp(req, res, coach = false) {
       if (coach && name === 'set_goal') input.source = 'm3ntor';
       if (name === 'ask_m3ntor' || name === 'assess_poma' || name === 'reassess_poma') {
         const job = await (name === 'ask_m3ntor' ? askM3ntor : assessPoma)(input, { cwd, harness, mcpUrl });
-        if (name === 'ask_m3ntor') taskQueue.noteAction();
+        if (name === 'ask_m3ntor') taskQueue.noteAction(job.job_id);
         result = { ...(job.status === 'failed' || job.status === 'interrupted' ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(job) }] };
       } else if (name === 'get_m3ntor_result') {
         const job = await getM3ntorResult(input.job_id);
@@ -262,7 +262,6 @@ async function mcp(req, res, coach = false) {
         // Questions asked while inov8 reviews a goal are inov8's: the service knows the review is waiting on them.
         const asking=(input.action || 'set')==='set';
         const updated=await setUserQuestions(cwd,asking && taskQueue.reviewing() ? { ...input, source: input.source || 'inov8' } : input);toolsChanged();taskQueue.poke();
-        if (asking) taskQueue.noteAction();
         if (input.action === 'answer') await queueUseCaseResearch(input.question_id, input.answer).catch(error => console.error('Use case research task failed:', error.message));
         result={content:[{type:'text',text:JSON.stringify(updated)}]};
       } else if (name === 'user_question_read' || /^user_questions_\d+$/.test(name)) {
