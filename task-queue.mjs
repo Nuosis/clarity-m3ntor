@@ -443,8 +443,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   }
   const BLOCKED_OR_DONE = new Set(['completed', 'done', 'failed', 'paused']);
   let reviewTimer = null, reviewStarting = false;
+  // A question inov8 asked that the owner has not answered pauses reviews until it is answered
+  // (the owner's Run still starts one).
+  function waitingOnOwner() {
+    try { return JSON.parse(readFileSync(path.join(directory, 'user_questions.json'), 'utf8')).questions.some(q => q.status === 'pending' && q.source === 'inov8'); } catch { return false; }
+  }
   function considerReview() {
-    if (!enabled() || reviewStarting || setting('goal_review_job')) return;
+    if (!enabled() || reviewStarting || setting('goal_review_job') || waitingOnOwner()) return;
     const goal = activeGoal();
     if (!goal) return;
     const state = reviewState(goal);
@@ -474,7 +479,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     reviewTimer = setTimeout(() => {
       // The clock fired: if nothing changed, skip without a model call and wait for the next slot.
       const goal = activeGoal();
-      if (goal && reviewState(goal) === setting('goal_review_state')) { setSetting('goal_next_review_at', nextClock().toISOString()); armClock(); return; }
+      if (goal && (waitingOnOwner() || reviewState(goal) === setting('goal_review_state'))) { setSetting('goal_next_review_at', nextClock().toISOString()); armClock(); return; }
       considerReview();
     }, Math.min(Math.max(new Date(due) - Date.now(), 0) + 50, 2 ** 31 - 1));
   }
