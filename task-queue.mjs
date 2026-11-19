@@ -759,7 +759,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       }
       if (name === 'set_agent_harness') { if (!['codex', 'claude'].includes(input.harness)) throw new Error('The agent runner is codex or claude.'); setSetting('agent_harness', input.harness); return agentRun(); }
       if (name === 'set_full_access') { setSetting('full_access', input.enabled === true ? 'true' : 'false'); return { full_access: setting('full_access') === 'true' }; }
-      if (name === 'start_task_worker') { setEnabled(true); schedule(); return workerState(); }
+      if (name === 'start_task_worker') { setEnabled(true); schedule(); resumeStuck().catch(error => console.error('Stuck check failed:', error.message)); return workerState(); }
       if (name === 'stop_task_worker') { setEnabled(false); clearTimeout(timer); return workerState(); }
       throw new Error('Unknown task tool.');
     },

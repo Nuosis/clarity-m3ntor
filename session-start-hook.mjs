@@ -4,7 +4,8 @@
 // Usage (registered by install-session-hook.mjs): node session-start-hook.mjs --port <port>
 // Silent when nothing is pending, when the owner deferred questions, inside the service's own
 // harness runs (M3NTOR_JOB_ID), or when the service is not responding.
-const port = process.argv[process.argv.indexOf('--port') + 1] || process.env.M3NTOR_PORT;
+const portFlag = process.argv.indexOf('--port');
+const port = (portFlag >= 0 ? process.argv[portFlag + 1] : undefined) || process.env.M3NTOR_PORT;
 if (process.env.M3NTOR_JOB_ID || !port) process.exit(0);
 let data;
 try {

@@ -16,7 +16,7 @@ const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'session-
 // Prefer a stable node path over a versioned one (Homebrew's Cellar path changes on upgrade).
 const node = process.execPath.includes('/Cellar/') ? ['/opt/homebrew/bin/node', '/usr/local/bin/node'].find(existsSync) || process.execPath : process.execPath;
 const command = `"${node}" "${script}" --port ${port}`;
-const file = harness === 'codex' ? path.join(process.env.CODEX_HOME || path.join(homedir(), '.codex'), 'hooks.json') : path.join(homedir(), '.claude', 'settings.json');
+const file = harness === 'codex' ? path.join(process.env.CODEX_HOME || path.join(homedir(), '.codex'), 'hooks.json') : path.join(process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude'), 'settings.json');
 const config = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
 config.hooks ||= {};
 const groups = config.hooks.SessionStart ||= [];
