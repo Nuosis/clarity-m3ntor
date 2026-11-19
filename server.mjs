@@ -355,6 +355,25 @@ async function runningJobs() {
   return jobs.sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)));
 }
 
+// Saved run history for the owner's activity timeline; reading never starts work.
+async function activityHistory() {
+  const names = await readdir(jobRoot).catch(() => []);
+  const since = Date.now() - 14 * 86400000;
+  const jobs = await Promise.all(names.map(async id => {
+    try {
+      const state = await readJson(path.join(jobDirectory(id), 'state.json'), {});
+      const at = state.started_at || state.created_at;
+      if (!at || new Date(state.finished_at || at).getTime() < since) return null;
+      const job = await getM3ntorResult(id);
+      const output = job.output || '';
+      const summary = output.split(/\n\s*\n/).find(part => part.trim() && !/^STATUS:|^Turn summary:/i.test(part.trim())) || '';
+      return { job_id: id, task: job.task, status: job.status, started_at: at,
+        finished_at: job.finished_at, summary: (job.error || summary).slice(0, 600) };
+    } catch { return null; }
+  }));
+  return jobs.filter(Boolean).sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)));
+}
+
 async function overview() {
   const { tasks, worker } = await taskQueue.call('list_tasks', {});
   const questions = await questionState(cwd);
@@ -366,7 +385,7 @@ async function overview() {
     assessments: await assessments(),
     ...taskQueue.goals(),
     environment: await readEnvironment(cwd),
-    journal,
+    journal, activity: await activityHistory(),
   };
 }
 // Live updates for the owner view: one change event whenever .clarity_coach changes.
@@ -389,6 +408,12 @@ async function ownerApi(req, res, url) {
     const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 20000);
     req.on('close', () => { clearInterval(heartbeat); uiListeners.delete(res); });
     return;
+  }
+  if (req.method === 'GET' && url.pathname.startsWith('/api/activity/')) {
+    const id = decodeURIComponent(url.pathname.slice('/api/activity/'.length));
+    jobDirectory(id);
+    const result = await getM3ntorResult(id);
+    return json(res, 200, { job_id: id, status: result.status, output: result.output || '', error: result.error || null, started_at: result.started_at, finished_at: result.finished_at });
   }
   if (req.method === 'GET' && url.pathname === '/api/overview') return json(res, 200, await overview());
   // The owner's pending Coach questions, for the harness session-start hook.

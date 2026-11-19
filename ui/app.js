@@ -344,12 +344,64 @@ function renderAssessment() {
 }
 
 
+// Timeline dates use the owner's requested fixed PDT offset, including day boundaries.
+const journalDate = value => new Date(new Date(value).getTime() - 7 * 3600000).toISOString().slice(0, 10);
+const journalTime = value => new Date(value).toLocaleTimeString('en-US', { timeZone: 'Etc/GMT+7', hour: 'numeric', minute: '2-digit' }) + ' PDT';
+const journalPlain = value => String(value || '').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/[*`#]/g, '').replace(/\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/gi, '').replace(/\s+/g, ' ').trim();
+const journalPreview = value => { const text = journalPlain(value); return text.length > 180 ? text.slice(0, 177).trimEnd() + '…' : text; };
+const journalRunDetails = new Map();
 function renderJournal() {
-  $('#journal').innerHTML = data.journal.length ? data.journal.map(day => `
-    <div class="card"><h2>${esc(day.date)}</h2>
-      ${[...day.entries].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(entry => `<div class="entry"><div class="meta">${when(entry.createdAt)} · ${esc(entry.kind)}</div><div class="content">${esc(entry.content)}</div></div>`).join('')}
-    </div>`).join('') : '<p class="empty">No journal entries in the last 14 days.</p>';
+  const box = $('#journal');
+  const expanded = new Set([...box.querySelectorAll('details[open]')].map(item => item.dataset.event));
+  const runs = data.activity || [];
+  const runIds = new Set(runs.map(run => run.job_id));
+  const events = runs.map(run => ({ id: 'run-' + run.job_id, at: run.started_at, run,
+    label: run.task === 'goal_review' ? 'INOV8 run' : run.task === 'coaching' ? 'M3NT0R run' : JOB_LABELS[run.task] || 'Agent run',
+    preview: run.summary || (['running', 'queued'].includes(run.status) ? 'Work is under way.' : 'No result recorded.') }));
+  for (const day of data.journal || []) for (const entry of day.entries) {
+    // The full matching journal entry remains in the run's expanded details.
+    if (entry.metadata?.job_id && runIds.has(entry.metadata.job_id)) continue;
+    events.push({ id: 'entry-' + entry.id, at: entry.createdAt, entry,
+      label: /inov8|^goals$/i.test(entry.source || '') ? 'INOV8 activity' : /m3nt[o0]r/i.test(entry.source || '') ? 'M3NT0R activity' : entry.kind === 'owner_decision' || entry.kind === 'user_request' ? 'Owner direction' : 'Journal',
+      preview: entry.content.split('\n')[0] });
+  }
+  const groups = new Map();
+  events.sort((a, b) => String(b.at).localeCompare(String(a.at))).forEach(event => {
+    const day = journalDate(event.at);
+    if (!groups.has(day)) groups.set(day, []);
+    groups.get(day).push(event);
+  });
+  const today = journalDate(new Date());
+  if (!groups.has(today)) groups.set(today, []);
+  box.innerHTML = [...groups].sort(([a], [b]) => b.localeCompare(a)).map(([date, items]) => {
+    const dateLabel = date === today ? 'Today' : new Date(date + 'T12:00:00-07:00').toLocaleDateString('en-US', { timeZone: 'Etc/GMT+7', weekday: 'long', month: 'short', day: 'numeric' });
+    const count = items.filter(item => item.run).length;
+    return `<section class="journal-day"><h2>${esc(dateLabel)} <span class="meta">${count} run${count === 1 ? '' : 's'}</span></h2>
+      ${items.length ? `<ol class="activity-timeline">${items.map(item => {
+        const run = item.run;
+        const runStatus = run ? ({ complete: 'Run finished', failed: 'Failed', interrupted: 'Interrupted', running: 'Running', queued: 'Queued' }[run.status] || run.status) : '';
+        const body = run ? journalRunDetails.get(run.job_id) || '' : `<div class="prose">${renderMarkdown(item.entry.content)}</div><p class="meta">Source: ${esc(item.entry.source || item.entry.kind)}</p>`;
+        return `<li class="timeline-item"><details data-event="${esc(item.id)}"${run ? ` data-job="${esc(run.job_id)}"` : ''}${expanded.has(item.id) ? ' open' : ''}>
+          <summary><time datetime="${esc(item.at)}">${esc(journalTime(item.at))}</time><span class="timeline-heading"><strong>${esc(item.label)}</strong>${run ? `<span class="status ${esc(run.status)}">${esc(runStatus)}</span>` : ''}<span class="timeline-preview">${esc(journalPreview(item.preview))}</span></span></summary>
+          <div class="timeline-details">${body || '<p class="meta">Loading details…</p>'}</div>
+        </details></li>`;
+      }).join('')}</ol>` : '<p class="empty">No activity recorded today.</p>'}</section>`;
+  }).join('');
 }
+$('#journal').addEventListener('toggle', async event => {
+  const details = event.target;
+  if (!details.open || !details.dataset.job || journalRunDetails.has(details.dataset.job)) return;
+  const id = details.dataset.job;
+  try {
+    const result = await api('/api/activity/' + encodeURIComponent(id));
+    const related = (data.journal || []).flatMap(day => day.entries).filter(entry => entry.metadata?.job_id === id);
+    const body = `<p class="meta">Started ${esc(journalTime(result.started_at))}${result.finished_at ? ` · Finished ${esc(journalTime(result.finished_at))}` : ''}</p>
+      <div class="prose">${renderMarkdown(result.error || result.output || 'No result recorded yet.')}</div>
+      ${related.length ? `<details><summary>Journal notes (${related.length})</summary>${related.map(entry => `<div class="prose">${renderMarkdown(entry.content)}</div>`).join('')}</details>` : ''}`;
+    if (!['running', 'queued'].includes(result.status)) journalRunDetails.set(id, body);
+    details.querySelector('.timeline-details').innerHTML = body;
+  } catch (error) { details.querySelector('.timeline-details').textContent = error.message; }
+}, true);
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;

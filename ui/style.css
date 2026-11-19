@@ -145,3 +145,28 @@ button.primary:disabled, button.secondary:disabled { opacity: 0.5; cursor: defau
 .goal-details .prose li { margin-bottom: 6px; }
 .goal-details dd.prose { white-space: normal; }
 .goal-details summary { padding: 4px 0; }
+
+.journal-day { margin-bottom: 28px; max-width: 960px; }
+.journal-day > h2 { display: flex; align-items: baseline; gap: 12px; }
+.activity-timeline { list-style: none; padding: 0 0 0 18px; margin: 16px 0 0 5px; border-left: 2px solid var(--line); }
+.timeline-item { position: relative; padding: 0 0 12px 12px; }
+.timeline-item::before { content: ''; position: absolute; left: -24px; top: 18px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent-strong); border: 2px solid var(--bg); }
+.timeline-item > details { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.timeline-item > details > summary { display: flex; align-items: baseline; gap: 18px; padding: 12px 16px; cursor: pointer; list-style: none; }
+.timeline-item > details > summary::-webkit-details-marker { display: none; }
+.timeline-item > details > summary::after { content: '+'; margin-left: auto; color: var(--accent-strong); }
+.timeline-item > details[open] > summary::after { content: '−'; }
+.timeline-item > details > summary:hover { background: var(--panel-2); border-radius: 8px; }
+.timeline-item time { flex: 0 0 94px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.timeline-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+.timeline-preview { flex-basis: 100%; color: var(--muted); overflow-wrap: anywhere; font-size: 13px; }
+.timeline-details { border-top: 1px solid var(--line); padding: 12px 20px; overflow-wrap: anywhere; }
+.timeline-details > .prose { max-width: 80ch; }
+.timeline-details summary { cursor: pointer; color: var(--accent-strong); }
+.status.complete { color: var(--ok); }
+.status.interrupted { color: var(--warn); }
+@media (max-width: 600px) {
+  .timeline-item > details > summary { flex-wrap: wrap; gap: 4px; }
+  .timeline-item time { flex-basis: 100%; }
+  .timeline-heading { flex: 1; }
+}
