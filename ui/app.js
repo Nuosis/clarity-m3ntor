@@ -146,7 +146,9 @@ const PACE_LABELS = { hourly: 'Hourly', daily: 'Daily', yolo: 'YOLO' };
 const GOAL_STATUS = { active: 'active', waiting: 'waiting', stopped: 'stopped' };
 function renderGoals() {
   const goals = (data.goals || []).filter(goal => goal.status !== 'inactive');
+  const expanded = new Set([...$('#goals').querySelectorAll('details[data-detail][open]')].map(item => item.dataset.detail));
   $('#goals').innerHTML = goals.length ? goals.map(renderGoal).join('') : '<p class="empty">No goals.</p>';
+  $('#goals').querySelectorAll('details[data-detail]').forEach(item => { item.open = expanded.has(item.dataset.detail); });
   $('#goals').querySelectorAll('form.stop-goal').forEach(stop => stop.addEventListener('submit', async event => {
     event.preventDefault();
     try {
@@ -197,43 +199,45 @@ function renderGoal(goal) {
   const tasks = openTasks().filter(task => task.goal_id === goal.id && (!goal.stage || task.stage === goal.stage.key));
   return `<article class="card goal">
     <div class="title"><h2>${esc(goal.title)}</h2> ${status(GOAL_STATUS[goal.status] || goal.status)}</div>
-    ${goal.outcome ? `<p>${esc(goal.outcome)}</p>` : ''}
+    <details data-detail="${esc(goal.id)}"><summary>Details</summary>
+    <div class="goal-details">
+    ${goal.outcome ? `<div class="prose">${renderMarkdown(goal.outcome)}</div>` : ''}
     <ol class="stages">${goal.stages.map(stage => `<li class="${stage.state}">${esc(stage.name)}</li>`).join('')}</ol>
     ${goal.status !== 'stopped' && goal.stage ? `
       <h3>Stage ${goal.stage.index} of ${goal.stages.length}: ${esc(goal.stage.name)}</h3>
-      <p>${esc(goal.stage.work)}</p>
-      <dl><dt>Done when</dt><dd>${esc(goal.stage.done_check)}</dd></dl>
+      <div class="prose">${renderMarkdown(goal.stage.work)}</div>
+      <dl><dt>Done when</dt><dd class="prose">${renderMarkdown(goal.stage.done_check)}</dd></dl>
       ${tasks.length ? `<ul class="goal-tasks">${tasks.map(task => `<li><a href="#" data-task="${esc(task.id)}">${esc(task.title)}</a> ${status(task.status)}</li>`).join('')}</ul>` : '<p class="empty">No tasks for this stage yet.</p>'}` : ''}
     ${goal.kind === 'environment' ? environmentRecords(goal) : ''}
-    ${goal.completed.length ? `<details><summary>Completed stages</summary>${goal.completed.map(item => `<div class="entry"><div class="meta">${esc(item.name)} · ${when(item.at)}</div><div class="content">${esc(item.evidence)}</div></div>`).join('')}</details>` : ''}
-    ${goal.stop_reason ? `<p class="meta">Stopped: ${esc(goal.stop_reason)}</p>` : ''}
+    ${goal.completed.length ? `<details data-detail="${esc(goal.id)}-completed"><summary>Completed stages</summary>${goal.completed.map(item => `<div class="entry"><div class="meta">${esc(item.name)} · ${when(item.at)}</div><div class="prose">${renderMarkdown(item.evidence)}</div></div>`).join('')}</details>` : ''}
+    ${goal.stop_reason ? `<h3>Stopped</h3><div class="prose">${renderMarkdown(goal.stop_reason)}</div>` : ''}
     ${goal.kind !== 'environment' && goal.status !== 'stopped' ? `<form class="stop-goal" data-id="${esc(goal.id)}">
       <textarea name="reason" placeholder="Reason for stopping this goal" aria-label="Reason for stopping this goal" required></textarea>
       <div class="actions"><button class="secondary" type="submit">Stop goal</button></div>
     </form>` : ''}
+    </div></details>
   </article>`;
 }
 function environmentRecords(goal) {
   const env = data.environment || {};
-  const open = key => goal.stage?.key === key ? ' open' : '';
   const sources = env.sources?.sources || [];
   const commitments = env.plate?.commitments || [];
   const processes = env.processes?.processes || [];
   const needed = value => value === true ? 'Needed' : value === false ? 'Not needed' : 'Undecided';
   return `
-    <details${open('infrastructure')}><summary>Sources (${sources.filter(s => s.needed).length} needed of ${sources.length})</summary>
+    <details data-detail="${esc(goal.id)}-infrastructure"><summary>Sources (${sources.filter(s => s.needed).length} needed of ${sources.length})</summary>
       ${sources.length ? `<table class="records"><thead><tr><th>Source</th><th>Needed</th><th>Last read-back</th></tr></thead><tbody>${sources.map(s => `<tr>
         <td><strong>${esc(s.name)}</strong><div class="meta">${esc(s.route || '')}</div></td>
         <td>${needed(s.needed)}${s.needed_reason ? `<div class="meta">${esc(s.needed_reason)}</div>` : ''}</td>
         <td>${s.read_back ? `${status(s.read_back.ok ? 'completed' : 'failed')} ${when(s.read_back.at)}<div class="meta">${esc(s.read_back.what)}</div>` : '<span class="meta">None</span>'}</td>
       </tr>`).join('')}</tbody></table>` : '<p class="empty">No sources recorded.</p>'}
     </details>
-    <details${open('process')}><summary>Processes (${processes.length})</summary>
+    <details data-detail="${esc(goal.id)}-process"><summary>Processes (${processes.length})</summary>
       ${processes.length ? processes.map(f => `<div class="entry"><strong>${esc(f.name)}</strong><div class="meta">Trigger: ${esc(f.trigger || 'not recorded')} · Completion: ${esc(f.completion || 'not recorded')} · ${(f.examples || []).length} examples</div>${f.signals?.length ? `<table class="records"><thead><tr><th>Step</th><th>Signal</th><th>Source</th></tr></thead><tbody>${f.signals.map(s => `<tr><td>${esc(s.step)}</td><td>${esc(s.signal)}</td><td>${esc(s.source)}</td></tr>`).join('')}</tbody></table>` : f.steps?.length ? `<ol>${f.steps.map(s => `<li>${esc(s)}</li>`).join('')}</ol>` : ''}</div>`).join('') : '<p class="empty">No processes recorded.</p>'}
-    <details${open('observability')}><summary>Commitments (${commitments.length}${env.plate?.updated_at ? `, updated ${when(env.plate.updated_at)}` : ''})</summary>
+    </details>
+    <details data-detail="${esc(goal.id)}-observability"><summary>Commitments (${commitments.length}${env.plate?.updated_at ? `, updated ${when(env.plate.updated_at)}` : ''})</summary>
       ${commitments.length ? `<table class="records"><thead><tr><th>Work</th><th>For</th><th>Due</th><th>Step</th></tr></thead><tbody>${commitments.map(c => `<tr><td>${esc(c.what)}<div class="meta">${(c.sources || []).map(s => esc(s.ref)).join(', ')}</div></td><td>${esc(c.to_whom)}</td><td>${esc(c.due || '')}</td><td>${esc(c.process ? `${c.process}: ${c.step || ''}` : c.status)}</td></tr>`).join('')}</tbody></table>` : '<p class="empty">No commitments recorded.</p>'}
       ${env.plate?.priorities?.length ? `<h3>Priorities</h3><ol>${env.plate.priorities.map(p => `<li>${esc(p)}</li>`).join('')}</ol>` : ''}
-    </details>
     </details>`;
 }
 $('#goals').addEventListener('click', event => {

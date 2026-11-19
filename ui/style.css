@@ -139,3 +139,9 @@ button.primary:disabled, button.secondary:disabled { opacity: 0.5; cursor: defau
 .settings select, .settings input[type="time"] { font: inherit; padding: 6px 10px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; }
 .settings .toggle { display: flex; align-items: center; gap: 8px; }
 .settings p.meta { margin: 6px 0 20px; }
+
+.goal-details { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 16px; overflow-wrap: anywhere; }
+.goal-details > .prose { max-width: 80ch; }
+.goal-details .prose li { margin-bottom: 6px; }
+.goal-details dd.prose { white-space: normal; }
+.goal-details summary { padding: 4px 0; }
