@@ -3,9 +3,9 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch } fro
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getM3ntorResult, jobDirectory, startTaskJob, startGoalReviewJob } from './m3ntor-jobs.mjs';
-import { stagesFor, GOAL_REVIEW_INSTRUCTION } from './goals.mjs';
+import { stagesFor, STUCK_INSTRUCTION } from './goals.mjs';
 import { environmentCheck, readEnvironment } from './environment.mjs';
-import { appendJournalInWrite, businessDate, readJournal, serializeBusinessWrites } from './business-journal.mjs';
+import { appendJournalInWrite, businessDate, questionState, readJournal, serializeBusinessWrites, setUserQuestions } from './business-journal.mjs';
 
 // Journal entries with fixed ids, so a retried write updates the same entry.
 const journalOnce = (cwd, entryId, input) => serializeBusinessWrites(cwd, () => appendJournalInWrite(cwd, input, new Date(), entryId));
@@ -77,7 +77,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       completed TEXT NOT NULL DEFAULT '[]', stop_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   `);
   const columns = new Set(db.prepare('PRAGMA table_info(tasks)').all().map(column => column.name));
-  for (const [name, type] of [['remove_on_completion', 'INTEGER NOT NULL DEFAULT 0'], ['success', 'TEXT'], ['constraints', 'TEXT'], ['category', 'TEXT'], ['goal_id', 'TEXT'], ['stage', 'TEXT']]) if (!columns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
+  for (const [name, type] of [['remove_on_completion', 'INTEGER NOT NULL DEFAULT 0'], ['success', 'TEXT'], ['constraints', 'TEXT'], ['category', 'TEXT'], ['goal_id', 'TEXT'], ['stage', 'TEXT'], ['set_at', 'TEXT']]) if (!columns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
   const now = () => new Date().toISOString();
   const get = id => db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   const update = (id, fields) => {
@@ -478,23 +478,58 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       considerReview();
     }, Math.min(Math.max(new Date(due) - Date.now(), 0) + 50, 2 ** 31 - 1));
   }
+  // A review action (set_task for a goal, complete_stage, ask_m3ntor, a question to the owner) while a review runs.
+  function noteAction() { if (setting('goal_review_job')) setSetting('goal_action_at', now()); }
+  // Reviews that end with the same progress (stage, its score, what the done-check still misses) as the
+  // review before: after STUCK_AFTER of them the next review works on getting unstuck; after
+  // ASK_OWNER_AFTER the service asks the owner. A review that takes no action is stuck at once.
+  const STUCK_AFTER = 2, ASK_OWNER_AFTER = 4;
+  async function progress(goal) {
+    const stage = stagesFor(goal.kind)[goal.stage];
+    const latest = stage.score ? await latestAssessment() : null;
+    const missing = goal.kind === 'environment' ? await environmentCheck(cwd, stage.key) : null;
+    return JSON.stringify({ goal: goal.id, status: goal.status, stage: goal.stage, completed: JSON.parse(goal.completed).length, score: latest?.ratings?.[stage.score]?.score ?? null, missing: missing || null });
+  }
+  const stuckState = goal => {
+    const sameStage = setting('goal_review_handoff_stage') === `${goal.id}:${goal.stage}`;
+    const unchanged = sameStage ? Number(setting('goal_review_unchanged') || 0) : 0;
+    const noAction = sameStage ? Number(setting('goal_review_no_action') || 0) : 0;
+    return { sameStage, unchanged, noAction, stuck: unchanged >= STUCK_AFTER || noAction > 0 };
+  };
   async function startReview(goal, state) {
     reviewStarting = true;
     const jobId = randomUUID();
     setSetting('goal_review_job', jobId);
     setSetting('goal_review_stage', `${goal.id}:${goal.stage}`);
+    setSetting('goal_review_started_at', now());
     try {
       const view = goalView(goal);
-      const tasks = stageTasks(goal.id, view.stage.key).map(task => ({ task_id: task.id, title: task.title, status: task.status, success: task.success, last_status: task.last_status, last_result: String(task.last_result || '').slice(-1500), last_error: task.last_error, pause_reason: task.pause_reason }));
+      // The last review's conclusions stand; the review gets what changed since, not the stage's whole history.
+      const { sameStage, unchanged, noAction, stuck } = stuckState(goal);
+      const since = sameStage ? setting('goal_review_finished_at') : null;
+      const tasks = stageTasks(goal.id, view.stage.key).map(task => ({ task_id: task.id, title: task.title, status: task.status, success: task.success, last_status: task.last_status, last_run_at: task.last_run_at, last_error: task.last_error, pause_reason: task.pause_reason, ...(since ? {} : { last_result: String(task.last_result || '').slice(-1500) }) }));
       const others = db.prepare("SELECT * FROM goals WHERE status IN ('waiting', 'inactive') ORDER BY position").all().map(g => ({ goal_id: g.id, title: g.title, status: g.status }));
-      const question = `Goal: ${view.title} (goal_id ${view.id})\nOutcome: ${view.outcome}\nCurrent stage ${view.stage.index} of ${view.stages.length}: ${view.stage.name} (stage key "${view.stage.key}")\nWork: ${view.stage.work}\nDone when: ${view.stage.done_check}`;
+      let question = `Goal: ${view.title} (goal_id ${view.id})\nOutcome: ${view.outcome}\nCurrent stage ${view.stage.index} of ${view.stages.length}: ${view.stage.name} (stage key "${view.stage.key}")\nWork: ${view.stage.work}\nDone when: ${view.stage.done_check}`;
+      if (stuck) question += `\n\n${STUCK_INSTRUCTION}`;
       const record = goal.kind === 'environment' ? await readEnvironment(cwd) : null;
       const stageRecord = record && { infrastructure: record.sources, observability: record.plate, process: record.processes }[view.stage.key];
       const stillMissing = goal.kind === 'environment' ? await environmentCheck(cwd, view.stage.key) : null;
-      // The owner's answers are direction: the review gets the latest ones (newest first).
+      // The owner's answers are direction: the review gets the latest ones (newest first); new marks those since the last review.
       let ownerAnswers = [];
-      try { ownerAnswers = JSON.parse(readFileSync(path.join(directory, 'user_questions.json'), 'utf8')).questions.filter(q => q.status === 'answered' && q.answer).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, 20).map(q => ({ question: q.question, answer: q.answer, answered_at: q.updatedAt })); } catch {}
-      await startGoalReviewJob({ jobId, question, context: { owner_answers: ownerAnswers, owner_notes: ownerNotes().slice(0, 20), ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl, ...agentRun() });
+      try { ownerAnswers = JSON.parse(readFileSync(path.join(directory, 'user_questions.json'), 'utf8')).questions.filter(q => q.status === 'answered' && q.answer).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, 20).map(q => ({ question: q.question, answer: q.answer, answered_at: q.updatedAt, ...(since ? { new: String(q.updatedAt) > since } : {}) })); } catch {}
+      const notes = ownerNotes().slice(0, 20).map(note => ({ ...note, ...(since ? { new: String(note.at) > since } : {}) }));
+      const latest = view.stage.score ? await latestAssessment() : null;
+      const changes = since ? {
+        since,
+        task_runs: db.prepare('SELECT runs.task_id, tasks.title, runs.status, runs.started_at, runs.finished_at, runs.result, runs.error FROM runs JOIN tasks ON tasks.id = runs.task_id WHERE tasks.goal_id = ? AND tasks.stage = ? AND (runs.finished_at > ? OR runs.finished_at IS NULL) ORDER BY runs.started_at').all(goal.id, view.stage.key, since)
+          .map(run => ({ ...run, result: run.result ? String(run.result).slice(-1500) : null })),
+        new_owner_answers: ownerAnswers.filter(a => a.new).length,
+        new_owner_notes: notes.filter(n => n.new).length,
+        assessment: latest ? { revision_id: latest.revision_id, [view.stage.score]: latest.ratings?.[view.stage.score]?.score ?? null, new: String(latest.assessed_at || '') > since } : null,
+      } : null;
+      const lastReview = since ? { finished_at: since, conclusions: setting('goal_review_handoff') } : null;
+      const stuckContext = stuck ? { reviews_without_progress: unchanged + 1, last_review_took_no_action: noAction > 0, progress: JSON.parse(setting('goal_review_progress') || 'null') } : null;
+      await startGoalReviewJob({ jobId, question, context: { ...(lastReview ? { last_review: lastReview, changes_since_last_review: changes } : {}), ...(stuckContext ? { stuck: stuckContext } : {}), owner_answers: ownerAnswers, owner_notes: notes, ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl, ...agentRun() });
       setSetting('goal_review_state', state);
       setSetting('goal_last_review_at', now());
       if (pace().pace !== 'yolo') setSetting('goal_next_review_at', nextClock().toISOString());
@@ -503,6 +538,50 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       setSetting('goal_review_job', null);
       setSetting('goal_review_error', `Could not start the goal review: ${error.message}`);
     } finally { reviewStarting = false; }
+  }
+  // inov8 cannot get the stage moving: the service puts the question to the owner, with the review's own account.
+  async function askOwnerStuck(goal, reason, output) {
+    const stage = stagesFor(goal.kind)[goal.stage];
+    const account = String(output || '').replace(/\n*\**STATUS:[^\n]*\s*$/i, '').trim().slice(0, 1500);
+    const question = `inov8 is stuck on the "${goal.title}" goal at its ${stage.name} stage: ${reason}\nDone when: ${stage.done_check}\n\nIts last review said:\n${account || '(no account)'}\n\nWhat should change? Give inov8 direction, or say the goal or its done-check should change.`;
+    const id = `inov8-stuck-${goal.id}-${stage.key}-${Date.now()}`;
+    await setUserQuestions(cwd, { action: 'set', questions: [{ id, question, source: 'inov8' }] });
+    setSetting('goal_stuck_question', id);
+    await journalOnce(cwd, `goal-stuck-${id}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": stuck at ${stage.name}; asked the owner. ${reason}`, metadata: { goal_id: goal.id, stage: stage.key, question_id: id } });
+  }
+  // After a review: keep its account for the next one, count reviews without progress or action, and act on being stuck.
+  async function settleReview(goal, job, moved) {
+    const reviewed = job.status === 'complete' && reportedDone(job.output);
+    if (!goal || !reviewed) return { forceNext: false };
+    const stage = stagesFor(goal.kind)[goal.stage];
+    const started = setting('goal_review_started_at') || '';
+    const acted = moved || (setting('goal_action_at') || '') >= started;
+    // Work under way: a stage task still queued or running, or a question inov8 asked that the owner has not answered.
+    const inFlight = stageTasks(goal.id, stage.key).some(task => ['queued', 'delivered', 'executing', 'finalizing'].includes(task.status));
+    const pending = (await questionState(cwd)).pending.filter(q => q.source === 'inov8');
+    const sameStage = setting('goal_review_stage') === `${goal.id}:${goal.stage}`;
+    const signature = await progress(goal);
+    const unchanged = sameStage && signature === setting('goal_review_progress') ? Number(setting('goal_review_unchanged') || 0) + 1 : 0;
+    const noAction = !acted && !inFlight && !pending.length ? (sameStage ? Number(setting('goal_review_no_action') || 0) : 0) + 1 : 0;
+    setSetting('goal_review_handoff', String(job.output || '').slice(0, 6000));
+    setSetting('goal_review_handoff_stage', `${goal.id}:${goal.stage}`);
+    setSetting('goal_review_finished_at', now());
+    setSetting('goal_review_progress', signature);
+    setSetting('goal_review_unchanged', String(unchanged));
+    setSetting('goal_review_no_action', String(noAction));
+    const askedPending = pending.some(q => q.id === setting('goal_stuck_question'));
+    if (!askedPending && (noAction >= 2 || unchanged >= ASK_OWNER_AFTER)) {
+      const reason = noAction >= 2 ? 'two reviews in a row ended without queuing work, completing the stage or asking anyone.' : `${unchanged + 1} reviews in a row ended with no progress on the done-check.`;
+      await askOwnerStuck(goal, reason, job.output);
+      setSetting('goal_review_no_action', '0');
+      setSetting('goal_review_unchanged', String(STUCK_AFTER));
+      return { forceNext: false };
+    }
+    if (noAction === 1) {
+      await journalOnce(cwd, `goal-review-no-action-${job.job_id}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": the ${stage.name} review ended without an action; the next review starts now to get unstuck.`, metadata: { goal_id: goal.id, stage: stage.key } });
+      return { forceNext: true, error: 'The last goal review ended without queuing work, completing the stage or asking; the next review works on getting unstuck.' };
+    }
+    return { forceNext: false };
   }
   function followReview(jobId) {
     let fsWatcher = null, liveness = null, busy = false;
@@ -518,10 +597,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         // stage unplanned: the next review starts now, whatever the pace.
         const moved = goal && setting('goal_review_stage') !== `${goal.id}:${goal.stage}`;
         const unplanned = moved && !stageTasks(goal.id, stagesFor(goal.kind)[goal.stage].key).length;
-        if (goal && !unplanned) setSetting('goal_review_state', reviewState(goal));
-        if (unplanned) setSetting('goal_next_review_at', new Date().toISOString());
+        let settled = { forceNext: false };
+        try { settled = await settleReview(goal, job, moved); } catch (error) { console.error('Goal review settle failed:', error.message); }
+        if (goal && !unplanned && !settled.forceNext) setSetting('goal_review_state', reviewState(goal));
+        if (settled.forceNext) setSetting('goal_review_state', null);
+        if (unplanned || settled.forceNext) setSetting('goal_next_review_at', new Date().toISOString());
         setSetting('goal_review_job', null);
-        setSetting('goal_review_error', job.status === 'complete' && reportedDone(job.output) ? null : `The last goal review did not finish: ${job.error || statusLine(job.output) || 'no STATUS line'}`);
+        setSetting('goal_review_error', job.status === 'complete' && reportedDone(job.output) ? settled.error || null : `The last goal review did not finish: ${job.error || statusLine(job.output) || 'no STATUS line'}`);
         schedule();
       } finally { busy = false; }
     };
@@ -542,6 +624,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   return {
     // Something outside the queue changed (an owner answer, a saved assessment).
     poke() { schedule(); },
+    noteAction,
+    reviewing: () => Boolean(setting('goal_review_job')),
     // The owner's Run: one goal review now, whatever the pace and even if nothing changed.
     async runReview() {
       if (setting('goal_review_job') || reviewStarting) throw new Error('A goal review is already running.');
@@ -582,8 +666,9 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         const contract = { success: input.success.trim(), constraints: input.constraints?.length ? JSON.stringify(input.constraints) : null, category: input.category || null, ...goalFields };
         const removeOnCompletion = input.remove_on_completion === true ? 1 : 0;
         if (removeOnCompletion && recurrence) throw new Error('remove_on_completion applies to one-off tasks only.');
-        if (existing) update(id, { title: input.title, instruction: input.instruction, recurrence, next_run_at: nextRun, status: 'queued', consecutive_failures: 0, pause_reason: null, remove_on_completion: removeOnCompletion, ...contract });
-        else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, remove_on_completion, success, constraints, category, goal_id, stage) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, input.title, input.instruction, recurrence, nextRun, 'queued', now(), now(), removeOnCompletion, contract.success, contract.constraints, contract.category, contract.goal_id, contract.stage);
+        if (existing) update(id, { title: input.title, instruction: input.instruction, recurrence, next_run_at: nextRun, status: 'queued', consecutive_failures: 0, pause_reason: null, remove_on_completion: removeOnCompletion, set_at: now(), ...contract });
+        else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, remove_on_completion, success, constraints, category, goal_id, stage, set_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, input.title, input.instruction, recurrence, nextRun, 'queued', now(), now(), removeOnCompletion, contract.success, contract.constraints, contract.category, contract.goal_id, contract.stage, now());
+        if (contract.goal_id) noteAction();
         schedule();
         return { task: view(get(id)), created: !existing, worker: workerState() };
       }
@@ -615,7 +700,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       if (name === 'run_goal_review') return this.runReview();
       if (name === 'list_goals') return { goals: listGoals(), pace: pace(), review_error: setting('goal_review_error') };
       if (name === 'set_goal') return { goal: setGoal(input), goals: listGoals() };
-      if (name === 'complete_stage') return completeStage(input.goal_id, input.evidence).then(goal => ({ goal }));
+      if (name === 'complete_stage') return completeStage(input.goal_id, input.evidence).then(goal => { noteAction(); return { goal }; });
       if (name === 'reopen_stage') return reopenStage(input.goal_id, input.evidence).then(goal => ({ goal }));
       if (name === 'stop_goal') return stopGoal(input.goal_id, input.reason).then(goal => ({ goal, goals: listGoals() }));
       if (name === 'set_pace') {
