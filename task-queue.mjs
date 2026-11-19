@@ -538,7 +538,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   async function askOwnerStuck(goal, reason, output) {
     const stage = stagesFor(goal.kind)[goal.stage];
     const account = String(output || '').replace(/\n*\**STATUS:[^\n]*\s*$/i, '').trim().slice(0, 1500);
-    const question = `inov8 is stuck on the "${goal.title}" goal at its ${stage.name} stage: ${reason}\nDone when: ${stage.done_check}\n\nIts last review said:\n${account || '(no account)'}\n\nWhat should change? Give inov8 direction, or say the goal or its done-check should change.`;
+    const question = `inov8 is stuck on the "${goal.title}" goal at its ${stage.name} stage: ${reason}\nDone when: ${stage.done}\n\nIts last review said:\n${account || '(no account)'}\n\nWhat should change? Give inov8 direction, or say the goal or its done-check should change.`;
     const id = `inov8-stuck-${goal.id}-${stage.key}-${Date.now()}`;
     await setUserQuestions(cwd, { action: 'set', questions: [{ id, question, source: 'inov8' }] });
     setSetting('goal_stuck_question', id);

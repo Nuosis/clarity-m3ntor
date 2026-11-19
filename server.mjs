@@ -261,7 +261,7 @@ async function mcp(req, res, coach = false) {
       } else if (name === 'user_question_set' || name === 'suser_question_set') {
         // Questions asked while inov8 reviews a goal are inov8's: the service knows the review is waiting on them.
         const asking=(input.action || 'set')==='set';
-        const updated=await setUserQuestions(cwd,asking && taskQueue.reviewing() ? { ...input, source: input.source || 'inov8' } : input);toolsChanged();taskQueue.poke();
+        const updated=await setUserQuestions(cwd,asking && taskQueue.reviewing() ? { ...input, source: 'inov8', ...(input.questions ? { questions: input.questions.map(q => ({ ...q, source: 'inov8' })) } : {}) } : input);toolsChanged();taskQueue.poke();
         if (input.action === 'answer') await queueUseCaseResearch(input.question_id, input.answer).catch(error => console.error('Use case research task failed:', error.message));
         result={content:[{type:'text',text:JSON.stringify(updated)}]};
       } else if (name === 'user_question_read' || /^user_questions_\d+$/.test(name)) {
