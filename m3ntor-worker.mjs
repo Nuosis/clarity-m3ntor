@@ -108,7 +108,8 @@ async function runHarness(request, prompt) {
   const stdoutLog = createWriteStream(path.join(directory, 'harness.stdout.jsonl'), { mode: 0o600 });
   const stderrLog = createWriteStream(path.join(directory, 'harness.stderr.log'), { mode: 0o600 });
   const recoveryLog = createWriteStream(path.join(directory, 'harness.recovery.jsonl'), { mode: 0o600 });
-  const child = spawn(request.harness, args, { cwd: request.cwd, env: process.env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  // M3NTOR_JOB_ID marks the service's own harness runs, so the owner's session-start hook stays quiet in them.
+  const child = spawn(request.harness, args, { cwd: request.cwd, env: { ...process.env, M3NTOR_JOB_ID: request.job_id }, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   let buffer = '', stderrBuffer = '', stderr = '', output = '', harnessError = '', stoppedFor = '', spawnError;
   let progressVersion = 0, retryProgressVersion = -1, lastRetry;

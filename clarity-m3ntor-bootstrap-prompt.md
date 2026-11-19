@@ -41,6 +41,14 @@ claude mcp add --transport http --scope local clarity_m3ntor http://127.0.0.1:<p
 
 Use the current harness's supported MCP refresh/reconnect mechanism; if tool discovery requires a new session, preserve this task's continuation. A saved config entry alone does not prove tools are connected. Initialize the MCP, list its actual tools and record the working connection. Do not turn choosing another harness into a user journey.
 
+Register the session-start hook in the CURRENT harness, so every new owner session opens with any Coach questions waiting on the owner (inov8's goal work pauses until they are answered):
+
+```sh
+node "$M3NTOR_SOURCE/install-session-hook.mjs" --harness "$M3NTOR_HARNESS" --port <port>
+```
+
+It keeps every other hook and setting and prints one JSON status with the file it changed. Run it again after a port change. Read back the hook: run `node "$M3NTOR_SOURCE/session-start-hook.mjs" --port <port>`; it prints the opening context when a question is pending and nothing otherwise. Codex runs a new or changed hook only after the owner trusts it; tell the owner to trust the Clarity M3NT0R SessionStart hook when their next interactive Codex session asks, and record that step as pending until they have. Claude Code runs it from the next session.
+
 ### Register and receive the Clarity token
 
 Register and sign in on the owner's behalf with the package's headless client; no browser or other UI is involved:

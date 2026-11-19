@@ -390,6 +390,11 @@ async function ownerApi(req, res, url) {
     return;
   }
   if (req.method === 'GET' && url.pathname === '/api/overview') return json(res, 200, await overview());
+  // The owner's pending Coach questions, for the harness session-start hook.
+  if (req.method === 'GET' && url.pathname === '/api/questions/pending') {
+    const state = await questionState(cwd);
+    return json(res, 200, { pending: state.pending.map(q => ({ id: q.id, question: q.question, source: q.source, created_at: q.createdAt })), deferred_until: state.deferred ? state.deferUntil : null });
+  }
   if (req.method === 'GET' && parts[1] === 'tasks' && parts[2]) {
     const detail = taskQueue.detail(parts[2]);
     if (!detail) return json(res, 404, { error: 'Task not found.' });
