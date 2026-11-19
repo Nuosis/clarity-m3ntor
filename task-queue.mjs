@@ -662,6 +662,14 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     // Something outside the queue changed (an owner answer, a saved assessment).
     poke() { schedule(); },
     noteAction,
+    // An answer or dismissal that leaves no question waiting on the owner starts a review now, whatever the pace.
+    questionsSettled() {
+      let pending = true;
+      try { pending = JSON.parse(readFileSync(path.join(directory, 'user_questions.json'), 'utf8')).questions.some(q => q.status === 'pending'); } catch {}
+      if (pending || !enabled() || reviewStarting || setting('goal_review_job')) return;
+      const goal = activeGoal();
+      if (goal) startReview(goal, reviewState(goal));
+    },
     reviewing: () => Boolean(setting('goal_review_job')),
     // The owner's Run: one goal review now, whatever the pace and even if nothing changed.
     async runReview() {

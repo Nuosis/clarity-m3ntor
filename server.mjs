@@ -263,6 +263,7 @@ async function mcp(req, res, coach = false) {
         const asking=(input.action || 'set')==='set';
         const updated=await setUserQuestions(cwd,asking && taskQueue.reviewing() ? { ...input, source: 'inov8', ...(input.questions ? { questions: input.questions.map(q => ({ ...q, source: 'inov8' })) } : {}) } : input);toolsChanged();taskQueue.poke();
         if (input.action === 'answer') await queueUseCaseResearch(input.question_id, input.answer).catch(error => console.error('Use case research task failed:', error.message));
+        if (['answer', 'dismiss'].includes(input.action)) taskQueue.questionsSettled();
         result={content:[{type:'text',text:JSON.stringify(updated)}]};
       } else if (name === 'user_question_read' || /^user_questions_\d+$/.test(name)) {
         result={content:[{type:'text',text:JSON.stringify(await readUserQuestions(cwd,session,input))}]};
@@ -407,6 +408,7 @@ async function ownerApi(req, res, url) {
     await setUserQuestions(cwd, { action: input.action, question_id: parts[2], answer: input.answer, reason: input.reason });
     toolsChanged(); taskQueue.poke();
     if (input.action === 'answer') await queueUseCaseResearch(parts[2], input.answer).catch(error => console.error('Use case research task failed:', error.message));
+    if (['answer', 'dismiss'].includes(input.action)) taskQueue.questionsSettled();
     return json(res, 200, await overview());
   }
   if (req.method === 'GET' && url.pathname === '/api/use-cases') {
