@@ -25,6 +25,8 @@ const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'frida
 // Bootstrap direction (stop spending loops without progress): a task whose runs
 // fail this many times in a row is paused with its state kept.
 const MAX_CONSECUTIVE_FAILURES = 3;
+// The getting-unstuck method ships with the package and goes to every stuck-mode review.
+const UNSTUCK_SKILL = readFileSync(new URL('./skills/getting-unstuck/SKILL.md', import.meta.url), 'utf8').replace(/^---[\s\S]*?---\s*/, '');
 
 const recurrenceSchema = {
   type: 'object',
@@ -510,7 +512,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       const tasks = stageTasks(goal.id, view.stage.key).map(task => ({ task_id: task.id, title: task.title, status: task.status, success: task.success, last_status: task.last_status, last_run_at: task.last_run_at, last_error: task.last_error, pause_reason: task.pause_reason, ...(since ? {} : { last_result: String(task.last_result || '').slice(-1500) }) }));
       const others = db.prepare("SELECT * FROM goals WHERE status IN ('waiting', 'inactive') ORDER BY position").all().map(g => ({ goal_id: g.id, title: g.title, status: g.status }));
       let question = `Goal: ${view.title} (goal_id ${view.id})\nOutcome: ${view.outcome}\nCurrent stage ${view.stage.index} of ${view.stages.length}: ${view.stage.name} (stage key "${view.stage.key}")\nWork: ${view.stage.work}\nDone when: ${view.stage.done_check}`;
-      if (stuck) question += `\n\n${STUCK_INSTRUCTION}`;
+      if (stuck) question += `\n\n${STUCK_INSTRUCTION}\n\n${UNSTUCK_SKILL}`;
       const record = goal.kind === 'environment' ? await readEnvironment(cwd) : null;
       const stageRecord = record && { infrastructure: record.sources, observability: record.plate, process: record.processes }[view.stage.key];
       const stillMissing = goal.kind === 'environment' ? await environmentCheck(cwd, view.stage.key) : null;
