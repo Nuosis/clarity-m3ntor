@@ -363,7 +363,7 @@ function renderJournal() {
     if (entry.metadata?.job_id && runIds.has(entry.metadata.job_id)) continue;
     events.push({ id: 'entry-' + entry.id, at: entry.createdAt, entry,
       label: /inov8|^goals$/i.test(entry.source || '') ? 'INOV8 activity' : /m3nt[o0]r/i.test(entry.source || '') ? 'M3NT0R activity' : entry.kind === 'owner_decision' || entry.kind === 'user_request' ? 'Owner direction' : 'Journal',
-      preview: entry.content.split('\n')[0] });
+      preview: entry.summary?.trim() || entry.content.split('\n')[0] });
   }
   const groups = new Map();
   events.sort((a, b) => String(b.at).localeCompare(String(a.at))).forEach(event => {
@@ -380,7 +380,8 @@ function renderJournal() {
       ${items.length ? `<ol class="activity-timeline">${items.map(item => {
         const run = item.run;
         const runStatus = run ? ({ complete: 'Run finished', failed: 'Failed', interrupted: 'Interrupted', running: 'Running', queued: 'Queued' }[run.status] || run.status) : '';
-        const body = run ? journalRunDetails.get(run.job_id) || '' : `<div class="prose">${renderMarkdown(item.entry.content)}</div><p class="meta">Source: ${esc(item.entry.source || item.entry.kind)}</p>`;
+        const summary = item.entry?.summary?.trim();
+        const body = run ? journalRunDetails.get(run.job_id) || '' : `<div class="prose">${renderMarkdown(summary || item.entry.content)}</div>${summary && summary !== item.entry.content.trim() ? `<details><summary>Technical details</summary><div class="prose">${renderMarkdown(item.entry.content)}</div></details>` : ''}<p class="meta">Source: ${esc(item.entry.source || item.entry.kind)}</p>`;
         return `<li class="timeline-item"><details data-event="${esc(item.id)}"${run ? ` data-job="${esc(run.job_id)}"` : ''}${expanded.has(item.id) ? ' open' : ''}>
           <summary><time datetime="${esc(item.at)}">${esc(journalTime(item.at))}</time><span class="timeline-heading"><strong>${esc(item.label)}</strong>${run ? `<span class="status ${esc(run.status)}">${esc(runStatus)}</span>` : ''}<span class="timeline-preview">${esc(journalPreview(item.preview))}</span></span></summary>
           <div class="timeline-details">${body || '<p class="meta">Loading details…</p>'}</div>
