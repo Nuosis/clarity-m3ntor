@@ -27,6 +27,7 @@
   <div id="running" role="status" hidden></div>
   <nav>
     <button data-view="goals" class="active">Goals</button>
+    <button data-view="processes">Process</button>
     <button data-view="tasks">Tasks</button>
     <button data-view="questions">Questions <span id="question-count" class="count"></span></button>
     <button data-view="assessment">Assessment</button>
@@ -37,6 +38,7 @@
   </nav>
   <main>
     <section id="goals" class="view"></section>
+    <section id="processes" class="view" hidden></section>
     <section id="tasks" class="view split" hidden>
       <ul id="task-list" class="list"></ul>
       <article id="task-detail" class="detail"><p class="empty">Select a task.</p></article>
@@ -69,6 +71,7 @@
   </main>
   <p id="error" role="alert" hidden></p>
   <script src="/markdown.js"></script>
+  <script src="/processes.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -475,7 +475,7 @@ async function ownerApi(req, res, url) {
   }
   return json(res, 404, { error: 'Not found.' });
 }
-const UI_FILES = { '/': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/style.css': ['style.css', 'text/css; charset=utf-8'], '/logo.svg': ['logo.svg', 'image/svg+xml'], '/markdown.js': ['markdown.js', 'text/javascript; charset=utf-8'], '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json'], '/icon-192.png': ['icon-192.png', 'image/png'], '/icon-512.png': ['icon-512.png', 'image/png'], '/apple-touch-icon.png': ['apple-touch-icon.png', 'image/png'], '/favicon-32.png': ['favicon-32.png', 'image/png'], '/favicon.ico': ['favicon.ico', 'image/x-icon'] };
+const UI_FILES = { '/': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/processes.js': ['processes.js', 'text/javascript; charset=utf-8'], '/style.css': ['style.css', 'text/css; charset=utf-8'], '/logo.svg': ['logo.svg', 'image/svg+xml'], '/markdown.js': ['markdown.js', 'text/javascript; charset=utf-8'], '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json'], '/icon-192.png': ['icon-192.png', 'image/png'], '/icon-512.png': ['icon-512.png', 'image/png'], '/apple-touch-icon.png': ['apple-touch-icon.png', 'image/png'], '/favicon-32.png': ['favicon-32.png', 'image/png'], '/favicon.ico': ['favicon.ico', 'image/x-icon'] };
 
 const server = http.createServer(async (req, res) => {
   try {

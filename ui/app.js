@@ -42,7 +42,7 @@ function render() {
   const worker = data.worker;
   $('#worker').textContent = worker.enabled ? `Worker on${worker.next_run_at ? ` · next run ${when(worker.next_run_at)}` : ''}` : 'Worker off';
   $('#question-count').textContent = data.questions.pending.length ? `(${data.questions.pending.length})` : '';
-  renderRunning(); renderGoals(); renderSettings(); noticeReviewError(); renderTasks(); renderQuestions(); renderAssessment(); renderContext(); renderJournal();
+  renderRunning(); renderGoals(); renderProcesses(data.environment?.processes?.processes || []); renderSettings(); noticeReviewError(); renderTasks(); renderQuestions(); renderAssessment(); renderContext(); renderJournal();
   restoreDrafts();
 }
 
