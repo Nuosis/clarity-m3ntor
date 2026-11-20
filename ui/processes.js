@@ -5,6 +5,9 @@ function processText(value) {
 }
 function processStatus(flow) { return flow.status || 'unverified'; }
 function processStatusLabel(flow) { const value = processStatus(flow); return value.charAt(0).toUpperCase() + value.slice(1).replaceAll('_', ' '); }
+function processNameWithBadge(flow) {
+  return `<span class="process-name-line"><span>${processText(processName(flow.name))}</span>${processStatus(flow) === 'validated' ? '<span class="process-validation-check" role="img" aria-label="Validated process definition" title="Definition validated"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="10" fill="currentColor"/><path d="m5.5 10 3 3 6-6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>' : ''}</span>`;
+}
 function processName(name) { return String(name).replace(/^DRAFT PARTIAL\s*[—–-]\s*/i, ''); }
 // Same rendering boundary as CIG's DrawioOrgChart: mxGraph XML -> GraphViewer.
 let processViewerLoading;
@@ -142,7 +145,7 @@ function openProcessStep(flow, index) {
   const signals = (flow.signals || []).filter(item => item.step === step);
   const failures = (flow.failure_conditions || []).filter(item => item.step === step);
   modal.dataset.step = index;
-  modal.innerHTML = `<div class="process-modal-header"><div><p class="meta">${processText(processStatusLabel(flow))} · ${processText(processName(flow.name))}</p><h2 id="process-step-title">${processText(step)}</h2></div><button type="button" class="ghost" data-close-step autofocus>Close</button></div>
+  modal.innerHTML = `<div class="process-modal-header"><div><p class="meta">${processStatus(flow) === 'validated' ? '' : `${processText(processStatusLabel(flow))} · `}${processNameWithBadge(flow)}</p><h2 id="process-step-title">${processText(step)}</h2></div><button type="button" class="ghost" data-close-step autofocus>Close</button></div>
     <div class="process-modal-body prose">${signals.length ? signals.map(item => `<h3>Expected signal</h3>${renderMarkdown(item.signal)}${item.source ? `<h3>Source</h3><p class="meta">${processText(item.source)}</p>` : ''}`).join('') : '<p class="empty">No supporting details recorded for this step yet.</p>'}
       ${failures.length ? `<h3>Failure conditions</h3>${failures.map(item => `${renderMarkdown(item.condition)}${item.after ? `<p><strong>When:</strong> ${processText(item.after)}</p>` : ''}`).join('')}` : ''}
     </div>`;
@@ -158,8 +161,8 @@ function renderProcesses(flows) {
   const agentic = flows.filter(item => item.agentic === true).length;
   const unknown = flows.filter(item => typeof item.agentic !== 'boolean').length;
   box.innerHTML = `<div class="process-metric">Confirmed agentic: ${agentic}/${flows.length} (${Math.round(agentic / flows.length * 100)}%)${unknown ? ` · ${unknown} not assessed` : ''}</div><div class="process-workspace">
-    <aside class="process-picker" aria-label="Processes">${flows.map(item => `<button type="button" data-process="${processText(item.id)}" class="${item.id === flow.id ? 'selected' : ''}" aria-pressed="${item.id === flow.id}"><span class="status ${processText(processStatus(item))}">${processText(processStatusLabel(item))}</span><span>${processText(processName(item.name))}</span></button>`).join('')}</aside>
-    <article class="process-view"><div class="process-header"><div><span class="status ${processText(processStatus(flow))}">${processText(processStatusLabel(flow))}</span><h2>${processText(processName(flow.name))}</h2></div><div class="process-controls"><button type="button" data-zoom="out" aria-label="Zoom out">−</button><span data-process-zoom>100%</span><button type="button" data-zoom="in" aria-label="Zoom in">+</button><button type="button" data-zoom="actual">Actual size</button><button type="button" data-zoom="fit">Fit diagram</button></div></div>
+    <aside class="process-picker" aria-label="Processes">${flows.map(item => `<button type="button" data-process="${processText(item.id)}" class="${item.id === flow.id ? 'selected' : ''}" aria-pressed="${item.id === flow.id}">${processStatus(item) === 'validated' ? '' : `<span class="status ${processText(processStatus(item))}">${processText(processStatusLabel(item))}</span>`}${processNameWithBadge(item)}</button>`).join('')}</aside>
+    <article class="process-view"><div class="process-header"><div>${processStatus(flow) === 'validated' ? '' : `<span class="status ${processText(processStatus(flow))}">${processText(processStatusLabel(flow))}</span>`}<h2>${processNameWithBadge(flow)}</h2></div><div class="process-controls"><button type="button" data-zoom="out" aria-label="Zoom out">−</button><span data-process-zoom>100%</span><button type="button" data-zoom="in" aria-label="Zoom in">+</button><button type="button" data-zoom="actual">Actual size</button><button type="button" data-zoom="fit">Fit diagram</button></div></div>
       <div class="process-canvas" role="region" aria-label="Process diagram" tabindex="0"><p class="meta">Loading diagram…</p></div>
       <details class="process-notes"${open ? ' open' : ''}><summary>Details</summary><div class="prose">
         <p class="meta">Agentic: ${flow.agentic === true ? 'Yes' : flow.agentic === false ? 'No' : 'Not assessed'}</p>${flow.agentic_evidence ? renderMarkdown(flow.agentic_evidence) : ''}

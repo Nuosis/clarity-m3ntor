@@ -181,6 +181,9 @@ main:has(#processes:not([hidden])) { max-width: none; }
 .process-view { min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
 .process-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .process-header h2, .process-header h3 { margin: 0; }
+.process-name-line { display: inline-flex; align-items: center; gap: 7px; }
+.process-validation-check { display: inline-flex; flex: 0 0 18px; width: 18px; height: 18px; color: #22a447; }
+.process-validation-check svg { width: 100%; height: 100%; }
 .process-controls { display: flex; gap: 4px; }
 .process-controls button { font: inherit; color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 .process-controls button:hover { color: var(--text); border-color: var(--accent-strong); }
