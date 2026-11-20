@@ -99,8 +99,7 @@ async function mountProcessDiagram(flow) {
         if (down && cell?.id === down.id && Math.abs(me.getX() - down.x) + Math.abs(me.getY() - down.y) < 6) {
           const index = Number(cell.id.replace('step-', ''));
           if (Number.isInteger(index) && flow.steps[index]) {
-            const button = document.createElement('button'); button.dataset.step = index;
-            host.appendChild(button); button.click(); button.remove();
+            openProcessStep(flow, index);
           }
         }
         down = null;
@@ -120,6 +119,34 @@ async function mountProcessDiagram(flow) {
     graph.zoomTo(1); makeAccessible(); updateProcessZoom();
   } catch (error) { if (version === processRenderVersion) host.textContent = error.message; }
 }
+function openProcessStep(flow, index) {
+  if (!Number.isInteger(index) || !flow.steps?.[index]) return;
+  let modal = document.querySelector('#process-step-modal');
+  if (!modal) {
+    modal = document.createElement('dialog');
+    modal.id = 'process-step-modal';
+    modal.setAttribute('aria-labelledby', 'process-step-title');
+    document.body.appendChild(modal);
+    modal.addEventListener('click', event => {
+      if (event.target.closest('[data-close-step]')) modal.close();
+      if (event.target === modal) {
+        const bounds = modal.getBoundingClientRect();
+        if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) modal.close();
+      }
+    });
+    modal.addEventListener('close', () => document.querySelector(`#processes [data-step="${modal.dataset.step}"]`)?.focus());
+  }
+  const step = flow.steps[index];
+  const signals = (flow.signals || []).filter(item => item.step === step);
+  const failures = (flow.failure_conditions || []).filter(item => item.step === step);
+  modal.dataset.step = index;
+  modal.innerHTML = `<div class="process-modal-header"><div><p class="meta">${processText(flow.name)}</p><h2 id="process-step-title">${processText(step)}</h2></div><button type="button" class="ghost" data-close-step autofocus>Close</button></div>
+    <div class="process-modal-body prose">${signals.length ? signals.map(item => `<h3>Expected signal</h3>${renderMarkdown(item.signal)}${item.source ? `<h3>Source</h3><p class="meta">${processText(item.source)}</p>` : ''}`).join('') : '<p class="empty">No supporting details recorded for this step yet.</p>'}
+      ${failures.length ? `<h3>Failure conditions</h3>${failures.map(item => `${renderMarkdown(item.condition)}${item.after ? `<p><strong>When:</strong> ${processText(item.after)}</p>` : ''}`).join('')}` : ''}
+    </div>`;
+  if (!modal.open) modal.showModal();
+}
+
 function renderProcesses(flows) {
   const box = document.querySelector('#processes');
   if (!flows.length) { box.innerHTML = '<p class="empty">No processes recorded yet.</p>'; return; }
@@ -130,7 +157,6 @@ function renderProcesses(flows) {
     <aside class="process-picker" aria-label="Processes">${flows.map(item => `<button type="button" data-process="${processText(item.id)}" class="${item.id === flow.id ? 'selected' : ''}" aria-pressed="${item.id === flow.id}">${/^DRAFT/i.test(item.name) ? '<span class="process-draft">Draft · Partial</span>' : ''}<span>${processText(processName(item.name))}</span></button>`).join('')}</aside>
     <article class="process-view"><div class="process-header"><h2>${processText(processName(flow.name))}</h2><div class="process-controls"><button type="button" data-zoom="out" aria-label="Zoom out">−</button><span data-process-zoom>100%</span><button type="button" data-zoom="in" aria-label="Zoom in">+</button><button type="button" data-zoom="actual">Actual size</button><button type="button" data-zoom="fit">Fit diagram</button></div></div>
       <div class="process-canvas" role="region" aria-label="Process diagram" tabindex="0"><p class="meta">Loading diagram…</p></div>
-      <div id="process-step-detail" hidden></div>
       <details class="process-notes"${open ? ' open' : ''}><summary>Details</summary><div class="prose">
         <h3>Trigger</h3>${renderMarkdown(flow.trigger || '')}<h3>Completion</h3>${renderMarkdown(flow.completion || '')}
         <h3>Handoffs</h3><ul>${(flow.handoffs || []).map(item => `<li>${processText(item)}</li>`).join('')}</ul>
@@ -154,12 +180,8 @@ function renderProcesses(flows) {
     if (step) {
       const index = Number(step.dataset.step);
       if (!Number.isInteger(index) || !flow.steps[index]) return;
-      const signal = (flow.signals || []).find(item => item.step === flow.steps[index]);
-      const panel = box.querySelector('#process-step-detail');
-      panel.hidden = false;
-      panel.innerHTML = `<div class="process-header"><h3>${processText(flow.steps[index])}</h3><button type="button" class="ghost" data-close-step>Close</button></div>${signal ? `<div class="prose">${renderMarkdown(signal.signal)}</div><p class="meta">${processText(signal.source)}</p>` : ''}`;
+      openProcessStep(flow, index);
     }
-    if (event.target.closest('[data-close-step]')) box.querySelector('#process-step-detail').hidden = true;
   };
   mountProcessDiagram(flow);
   box.onkeydown = event => { if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('[data-step]')) { event.preventDefault(); event.target.dispatchEvent(new MouseEvent('click', { bubbles: true })); } };

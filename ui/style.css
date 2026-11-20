@@ -190,9 +190,7 @@ main:has(#processes:not([hidden])) { max-width: none; }
 .process-canvas [role="button"]:focus-visible { outline: 2px solid var(--accent-strong); }
 .process-notes { margin-top: 20px; }
 .process-notes summary { cursor: pointer; color: var(--accent-strong); }
-.process-notes .prose, #process-step-detail .prose { max-width: 80ch; overflow-wrap: anywhere; }
-#process-step-detail { margin-top: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; }
-#process-step-detail .meta { overflow-wrap: anywhere; }
+.process-notes .prose { max-width: 80ch; overflow-wrap: anywhere; }
 @media (max-width: 800px) {
   .process-workspace { grid-template-columns: 1fr; gap: 16px; }
   .process-picker { display: flex; overflow-x: auto; }
@@ -206,3 +204,11 @@ main:has(#processes:not([hidden])) { max-width: none; }
 .process-controls [data-process-zoom] { color: var(--muted); font-size: 12px; min-width: 38px; text-align: center; }
 .process-canvas { background: var(--bg); border: 0; border-radius: 0; height: 72vh; margin-top: 24px; }
 .process-canvas > div { margin: 0 auto; }
+
+#process-step-modal { width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); padding: 0; border: 1px solid var(--line); border-radius: 12px; color: var(--text); background: var(--panel); box-shadow: 0 24px 80px rgb(0 0 0 / 0.45); }
+#process-step-modal::backdrop { background: rgb(0 0 0 / 0.65); }
+.process-modal-header { display: flex; align-items: start; justify-content: space-between; gap: 20px; padding: 20px 24px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); }
+.process-modal-header .meta { margin: 0 0 6px; }
+.process-modal-header h2 { margin: 0; }
+.process-modal-body { padding: 8px 24px 24px; overflow-wrap: anywhere; }
+.process-modal-body .meta { font-size: 12px; }
