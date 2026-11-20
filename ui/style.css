@@ -212,3 +212,8 @@ main:has(#processes:not([hidden])) { max-width: none; }
 .process-modal-header h2 { margin: 0; }
 .process-modal-body { padding: 8px 24px 24px; overflow-wrap: anywhere; }
 .process-modal-body .meta { font-size: 12px; }
+
+.status.unverified { color: var(--warn); }
+.status.errored { color: var(--bad); }
+.process-picker .status { justify-self: start; }
+.process-header .status + h2 { margin-top: 8px; }

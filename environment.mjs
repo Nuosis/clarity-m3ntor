@@ -90,9 +90,12 @@ async function recordProcessNow(cwd, input) {
   const f = files(cwd);
   const record = await load(f.processes, { processes: [] });
   let flow = input.process_id ? record.processes.find(item => item.id === input.process_id) : null;
+  const creating = !input.process_id;
   if (input.process_id && !flow) throw new Error('Process not found.');
-  if (!flow) { if (!input.name?.trim()) throw new Error('Give the process a name.'); flow = { id: randomUUID(), name: input.name.trim() }; record.processes.push(flow); }
+  if (!flow) { if (!input.name?.trim()) throw new Error('Give the process a name.'); flow = { id: randomUUID(), name: input.name.trim(), status: 'unverified' }; record.processes.push(flow); }
   for (const key of ['name', 'trigger', 'steps', 'handoffs', 'completion', 'signals', 'failure_conditions', 'documented_at', 'examples']) if (input[key] !== undefined) flow[key] = input[key];
+  if (!creating && input.status !== undefined) flow.status = input.status;
+  flow.status ??= 'unverified';
   flow.updated_at = now();
   return save(cwd, f.processes, record);
 }
@@ -154,11 +157,12 @@ export const environmentTools = [
     failures_surfaced: { type: 'array', description: 'Failures this run sent to the owner (each once, until resolved or changed).', items: { type: 'object', properties: { what: str('What failed.'), process: str('The recorded process it belongs to.'), step: str('The step whose expected signal is missing.'), since: str('When it became a failure, YYYY-MM-DD.'), channel: str('The failure channel it was sent through.'), receipt: str('Delivery read-back.') }, required: ['what', 'channel', 'receipt'], additionalProperties: false } },
     routine_task_id: str('The recurring task that ran this refresh.'),
   }, required: ['commitments'], additionalProperties: false } },
-  { name: 'record_process', description: 'Use when you learn or correct how a business process runs (from its documentation, past email, quotes, invoices, records or the owner): add or update that process with its trigger, steps, handoffs, completion, the signal showing each step happened and where, failure conditions and past examples.', inputSchema: { type: 'object', properties: {
+  { name: 'record_process', description: 'Use when you learn or correct how a business process runs (from its documentation, past email, quotes, invoices, records or the owner): add or update that process with its trigger, steps, handoffs, completion, the signal showing each step happened and where, failure conditions and past examples. New processes start unverified; update status separately as evidence changes.', inputSchema: { type: 'object', properties: {
     process_id: str('Existing process to update (from read_environment); omit to add a new one.'),
     name: str('The process name in the business\'s terms, e.g. "Inquiry to quote".'),
     trigger: str('What starts it.'),
     steps: strings('The steps in order.'),
+    status: { ...str('Process status, e.g. unverified, active or errored. Applied on updates; creation always starts unverified. Omit on updates to preserve the current status.'), default: 'unverified' },
     handoffs: strings('Where work passes between people, agents or systems.'),
     completion: str('What shows the process is finished.'),
     failure_conditions: { type: 'array', description: 'When a step counts as failed.', items: { type: 'object', properties: { step: str('The step.'), condition: str('The expected signal that has not appeared, e.g. "no customer reply".'), after: str('How long before it counts as failed, e.g. "5 business days".') }, required: ['step', 'condition', 'after'], additionalProperties: false } },
