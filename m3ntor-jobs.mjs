@@ -1,7 +1,8 @@
 import { mkdir, readFile, writeFile, rename, open } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
+import { readEnvironment } from './environment.mjs';
 import { spawn } from 'node:child_process';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -90,7 +91,20 @@ export const reassessPoma = assessPoma;
 export async function startTaskJob(task, environment) {
   const constraints = task.constraints ? JSON.parse(task.constraints) : [];
   const question = `Task: ${task.instruction}\n\nSuccess means: ${task.success || 'the task above is carried out.'}${constraints.length ? `\n\nConstraints for this task:\n${constraints.map(item => `- ${item}`).join('\n')}` : ''}`;
-  return createJob({ context: { task_id: task.id, title: task.title, category: task.category }, harness: environment.agentHarness }, environment, { identity: 'scheduled_task', question, promptId: null, jobId: task.job_id });
+  const processIds = typeof task.process_ids === 'string' ? JSON.parse(task.process_ids) : task.process_ids || [];
+  const { processes } = processIds.length ? await readEnvironment(environment.cwd) : { processes: { processes: [] } };
+  const snapshots = processIds.map(id => {
+    const definition = processes.processes.find(flow => flow.id === id);
+    if (!definition) {
+      const error = new Error(`Bound process ${id} was not found. Restore the record or correct this task's process_ids before retrying; no harness was started.`);
+      error.code = 'PROCESS_NOT_FOUND';
+      throw error;
+    }
+    const contentSha256 = createHash('sha256').update(JSON.stringify(definition)).digest('hex');
+    return { process_id: id, version: contentSha256, content_sha256: contentSha256, updated_at: definition.updated_at || null, definition };
+  });
+  const triggerInput = typeof task.trigger_input === 'string' ? JSON.parse(task.trigger_input) : task.trigger_input || null;
+  return createJob({ context: { task_id: task.id, title: task.title, category: task.category, goal_id: task.goal_id || null, stage: task.stage || null, instruction: task.instruction, requested_outcome: task.success || 'the task above is carried out.', trigger_input: triggerInput, process_ids: processIds, processes: snapshots }, harness: environment.agentHarness }, environment, { identity: 'scheduled_task', question, promptId: null, jobId: task.job_id });
 }
 
 // The agent's review of its active goal, run in the owner's harness with the local tools.

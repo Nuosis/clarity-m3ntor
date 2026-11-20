@@ -97,13 +97,31 @@ async function recordProcessNow(cwd, input) {
   const creating = !input.process_id;
   if (input.process_id && !flow) throw new Error('Process not found.');
   if (!flow) { if (!input.name?.trim()) throw new Error('Give the process a name.'); flow = { id: randomUUID(), name: input.name.trim(), status: 'unverified', agentic: null }; record.processes.push(flow); }
-  for (const key of ['name', 'trigger', 'steps', 'handoffs', 'completion', 'signals', 'failure_conditions', 'documented_at', 'examples', 'agentic', 'agentic_evidence']) if (input[key] !== undefined) flow[key] = input[key];
+  for (const key of ['name', 'trigger', 'steps', 'handoffs', 'completion', 'signals', 'failure_conditions', 'documented_at', 'examples', 'agentic', 'agentic_evidence', 'validation_evidence', 'validated_at']) if (input[key] !== undefined) flow[key] = input[key];
   if (input.signal_access !== undefined) flow.signal_access = input.signal_access.map(item => ({ ...item, at: now() }));
   if (!creating && input.status !== undefined) flow.status = input.status;
   flow.status ??= 'unverified';
   flow.updated_at = now();
   return save(cwd, f.processes, record);
 }
+
+// Stage evidence updates only the processes explicitly associated with the function.
+export function recordProcessStage(cwd, processIds, stage, evidence, at = now()) { return serial(async () => {
+  const f = files(cwd);
+  const record = await load(f.processes, { processes: [] });
+  const selected = processIds.map(id => {
+    const flow = record.processes.find(item => item.id === id);
+    if (!flow) throw new Error(`Associated process ${id} was not found. Restore the record or correct the goal's process_ids, then retry the stage.`);
+    return flow;
+  });
+  for (const flow of selected) {
+    if (stage === 'process') { flow.status = 'validated'; flow.validation_evidence = evidence; flow.validated_at = at; }
+    if (stage === 'agency') { flow.agentic = true; flow.agentic_evidence = evidence; }
+    flow.updated_at = at;
+  }
+  if (selected.length) await save(cwd, f.processes, record);
+  return selected;
+}); }
 
 export function deleteProcess(cwd, input) { return serial(async () => {
   const f = files(cwd);
@@ -178,7 +196,9 @@ export const environmentTools = [
     name: str('The process name in the business\'s terms, e.g. "Inquiry to quote".'),
     trigger: str('What starts it.'),
     steps: strings('The steps in order.'),
-    status: { ...str('Process status, e.g. unverified, active or errored. Applied on updates; creation always starts unverified. Omit on updates to preserve the current status.'), default: 'unverified' },
+    status: { ...str('Process definition status, e.g. unverified, validated, active or errored. Applied on updates; creation always starts unverified. Omit on updates to preserve the current status.'), default: 'unverified' },
+    validation_evidence: str('Evidence that the definition is actionable and its logic is validated; separate from actual triggered execution.'),
+    validated_at: { type: 'string', format: 'date-time', description: 'When the definition validation occurred; preserve the original time when backfilling evidence.' },
     agentic: { type: ['boolean', 'null'], description: 'Whether triggered agent execution of this process is evidenced: true, false for known non-agentic execution, or null when unassessed. Independent of definition status and setup completion.' },
     agentic_evidence: str('Evidence supporting the agentic assessment; do not infer it from a written procedure or a model capability.'),
     handoffs: strings('Where work passes between people, agents or systems.'),

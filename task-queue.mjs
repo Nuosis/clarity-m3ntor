@@ -4,7 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getM3ntorResult, jobDirectory, startTaskJob, startGoalReviewJob } from './m3ntor-jobs.mjs';
 import { stagesFor, STUCK_INSTRUCTION } from './goals.mjs';
-import { environmentCheck, readEnvironment } from './environment.mjs';
+import { environmentCheck, readEnvironment, recordProcessStage } from './environment.mjs';
 import { appendJournalInWrite, businessDate, questionState, readJournal, serializeBusinessWrites, setUserQuestions } from './business-journal.mjs';
 
 // Journal entries with fixed ids, so a retried write updates the same entry.
@@ -40,7 +40,7 @@ const recurrenceSchema = {
 const TASK_STATUSES = ['queued', 'delivered', 'executing', 'completed', 'failed', 'paused', 'done'];
 
 export const taskTools = [
-  { name: 'set_task', description: 'Use when work should run in the owner\'s harness now, later or on a schedule: the next work for the active goal\'s stage, the weekly assessment, a recurring routine, or one-off work the owner directs. Creates or updates a task in the owner\'s action queue; the service runs it when due and records the result. Supplying an existing task_id updates that task instead of adding another; use this to reuse a matching recurring task.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'Existing task to update; omit to create.' }, title: { type: 'string', description: 'Short name the owner sees in the task list.' }, instruction: { type: 'string', description: 'The task: what the owner\'s agent should do when it runs.' }, success: { type: 'string', description: 'Definition of success: what must be true for the run to count as done.' }, constraints: { type: 'array', items: { type: 'string' }, description: 'Optional constraints unique to this task.' }, category: { type: 'string', enum: ['assessment', 'use_case', 'other'], description: 'assessment for the weekly reassessment, use_case for researching an owner-reported use case.' }, run_at: { type: 'string', format: 'date-time', description: 'First run time; omit to run now (one-off) or at the next recurrence.' }, recurrence: recurrenceSchema, remove_on_completion: { type: 'boolean', description: 'One-off tasks only: after a successful run, journal the result and remove the task from the list (used for one-off work whose record belongs in the journal).' }, goal_id: { type: 'string', description: 'The active goal this task works on; omit for one-off work the owner directs.' }, stage: { type: 'string', description: 'With goal_id: the goal\'s current stage key (list_goals). Tasks for a stage the goal has not reached are refused.' } }, required: ['title', 'instruction', 'success'], additionalProperties: false } },
+  { name: 'set_task', description: 'Use when work should run in the owner\'s harness now, later or on a schedule: the next work for the active goal\'s stage, the weekly assessment, a recurring routine, or one-off work the owner directs. Creates or updates a task in the owner\'s action queue; the service runs it when due and records the result. Supplying an existing task_id updates that task instead of adding another; use this to reuse a matching recurring task.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'Existing task to update; omit to create.' }, title: { type: 'string', description: 'Short name the owner sees in the task list.' }, instruction: { type: 'string', description: 'The task: what the owner\'s agent should do when it runs.' }, success: { type: 'string', description: 'Definition of success: what must be true for the run to count as done.' }, constraints: { type: 'array', items: { type: 'string' }, description: 'Optional constraints unique to this task.' }, category: { type: 'string', enum: ['assessment', 'use_case', 'other'], description: 'assessment for the weekly reassessment, use_case for researching an owner-reported use case.' }, run_at: { type: 'string', format: 'date-time', description: 'First run time; omit to run now (one-off) or at the next recurrence.' }, recurrence: recurrenceSchema, remove_on_completion: { type: 'boolean', description: 'One-off tasks only: after a successful run, journal the result and remove the task from the list (used for one-off work whose record belongs in the journal).' }, process_ids: { type: 'array', items: { type: 'string' }, description: 'Applicable registered process IDs. Omit to inherit the associated goal binding; an explicit empty list means no process binding.' }, trigger_input: { type: 'object', additionalProperties: true, description: 'The triggering input or event for this run, supplied as structured data.' }, goal_id: { type: 'string', description: 'The active goal this task works on; omit for one-off work the owner directs.' }, stage: { type: 'string', description: 'With goal_id: the goal\'s current stage key (list_goals). Tasks for a stage the goal has not reached are refused.' } }, required: ['title', 'instruction', 'success'], additionalProperties: false } },
   { name: 'list_tasks', description: 'Use before set_task, to reuse a matching task instead of adding a duplicate, and when checking what is queued, running or failed: lists tasks with status, next run time, last run and its result or error.', inputSchema: { type: 'object', properties: { status: { type: 'string', enum: TASK_STATUSES, description: 'Only tasks in this status; omit for all.' } }, additionalProperties: false }, annotations: { readOnlyHint: true } },
   { name: 'clear_task', description: 'Use when a task is finished for good or the owner decides against it: action done marks it finished and stops any recurrence (history kept); action delete removes it and its run history. A running job is not stopped. When the owner has decided against a task, give their reason: it is journaled so M3NT0R can take it into account on its next weekly run.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'The task, from list_tasks.' }, action: { type: 'string', enum: ['done', 'delete'], description: 'done keeps its history; delete removes it and its runs.' }, reason: { type: 'string', description: 'The owner\'s decision and reason, when they directed this.' } }, required: ['task_id', 'action'], additionalProperties: false } },
   { name: 'start_task_worker', description: 'Use at setup, or when the owner wants queued tasks to run again after stopping them: start running due tasks (persists across service restarts) and return the worker state.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
@@ -79,7 +79,14 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       completed TEXT NOT NULL DEFAULT '[]', stop_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   `);
   const columns = new Set(db.prepare('PRAGMA table_info(tasks)').all().map(column => column.name));
-  for (const [name, type] of [['remove_on_completion', 'INTEGER NOT NULL DEFAULT 0'], ['success', 'TEXT'], ['constraints', 'TEXT'], ['category', 'TEXT'], ['goal_id', 'TEXT'], ['stage', 'TEXT'], ['set_at', 'TEXT']]) if (!columns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
+  for (const [name, type] of [['remove_on_completion', 'INTEGER NOT NULL DEFAULT 0'], ['success', 'TEXT'], ['constraints', 'TEXT'], ['category', 'TEXT'], ['goal_id', 'TEXT'], ['stage', 'TEXT'], ['set_at', 'TEXT'], ['process_ids', 'TEXT'], ['trigger_input', 'TEXT']]) if (!columns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
+  const goalColumns = new Set(db.prepare('PRAGMA table_info(goals)').all().map(column => column.name));
+  if (!goalColumns.has('process_ids')) db.exec('ALTER TABLE goals ADD COLUMN process_ids TEXT');
+  const encodeProcessIds = ids => {
+    if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !id.trim())) throw new Error('process_ids must be a list of registered process IDs.');
+    return JSON.stringify([...new Set(ids)]);
+  };
+  const taskProcessIds = task => task.process_ids ?? (task.goal_id ? db.prepare('SELECT process_ids FROM goals WHERE id = ?').get(task.goal_id)?.process_ids : null) ?? null;
   const now = () => new Date().toISOString();
   const get = id => db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   const update = (id, fields) => {
@@ -88,7 +95,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   };
   const enabled = () => db.prepare("SELECT value FROM settings WHERE key = 'worker_enabled'").get()?.value === 'true';
   const setEnabled = value => db.prepare("INSERT INTO settings (key, value) VALUES ('worker_enabled', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(value));
-  const view = task => task && { ...task, recurrence: task.recurrence ? JSON.parse(task.recurrence) : null, constraints: task.constraints ? JSON.parse(task.constraints) : [] };
+  const view = task => task && { ...task, recurrence: task.recurrence ? JSON.parse(task.recurrence) : null, constraints: task.constraints ? JSON.parse(task.constraints) : [], process_ids: JSON.parse(taskProcessIds(task) || '[]'), trigger_input: task.trigger_input ? JSON.parse(task.trigger_input) : null };
   const watchers = new Map();
   let timer = null;
 
@@ -184,8 +191,9 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const claimed = db.prepare("UPDATE tasks SET status = 'delivered', job_id = ?, updated_at = ? WHERE id = ? AND status = 'queued'").run(jobId, now(), task.id);
     if (!claimed.changes) return;
     db.prepare('INSERT INTO runs (id, task_id, job_id, status, started_at) VALUES (?, ?, ?, ?, ?)').run(randomUUID(), task.id, jobId, 'executing', now());
-    try { await startTaskJob({ ...task, job_id: jobId }, { cwd, harness, mcpUrl, ...agentRun() }); }
+    try { await startTaskJob({ ...task, process_ids: taskProcessIds(task), job_id: jobId }, { cwd, harness, mcpUrl, ...agentRun() }); }
     catch (error) {
+      if (error.code === 'PROCESS_NOT_FOUND') { settle(task.id, { job_id: jobId, status: 'failed', error: error.message }); schedule(); return; }
       db.prepare("UPDATE runs SET status = 'failed', finished_at = ?, error = ? WHERE job_id = ?").run(now(), `Could not start: ${error.message}`, jobId);
       db.prepare("UPDATE tasks SET status = 'queued', job_id = NULL, last_error = ?, updated_at = ? WHERE id = ? AND status = 'delivered' AND job_id = ?").run(`Could not start: ${error.message}`, now(), task.id, jobId);
       return;
@@ -243,7 +251,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     if (!goal) return null;
     const stages = stagesFor(goal.kind);
     const current = stages[goal.stage];
-    return { id: goal.id, title: goal.title, kind: goal.kind, outcome: goal.outcome, source: goal.source, position: goal.position, status: goal.status,
+    return { id: goal.id, title: goal.title, kind: goal.kind, outcome: goal.outcome, source: goal.source, position: goal.position, status: goal.status, process_ids: JSON.parse(goal.process_ids || '[]'),
       stage: current ? { index: goal.stage + 1, key: current.key, name: current.name, work: current.work, done_check: current.done } : null,
       stages: stages.map((stage, index) => ({ index: index + 1, key: stage.key, name: stage.name, state: index < goal.stage ? 'done' : index === goal.stage ? 'current' : 'later' })),
       completed: JSON.parse(goal.completed), stop_reason: goal.stop_reason, created_at: goal.created_at, updated_at: goal.updated_at };
@@ -344,7 +352,11 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         question: `We have sketched ${processes.processes.length} business processes in the Process tab. Would you like to review them? You can ask your agent to add, read, change or delete flows through MCP. These are unverified sketches; reviewing them is optional and does not block environment setup.`,
       }] });
     }
-    const completed = [...JSON.parse(goal.completed), { stage: stage.key, name: stage.name, evidence: evidence.trim(), at: now() }];
+    const completedAt = now();
+    if (goal.kind === 'function' && ['process', 'agency'].includes(stage.key)) {
+      await recordProcessStage(cwd, JSON.parse(goal.process_ids || '[]'), stage.key, evidence.trim(), completedAt);
+    }
+    const completed = [...JSON.parse(goal.completed), { stage: stage.key, name: stage.name, evidence: evidence.trim(), at: completedAt }];
     const nextIndex = goal.stage + 1;
     const nextStage = stages[nextIndex];
     // The last stage that ends (the recurring Improve stage does not) completes the goal:
@@ -402,14 +414,14 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       const goal = getGoal(input.goal_id);
       if (!goal) throw new Error('Goal not found.');
       if (goal.kind === 'environment' && input.position) throw new Error('The working environment goal always comes first.');
-      updateGoal(goal.id, { ...(input.title ? { title: input.title } : {}), ...(input.outcome ? { outcome: input.outcome } : {}), ...(input.position ? { position: input.position } : {}) });
+      updateGoal(goal.id, { ...(input.title ? { title: input.title } : {}), ...(input.outcome ? { outcome: input.outcome } : {}), ...(input.position ? { position: input.position } : {}), ...(input.process_ids !== undefined ? { process_ids: encodeProcessIds(input.process_ids) } : {}) });
       return goalView(getGoal(goal.id));
     }
     if (!input.title?.trim() || !input.outcome?.trim()) throw new Error('Give the goal a title and its outcome.');
     const position = input.position || (db.prepare('SELECT MAX(position) AS p FROM goals').get().p || 0) + 1;
     const id = randomUUID();
-    db.prepare('INSERT INTO goals (id, title, kind, outcome, source, position, stage, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)')
-      .run(id, input.title.trim(), 'function', input.outcome.trim(), input.source || 'owner_request', position, 'waiting', now(), now());
+    db.prepare('INSERT INTO goals (id, title, kind, outcome, source, position, stage, status, created_at, updated_at, process_ids) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)')
+      .run(id, input.title.trim(), 'function', input.outcome.trim(), input.source || 'owner_request', position, 'waiting', now(), now(), input.process_ids !== undefined ? encodeProcessIds(input.process_ids) : null);
     activeGoal(); schedule();
     return goalView(getGoal(id));
   }
@@ -531,7 +543,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       } : null;
       const lastReview = since ? { finished_at: since, conclusions: setting('goal_review_handoff') } : null;
       const stuckContext = stuck ? { reason: STUCK_REASON, score: latest && view.stage.score ? latest.ratings?.[view.stage.score]?.score ?? null : null, done_check_missing: stillMissing || null } : null;
-      await startGoalReviewJob({ jobId, question, context: { ...(lastReview ? { last_review: lastReview, changes_since_last_review: changes } : {}), ...(stuckContext ? { stuck: stuckContext } : {}), owner_answers: ownerAnswers, owner_notes: notes, ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl, ...agentRun() });
+      await startGoalReviewJob({ jobId, question, context: { goal_id: goal.id, process_ids: view.process_ids, ...(lastReview ? { last_review: lastReview, changes_since_last_review: changes } : {}), ...(stuckContext ? { stuck: stuckContext } : {}), owner_answers: ownerAnswers, owner_notes: notes, ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl, ...agentRun() });
       setSetting('goal_review_state', state);
       setSetting('goal_last_review_at', now());
       if (pace().pace !== 'yolo') setSetting('goal_next_review_at', nextClock().toISOString());
@@ -710,11 +722,12 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
           if (input.stage && input.stage !== current.key) throw new Error(`The goal "${goal.title}" is in its ${current.name} stage ("${current.key}"); tasks for the "${input.stage}" stage wait until it gets there.`);
           goalFields = { goal_id: goal.id, stage: current.key };
         }
-        const contract = { success: input.success.trim(), constraints: input.constraints?.length ? JSON.stringify(input.constraints) : null, category: input.category || null, ...goalFields };
+        if (input.trigger_input !== undefined && (!input.trigger_input || typeof input.trigger_input !== 'object' || Array.isArray(input.trigger_input))) throw new Error('trigger_input must be an object.');
+        const contract = { process_ids: input.process_ids !== undefined ? encodeProcessIds(input.process_ids) : existing?.process_ids ?? null, trigger_input: input.trigger_input !== undefined ? JSON.stringify(input.trigger_input) : existing?.trigger_input ?? null, success: input.success.trim(), constraints: input.constraints?.length ? JSON.stringify(input.constraints) : null, category: input.category || null, ...goalFields };
         const removeOnCompletion = input.remove_on_completion === true ? 1 : 0;
         if (removeOnCompletion && recurrence) throw new Error('remove_on_completion applies to one-off tasks only.');
         if (existing) update(id, { title: input.title, instruction: input.instruction, recurrence, next_run_at: nextRun, status: 'queued', consecutive_failures: 0, pause_reason: null, remove_on_completion: removeOnCompletion, set_at: now(), ...contract });
-        else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, remove_on_completion, success, constraints, category, goal_id, stage, set_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, input.title, input.instruction, recurrence, nextRun, 'queued', now(), now(), removeOnCompletion, contract.success, contract.constraints, contract.category, contract.goal_id, contract.stage, now());
+        else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, remove_on_completion, success, constraints, category, goal_id, stage, set_at, process_ids, trigger_input) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, input.title, input.instruction, recurrence, nextRun, 'queued', now(), now(), removeOnCompletion, contract.success, contract.constraints, contract.category, contract.goal_id, contract.stage, now(), contract.process_ids, contract.trigger_input);
         schedule();
         return { task: view(get(id)), created: !existing, worker: workerState() };
       }
