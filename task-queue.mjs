@@ -325,14 +325,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       // The working environment's stages are checked against its records, not the agent's claim.
       const missing = await environmentCheck(cwd, stage.key);
       if (missing) throw new Error(`The ${stage.name} done-check is not met: ${missing}`);
-      if (stage.key === 'observability') {
-        // The list must come from a recurring routine task's own completed run, not a hand edit.
-        const { plate } = await readEnvironment(cwd);
-        const routine = get(plate.routine_task_id);
-        if (!routine?.recurrence) throw new Error('The Observability done-check is not met: the commitments list was not refreshed by a recurring routine task.');
-        const run = db.prepare("SELECT * FROM runs WHERE task_id = ? AND status = 'completed' AND started_at <= ? AND finished_at >= ? ORDER BY finished_at DESC LIMIT 1").get(routine.id, plate.updated_at, plate.updated_at);
-        if (!run) throw new Error('The Observability done-check is not met: the latest commitments list was not written during a completed run of the routine task.');
-      }
+
     } else {
       if (!tasks.length) throw new Error(`No task has run for the ${stage.name} stage yet.`);
       const last = tasks.filter(task => task.last_run_at).sort((a, b) => String(b.last_run_at).localeCompare(String(a.last_run_at)))[0];

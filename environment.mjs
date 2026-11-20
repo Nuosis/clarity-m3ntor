@@ -98,6 +98,7 @@ async function recordProcessNow(cwd, input) {
   if (input.process_id && !flow) throw new Error('Process not found.');
   if (!flow) { if (!input.name?.trim()) throw new Error('Give the process a name.'); flow = { id: randomUUID(), name: input.name.trim(), status: 'unverified', agentic: null }; record.processes.push(flow); }
   for (const key of ['name', 'trigger', 'steps', 'handoffs', 'completion', 'signals', 'failure_conditions', 'documented_at', 'examples', 'agentic', 'agentic_evidence']) if (input[key] !== undefined) flow[key] = input[key];
+  if (input.signal_access !== undefined) flow.signal_access = input.signal_access.map(item => ({ ...item, at: now() }));
   if (!creating && input.status !== undefined) flow.status = input.status;
   flow.status ??= 'unverified';
   flow.updated_at = now();
@@ -124,20 +125,19 @@ export async function environmentCheck(cwd, stageKey) {
     if (!needed.length) return 'No source is marked needed.';
     const missing = needed.filter(item => !(item.read_back?.ok && item.read_back.direct && recent(item.read_back.at, 7)));
     if (missing.length) return `These needed sources have no successful direct read-back in the last 7 days: ${missing.map(item => item.name).join(', ')}. Read each through its own route (its API, connector, command-line tool or database) and record direct: true; key names, emails about it or calendar links do not count.`;
-    const homeless = HOMES.filter(home => !needed.some(item => item.home_for?.includes(home)));
-    if (homeless.length) return `Record which needed source is the home for: ${homeless.map(home => HOME_NAMES[home]).join('; ')}. If none exists, ask the owner where to keep it.`;
-    const channels = needed.filter(item => item.home_for?.includes('failures'));
-    if (!channels.some(item => item.notice_test?.ok && recent(item.notice_test.at, 7))) return 'Send a test notice to the owner through the failure channel and record its delivery (record_source notice_test).';
     return null;
   }
   if (stageKey === 'observability') {
-    if (!recent(plate.updated_at, 7)) return 'The plate has not been updated in the last 7 days.';
-    if (!plate.commitments.length) return 'The plate lists no commitments.';
-    const unplaced = plate.commitments.filter(item => !item.sources?.length || !item.process || !item.step);
-    if (unplaced.length) return `These items need their process, step and source links: ${unplaced.map(item => item.what).join('; ')}.`;
-    if (!plate.routine_task_id) return 'The list was not refreshed by a recurring routine task.';
-    if (!plate.failures_surfaced?.some(item => item.receipt)) return 'The routine has not yet sent a failure (real or test) to the owner through the failure channel with a delivery receipt.';
-    return null;
+    // USER-AUTHORIZED — Marcus, November 19, 2026: readiness is live source
+    // connections plus representative trigger/milestone access, not a plate or score.
+    const missingSources = await environmentCheck(cwd, 'infrastructure');
+    if (missingSources) return missingSources;
+    const readable = new Set(sources.sources.filter(item => item.needed && item.read_back?.ok && item.read_back.direct && recent(item.read_back.at, 7)).map(item => item.id));
+    const demonstrated = processes.processes.some(flow => {
+      const access = (flow.signal_access || []).filter(item => item.ok && item.direct && item.ref?.trim() && item.what?.trim() && recent(item.observed_at || item.at, 7) && readable.has(item.source_id));
+      return access.some(item => item.kind === 'trigger') && access.some(item => item.kind === 'milestone');
+    });
+    return demonstrated ? null : 'Demonstrate readable trigger and key milestone signals for a representative mapped flow; record_process signal_access needs direct read results and source/record references. Record remaining coverage gaps; no recurring business monitor is required.';
   }
   if (stageKey === 'process') {
     if (!processes.processes.length) return 'No processes are recorded.';
@@ -185,6 +185,7 @@ export const environmentTools = [
     completion: str('What shows the process is finished.'),
     failure_conditions: { type: 'array', description: 'When a step counts as failed.', items: { type: 'object', properties: { step: str('The step.'), condition: str('The expected signal that has not appeared, e.g. "no customer reply".'), after: str('How long before it counts as failed, e.g. "5 business days".') }, required: ['step', 'condition', 'after'], additionalProperties: false } },
     documented_at: str('Link to where the business documents this flow, when it does.'),
+    signal_access: { type: 'array', description: 'Direct reads proving access to a mapped flow trigger or key progress milestone. The service stamps each read time; omit to preserve prior entries.', items: { type: 'object', properties: { kind: { type: 'string', enum: ['trigger', 'milestone'] }, observed_at: { type: 'string', format: 'date-time', description: 'When the referenced direct read occurred. Keep the original time when reusing saved evidence; omitted for a read just performed.' }, step: str('The mapped step or milestone.'), source_id: str('Source ID from read_environment.'), ref: str('Specific source record or retained response reference.'), ok: { type: 'boolean' }, direct: { type: 'boolean' }, what: str('What this direct read demonstrated, with coverage limits.') }, required: ['kind', 'source_id', 'ref', 'ok', 'direct', 'what'], additionalProperties: false } },
     signals: { type: 'array', description: 'What shows each step happened.', items: { type: 'object', properties: { step: str('The step.'), signal: str('What shows this step happened, e.g. "quote email sent to the customer".'), source: str('The source it appears in.') }, required: ['step', 'signal', 'source'], additionalProperties: false } },
     examples: { type: 'array', description: 'Past cases of this process.', items: ref },
   }, additionalProperties: false } },
