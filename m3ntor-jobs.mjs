@@ -104,7 +104,17 @@ export async function startTaskJob(task, environment) {
     return { process_id: id, version: contentSha256, content_sha256: contentSha256, updated_at: definition.updated_at || null, definition };
   });
   const triggerInput = typeof task.trigger_input === 'string' ? JSON.parse(task.trigger_input) : task.trigger_input || null;
-  return createJob({ context: { task_id: task.id, title: task.title, category: task.category, goal_id: task.goal_id || null, stage: task.stage || null, instruction: task.instruction, requested_outcome: task.success || 'the task above is carried out.', trigger_input: triggerInput, process_ids: processIds, processes: snapshots }, harness: environment.agentHarness }, environment, { identity: 'scheduled_task', question, promptId: null, jobId: task.job_id });
+  const harness = environment.agentHarness || process.env.M3NTOR_HARNESS || environment.harness || 'codex';
+  const fullAccess = environment.fullAccess === true;
+  const executionEnvironment = {
+    harness,
+    full_access: fullAccess,
+    permission_mode: harness === 'claude'
+      ? (fullAccess ? 'bypassPermissions' : 'acceptEdits')
+      : (fullAccess ? 'dangerously-bypass-approvals-and-sandbox' : 'workspace-write'),
+    network_access: true,
+  };
+  return createJob({ context: { task_id: task.id, title: task.title, category: task.category, goal_id: task.goal_id || null, stage: task.stage || null, instruction: task.instruction, requested_outcome: task.success || 'the task above is carried out.', trigger_input: triggerInput, process_ids: processIds, processes: snapshots, execution_environment: executionEnvironment }, harness: environment.agentHarness }, environment, { identity: 'scheduled_task', question, promptId: null, jobId: task.job_id });
 }
 
 // The agent's review of its active goal, run in the owner's harness with the local tools.
