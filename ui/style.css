@@ -200,3 +200,9 @@ main:has(#processes:not([hidden])) { max-width: none; }
   .process-view { padding: 14px; }
   nav { overflow-x: auto; }
 }
+
+.process-controls { align-items: center; gap: 8px; flex-wrap: wrap; }
+.process-controls button { border: 0; background: transparent; color: var(--accent-strong); font-size: 12px; padding: 4px; }
+.process-controls [data-process-zoom] { color: var(--muted); font-size: 12px; min-width: 38px; text-align: center; }
+.process-canvas { background: var(--bg); border: 0; border-radius: 0; height: 72vh; margin-top: 24px; }
+.process-canvas > div { margin: 0 auto; }
