@@ -88,7 +88,7 @@ function renderCase(item) {
     <details>
       <summary>How it works</summary>
       <div class="prose">
-        <h3>Process</h3><p>${esc(item.process)}</p>
+        <h3>Process</h3>${renderMarkdown(item.process)}
         ${list('Prerequisites', item.prerequisites)}
         ${list('What the agent does', item.agent_actions)}
         <h3>Outcome</h3><p>${esc(item.outcome)}</p>
