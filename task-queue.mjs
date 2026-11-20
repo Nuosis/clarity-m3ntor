@@ -1,11 +1,12 @@
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch } from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { getM3ntorResult, jobDirectory, startTaskJob, startGoalReviewJob } from './m3ntor-jobs.mjs';
 import { stagesFor, STUCK_INSTRUCTION } from './goals.mjs';
 import { environmentCheck, readEnvironment, recordProcessStage } from './environment.mjs';
 import { appendJournalInWrite, businessDate, questionState, readJournal, serializeBusinessWrites, setUserQuestions } from './business-journal.mjs';
+import { AGENCY_PILOT_TASK, pilotDirectory, pilotPendingFile } from './agency-pilot-observer.mjs';
 
 // Journal entries with fixed ids, so a retried write updates the same entry.
 const journalOnce = (cwd, entryId, input) => serializeBusinessWrites(cwd, () => appendJournalInWrite(cwd, input, new Date(), entryId));
@@ -73,6 +74,11 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       id TEXT PRIMARY KEY, task_id TEXT NOT NULL, job_id TEXT, status TEXT NOT NULL,
       started_at TEXT NOT NULL, finished_at TEXT, result TEXT, error TEXT);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS agency_pilot_sources (
+      source_event_id TEXT PRIMARY KEY, task_id TEXT NOT NULL,
+      intake_id TEXT NOT NULL, message_id TEXT NOT NULL, event TEXT NOT NULL,
+      state TEXT NOT NULL, received_at TEXT NOT NULL, job_id TEXT,
+      queued_at TEXT, settled_at TEXT);
     CREATE TABLE IF NOT EXISTS goals (
       id TEXT PRIMARY KEY, title TEXT NOT NULL, kind TEXT NOT NULL, outcome TEXT, source TEXT,
       position INTEGER NOT NULL, stage INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL,
@@ -98,6 +104,61 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   const view = task => task && { ...task, recurrence: task.recurrence ? JSON.parse(task.recurrence) : null, constraints: task.constraints ? JSON.parse(task.constraints) : [], process_ids: JSON.parse(taskProcessIds(task) || '[]'), trigger_input: task.trigger_input ? JSON.parse(task.trigger_input) : null };
   const watchers = new Map();
   let timer = null;
+  let pilotPendingWatcher = null, pilotReadError = null, pilotInputVersion = null, pilotRejectedVersion = null;
+
+  // USER-AUTHORIZED — Marcus, November 20, 2026: this one-case pilot reuses
+  // its SAME local inov8 task. Preserve the running task, CASE/cursor, contract,
+  // native history and process bindings; duplicate source delivery never reruns it.
+  function queuePilotSource() {
+    const pendingFile = pilotPendingFile(cwd);
+    if (!existsSync(pendingFile)) return;
+    const pendingText = readFileSync(pendingFile, 'utf8');
+    const checkpointText = readFileSync(path.join(pilotDirectory(cwd), 'CASE.json'), 'utf8');
+    pilotInputVersion = createHash('sha256').update(pendingText).update(checkpointText).digest('hex');
+    if (pilotInputVersion === pilotRejectedVersion) return;
+    const pending = JSON.parse(pendingText);
+    if (pending.pilot !== 'AGENCY-PILOT-01' || pending.task_id !== AGENCY_PILOT_TASK) throw new Error('Agency pilot pending task mismatch.');
+    const checkpoint = JSON.parse(checkpointText);
+    if (checkpoint.task_id !== AGENCY_PILOT_TASK) throw new Error('Agency pilot CASE task mismatch.');
+    const permissionAt = Date.parse(String(checkpoint.permission?.at_pdt || '').replace(' ', 'T').replace(' PDT', '-07:00'));
+    for (const event of Object.values(pending.events || {})) {
+      const source = event.source;
+      if (!source?.id || !event.intake?.id || !event.message_id) throw new Error('Agency pilot source provenance is incomplete; pending retained.');
+      const occurred = Date.parse(source.occurred_at);
+      const landed = Date.parse(source.landed_at);
+      const communication = ['email', 'sms', 'imessage', 'call', 'call_recording', 'meeting_session'].includes(source.source_kind)
+        || ['email', 'sms', 'imessage', 'call', 'call_recording', 'meeting'].includes(source.channel);
+      const outside = !communication || source.direction === 'outbound'
+        || (Number.isFinite(permissionAt) && ((Number.isFinite(occurred) && occurred < permissionAt) || (Number.isFinite(landed) && landed < permissionAt)));
+      db.prepare('INSERT OR IGNORE INTO agency_pilot_sources (source_event_id, task_id, intake_id, message_id, event, state, received_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(source.id, AGENCY_PILOT_TASK, event.intake.id, event.message_id, JSON.stringify(event), outside ? 'outside_original_inbound_scope' : 'pending', event.received_at);
+    }
+    // CASE selection belongs to local inov8. Intake/draft readiness never selects
+    // it here. Once selected, no other request becomes a substitute pilot case.
+    if (checkpoint.case) return;
+    const task = get(AGENCY_PILOT_TASK);
+    if (!task || ['queued', 'delivered', 'executing', 'finalizing', 'clearing', 'paused', 'done'].includes(task.status)) return;
+    const event = db.prepare("SELECT * FROM agency_pilot_sources WHERE task_id = ? AND state = 'pending' ORDER BY received_at, source_event_id LIMIT 1").get(task.id);
+    if (!event) return;
+    const originalTrigger = task.trigger_input ? JSON.parse(task.trigger_input) : {};
+    const trigger = { ...originalTrigger, agency_pilot_event: {
+      pilot: 'AGENCY-PILOT-01', task_id: task.id, case_checkpoint: path.join(pilotDirectory(cwd), 'CASE.json'),
+      eligibility: 'pending_same_task_decision', source_event_id: event.source_event_id,
+      intake_id: event.intake_id, message_id: event.message_id,
+      original_handoff: JSON.parse(event.event),
+    } };
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      update(task.id, { trigger_input: JSON.stringify(trigger), status: 'queued', next_run_at: now(), set_at: now() });
+      db.prepare("UPDATE agency_pilot_sources SET state = 'queued', queued_at = ? WHERE source_event_id = ? AND state = 'pending'").run(now(), event.source_event_id);
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+  }
+  if (existsSync(pilotDirectory(cwd))) {
+    pilotPendingWatcher = watch(pilotDirectory(cwd), (_event, filename) => {
+      if (String(filename) === 'SOURCE-PENDING.json' || String(filename) === 'CASE.json') schedule();
+    });
+  }
 
   function nextFor(task, from) {
     const recurrence = task.recurrence ? JSON.parse(task.recurrence) : null;
@@ -115,6 +176,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       .run(ok ? 'completed' : 'failed', finished, ok ? job.output : null, error, taskId, job.job_id);
     const task = get(taskId);
     if (!task || task.job_id !== job.job_id) return;
+    db.prepare("UPDATE agency_pilot_sources SET state = ?, settled_at = ? WHERE task_id = ? AND job_id = ? AND state = 'executing'")
+      .run(ok ? 'completed' : 'failed', finished, taskId, job.job_id);
     if (!['delivered', 'executing'].includes(task.status)) {
       // Cleared while running: keep its done state and recurrence stopped, record the outcome.
       update(taskId, { job_id: null, last_run_at: finished, last_status: ok ? 'completed' : 'failed', last_result: ok ? job.output : null, last_error: error });
@@ -191,8 +254,15 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const claimed = db.prepare("UPDATE tasks SET status = 'delivered', job_id = ?, updated_at = ? WHERE id = ? AND status = 'queued'").run(jobId, now(), task.id);
     if (!claimed.changes) return;
     db.prepare('INSERT INTO runs (id, task_id, job_id, status, started_at) VALUES (?, ?, ?, ?, ?)').run(randomUUID(), task.id, jobId, 'executing', now());
+    db.prepare("UPDATE agency_pilot_sources SET state = 'executing', job_id = ? WHERE task_id = ? AND state = 'queued'").run(jobId, task.id);
     try { await startTaskJob({ ...task, process_ids: taskProcessIds(task), job_id: jobId }, { cwd, harness, mcpUrl, ...agentRun() }); }
     catch (error) {
+      if (db.prepare('SELECT source_event_id FROM agency_pilot_sources WHERE task_id = ? AND job_id = ?').get(task.id, jobId)) {
+        // No unchanged launch retry for a source event. Keep its correlation and
+        // the existing task's failed result for coordinator-owned diagnosis.
+        settle(task.id, { job_id: jobId, status: 'failed', error: `Could not start source-triggered task: ${error.message}` });
+        schedule(); return;
+      }
       if (error.code === 'PROCESS_NOT_FOUND') { settle(task.id, { job_id: jobId, status: 'failed', error: error.message }); schedule(); return; }
       db.prepare("UPDATE runs SET status = 'failed', finished_at = ?, error = ? WHERE job_id = ?").run(now(), `Could not start: ${error.message}`, jobId);
       db.prepare("UPDATE tasks SET status = 'queued', job_id = NULL, last_error = ?, updated_at = ? WHERE id = ? AND status = 'delivered' AND job_id = ?").run(`Could not start: ${error.message}`, now(), task.id, jobId);
@@ -205,6 +275,12 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   function schedule() {
     clearTimeout(timer);
     if (!enabled()) return;
+    try { queuePilotSource(); if (pilotInputVersion !== pilotRejectedVersion) pilotReadError = null; }
+    catch (error) {
+      // Retain pending data and report the changed error once; no retry timer.
+      if (pilotReadError !== error.message) console.error('Agency pilot pending source retained:', error.message);
+      pilotReadError = error.message; pilotRejectedVersion = pilotInputVersion;
+    }
     const at = now();
     // One task at a time: the next due task starts only when nothing is running.
     // One-off work the owner directs (no goal) goes ahead of goal tasks.
@@ -231,6 +307,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     } else if (['delivered', 'executing'].includes(task.status)) {
       // The job's worker never started: nothing ran, so the task is queued again.
       db.prepare("UPDATE runs SET status = 'failed', finished_at = ?, error = 'Service stopped before the job started.' WHERE job_id = ? AND status = 'executing'").run(now(), task.job_id);
+      db.prepare("UPDATE agency_pilot_sources SET state = 'queued', job_id = NULL WHERE task_id = ? AND job_id = ? AND state = 'executing'").run(task.id, task.job_id);
       update(task.id, { status: 'queued', job_id: null });
     }
   }
@@ -673,6 +750,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   const workerState = () => ({ enabled: enabled(), database: path.join(directory, 'action.sqlite3'), executing: db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status = 'executing'").get().n, next_run_at: db.prepare("SELECT MIN(next_run_at) AS at FROM tasks WHERE status = 'queued'").get()?.at || null });
 
   return {
+    agencyPilotSources: () => ({ task_id: AGENCY_PILOT_TASK, error: pilotReadError, sources: db.prepare('SELECT source_event_id, task_id, intake_id, message_id, state, received_at, queued_at, job_id, settled_at FROM agency_pilot_sources ORDER BY received_at').all() }),
+    closePilotWatcher() { pilotPendingWatcher?.close(); },
     // Something outside the queue changed (an owner answer, a saved assessment).
     poke() { schedule(); },
     noteAction,

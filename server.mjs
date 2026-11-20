@@ -13,6 +13,7 @@ import { utilityTools, reportUtility, searchUtility, revokeUtility, boostUtility
 import { clarityRequest } from './clarity-client.mjs';
 import { startA2AReceiver } from './a2a-receiver.mjs';
 import { taskTools, startTaskQueue } from './task-queue.mjs';
+import { readPilotPending, startAgencyPilotObserver } from './agency-pilot-observer.mjs';
 import { goalTools } from './goals.mjs';
 import { environmentTools, readEnvironment, seedSources, recordSource, setPlate, recordProcess, deleteProcess, environmentCheck } from './environment.mjs';
 
@@ -416,6 +417,10 @@ async function ownerApi(req, res, url) {
     return json(res, 200, { job_id: id, status: result.status, output: result.output || '', error: result.error || null, started_at: result.started_at, finished_at: result.finished_at });
   }
   if (req.method === 'GET' && url.pathname === '/api/overview') return json(res, 200, await overview());
+  if (req.method === 'GET' && url.pathname === '/api/agency-pilot/source-status') {
+    const pending = await readPilotPending(cwd);
+    return json(res, 200, { observer: pending ? { state: pending.state, last_error: pending.last_error, connected_at: pending.connected_at, updated_at: pending.updated_at } : null, queue: taskQueue.agencyPilotSources() });
+  }
   // The owner's pending Coach questions, for the harness session-start hook.
   if (req.method === 'GET' && url.pathname === '/api/questions/pending') {
     const state = await questionState(cwd);
@@ -495,10 +500,18 @@ const a2aReceiver = startA2AReceiver({ cwd, harness, mcpUrl });
 // The owner's action queue runs due tasks for as long as this service runs.
 await seedSources(cwd).catch(error => console.error('Seeding the source list failed:', error.message));
 const taskQueue = startTaskQueue({ cwd, harness, mcpUrl, latestAssessment: async () => (await assessments())[0] || null });
+// The existing pilot CASE opts this installation into its bounded source observer.
+// No separate receiver identity, inbox claim, auth configuration or execution engine.
+const agencyPilotObserver = await startAgencyPilotObserver({ cwd }).catch(error => {
+  console.error('Agency pilot observer stopped:', error.message);
+  return { stop() {} };
+});
 retryPendingSubmissions().then(left => { if (left) scheduleSubmissionRetry(); }, error => { console.error('Assessment submission retry failed:', error.message); scheduleSubmissionRetry(); });
 server.listen(port, '127.0.0.1', () => console.log(`Clarity M3NT0R MCP → ${mcpUrl} · owner view → ${base}/`));
 for (const signal of ['SIGTERM','SIGINT']) process.on(signal, () => {
+  const observerStopped = Promise.resolve(agencyPilotObserver.stop()).catch(error => console.error('Agency pilot observer shutdown failed:', error.message));
+  taskQueue.closePilotWatcher();
   for (const stream of mcpStreams) stream.res.end();
   for (const res of uiListeners) res.end();
-  server.close(() => process.exit(0));
+  server.close(() => { observerStopped.finally(() => process.exit(0)); });
 });
