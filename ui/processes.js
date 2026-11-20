@@ -1,44 +1,84 @@
 // Process is a view of the saved business records; details stay behind disclosure.
 let currentProcess = null;
-let processZoom = 1;
 function processText(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 function processName(name) { return String(name).replace(/^DRAFT PARTIAL\s*[—–-]\s*/i, ''); }
-function flowLines(text, width = 33) {
-  const words = String(text).split(/\s+/); const lines = [''];
-  for (const word of words) {
-    if (lines[lines.length - 1].length + word.length > width && lines[lines.length - 1]) lines.push(word);
-    else lines[lines.length - 1] += (lines[lines.length - 1] ? ' ' : '') + word;
-  }
-  return lines;
+// Same rendering boundary as CIG's DrawioOrgChart: mxGraph XML -> GraphViewer.
+let processViewerLoading;
+let activeProcessGraph = null;
+let processRenderVersion = 0;
+function loadProcessViewer() {
+  return processViewerLoading ??= new Promise((resolve, reject) => {
+    if (window.GraphViewer) { resolve(); return; }
+    const script = document.createElement('script');
+    script.src = 'https://viewer.diagrams.net/js/viewer-static.min.js';
+    script.onload = resolve;
+    script.onerror = () => { processViewerLoading = null; reject(new Error('Could not load the draw.io viewer.')); };
+    document.head.appendChild(script);
+  });
 }
-function processDiagram(flow) {
-  const steps = flow.steps || [];
-  if (!steps.length) return '<p class="empty">No steps recorded yet.</p>';
-  const columns = Math.min(3, steps.length), rows = Math.ceil(steps.length / columns);
-  const width = columns * 336, height = rows * 160 + 36;
-  const position = index => {
+function processDiagramXml(flow) {
+  const dark = document.documentElement.dataset.theme === 'dark';
+  const fill = dark ? '#172029' : '#ffffff', stroke = dark ? '#5ee3f0' : '#007f8c', font = dark ? '#e3eaf0' : '#16202a';
+  const steps = flow.steps || [], columns = Math.min(3, steps.length);
+  const cells = steps.map((step, index) => {
     const row = Math.floor(index / columns), col = row % 2 ? columns - 1 - index % columns : index % columns;
-    return { x: col * 336 + 20, y: row * 160 + 22 };
-  };
-  const arrows = steps.slice(1).map((_, index) => {
-    const a = position(index), b = position(index + 1);
-    const across = a.y === b.y, right = b.x > a.x;
-    const path = across ? `M ${a.x + (right ? 286 : 0)} ${a.y + 55} H ${b.x + (right ? -6 : 292)}` : `M ${a.x + 143} ${a.y + 110} V ${b.y - 7}`;
-    return `<path d="${path}" class="process-edge" marker-end="url(#process-arrow)" />`;
-  }).join('');
-  const nodes = steps.map((step, index) => {
-    const { x, y } = position(index);
-    const lines = flowLines(step);
-    return `<g class="process-node" tabindex="0" role="button" data-step="${index}" aria-label="Step ${index + 1}: ${processText(step)}">
-      <title>${processText(step)}</title><rect x="${x}" y="${y}" width="286" height="110" rx="12" />
-      <text x="${x + 15}" y="${y + 23}" class="process-number">${index + 1}</text>
-      <text x="${x + 143}" y="${y + 61 - (lines.length - 1) * 9}" text-anchor="middle">${lines.map((line, n) => `<tspan x="${x + 143}" dy="${n ? 18 : 0}">${processText(line)}</tspan>`).join('')}</text>
-    </g>`;
-  }).join('');
-  return `<svg class="process-diagram" style="--diagram-width:${width}px;--diagram-zoom:${processZoom}" viewBox="0 0 ${width} ${height}" role="group" aria-label="${processText(processName(flow.name))} — recorded step order">
-    <defs><marker id="process-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>${arrows}${nodes}</svg>`;
+    return `<mxCell id="step-${index}" value="${processText(step)}" style="rounded=1;whiteSpace=wrap;html=0;arcSize=12;fontSize=14;spacing=14;fillColor=${fill};strokeColor=${stroke};fontColor=${font};" vertex="1" parent="1"><mxGeometry x="${col * 340 + 20}" y="${row * 170 + 20}" width="280" height="110" as="geometry"/></mxCell>`;
+  });
+  steps.slice(1).forEach((_, index) => cells.push(`<mxCell id="edge-${index}" style="edgeStyle=orthogonalEdgeStyle;rounded=1;endArrow=block;strokeColor=${stroke};" edge="1" parent="1" source="step-${index}" target="step-${index + 1}"><mxGeometry relative="1" as="geometry"/></mxCell>`));
+  return `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>${cells.join('')}</root></mxGraphModel>`;
+}
+function fitProcessGraph() {
+  const host = document.querySelector('.process-canvas');
+  if (!activeProcessGraph || !host?.clientWidth) return;
+  const bounds = activeProcessGraph.getGraphBounds(), scale = activeProcessGraph.view.scale;
+  if (bounds.width > 0 && bounds.height > 0) activeProcessGraph.zoomTo(Math.min(1, (host.clientWidth - 48) / (bounds.width / scale), (host.clientHeight - 48) / (bounds.height / scale)));
+  host.scrollLeft = 0; host.scrollTop = 0;
+}
+async function mountProcessDiagram(flow) {
+  const version = ++processRenderVersion;
+  activeProcessGraph?.destroy(); activeProcessGraph = null;
+  const host = document.querySelector('.process-canvas');
+  if (!host) return;
+  if (!flow.steps?.length) { host.textContent = 'No steps recorded yet.'; return; }
+  try {
+    await loadProcessViewer();
+    if (version !== processRenderVersion || !host.isConnected) return;
+    host.replaceChildren();
+    const div = document.createElement('div'); host.appendChild(div);
+    const doc = window.mxUtils.parseXml(processDiagramXml(flow));
+    const viewer = new window.GraphViewer(div, doc.documentElement, { nav: true, resize: true, lightbox: false, center: true });
+    const graph = viewer.graph; activeProcessGraph = graph;
+    graph.setEnabled(false); graph.setTooltips(false);
+    let down = null;
+    graph.addMouseListener({
+      mouseDown: (_, me) => { down = me.getCell()?.vertex ? { id: me.getCell().id, x: me.getX(), y: me.getY() } : null; },
+      mouseMove: () => {},
+      mouseUp: (_, me) => {
+        const cell = me.getCell();
+        if (down && cell?.id === down.id && Math.abs(me.getX() - down.x) + Math.abs(me.getY() - down.y) < 6) {
+          const index = Number(cell.id.replace('step-', ''));
+          if (Number.isInteger(index) && flow.steps[index]) {
+            const button = document.createElement('button'); button.dataset.step = index;
+            host.appendChild(button); button.click(); button.remove();
+          }
+        }
+        down = null;
+      },
+    });
+    graph.getCursorForCell = cell => cell?.vertex ? 'pointer' : null;
+    const makeAccessible = () => {
+      graph.getModel().getChildVertices(graph.getDefaultParent()).forEach(cell => {
+        const node = graph.view.getState(cell)?.shape?.node;
+        if (!node) return;
+        node.setAttribute('tabindex', '0'); node.setAttribute('role', 'button');
+        node.setAttribute('aria-label', cell.value); node.dataset.step = cell.id.replace('step-', '');
+      });
+    };
+    graph.view.addListener(window.mxEvent.SCALE, makeAccessible);
+    makeAccessible(); fitProcessGraph();
+  } catch (error) { if (version === processRenderVersion) host.textContent = error.message; }
 }
 function renderProcesses(flows) {
   const box = document.querySelector('#processes');
@@ -49,7 +89,7 @@ function renderProcesses(flows) {
   box.innerHTML = `<div class="process-workspace">
     <aside class="process-picker" aria-label="Processes">${flows.map(item => `<button type="button" data-process="${processText(item.id)}" class="${item.id === flow.id ? 'selected' : ''}" aria-pressed="${item.id === flow.id}">${/^DRAFT/i.test(item.name) ? '<span class="process-draft">Draft · Partial</span>' : ''}<span>${processText(processName(item.name))}</span></button>`).join('')}</aside>
     <article class="process-view"><div class="process-header"><h2>${processText(processName(flow.name))}</h2><div class="process-controls"><button type="button" data-zoom="out" aria-label="Zoom out">−</button><button type="button" data-zoom="fit">Fit</button><button type="button" data-zoom="in" aria-label="Zoom in">+</button></div></div>
-      <div class="process-canvas">${processDiagram(flow)}</div>
+      <div class="process-canvas" role="region" aria-label="Process diagram" tabindex="0"><p class="meta">Loading diagram…</p></div>
       <div id="process-step-detail" hidden></div>
       <details class="process-notes"${open ? ' open' : ''}><summary>Details</summary><div class="prose">
         <h3>Trigger</h3>${renderMarkdown(flow.trigger || '')}<h3>Completion</h3>${renderMarkdown(flow.completion || '')}
@@ -62,11 +102,12 @@ function renderProcesses(flows) {
     </article></div>`;
   box.onclick = event => {
     const picker = event.target.closest('[data-process]');
-    if (picker) { currentProcess = picker.dataset.process; processZoom = 1; renderProcesses(flows); return; }
+    if (picker) { currentProcess = picker.dataset.process; renderProcesses(flows); return; }
     const zoom = event.target.closest('[data-zoom]');
     if (zoom) {
-      processZoom = zoom.dataset.zoom === 'fit' ? 1 : Math.max(0.5, Math.min(3, processZoom + (zoom.dataset.zoom === 'in' ? 0.25 : -0.25)));
-      box.querySelector('.process-diagram').style.setProperty('--diagram-zoom', processZoom); return;
+      if (zoom.dataset.zoom === 'fit') fitProcessGraph();
+      else if (activeProcessGraph) activeProcessGraph[zoom.dataset.zoom === 'in' ? 'zoomIn' : 'zoomOut']();
+      return;
     }
     const step = event.target.closest('[data-step]');
     if (step) {
@@ -77,5 +118,6 @@ function renderProcesses(flows) {
     }
     if (event.target.closest('[data-close-step]')) box.querySelector('#process-step-detail').hidden = true;
   };
+  mountProcessDiagram(flow);
   box.onkeydown = event => { if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('[data-step]')) { event.preventDefault(); event.target.dispatchEvent(new MouseEvent('click', { bubbles: true })); } };
 }

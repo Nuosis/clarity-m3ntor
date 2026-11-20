@@ -185,14 +185,9 @@ main:has(#processes:not([hidden])) { max-width: none; }
 .process-controls button { font: inherit; color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 .process-controls button:hover { color: var(--text); border-color: var(--accent-strong); }
 .process-canvas { overflow: auto; margin-top: 18px; min-height: 360px; max-height: 75vh; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
-.process-diagram { display: block; width: calc(100% * var(--diagram-zoom)); min-width: 680px; }
-.process-node { cursor: pointer; }
-.process-node rect { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
-.process-node:hover rect, .process-node:focus rect { stroke: var(--accent-strong); fill: var(--accent-soft); }
-.process-node text { fill: var(--text); font: 14px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; pointer-events: none; }
-.process-node .process-number { fill: var(--muted); font-size: 10px; }
-.process-edge { fill: none; stroke: var(--accent-strong); stroke-width: 1.6; }
-#process-arrow path { fill: var(--accent-strong); }
+.process-canvas { height: 70vh; }
+.process-canvas > div { min-width: 100%; }
+.process-canvas [role="button"]:focus-visible { outline: 2px solid var(--accent-strong); }
 .process-notes { margin-top: 20px; }
 .process-notes summary { cursor: pointer; color: var(--accent-strong); }
 .process-notes .prose, #process-step-detail .prose { max-width: 80ch; overflow-wrap: anywhere; }

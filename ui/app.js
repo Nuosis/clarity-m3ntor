@@ -405,6 +405,7 @@ $('#journal').addEventListener('toggle', async event => {
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
+  if (data) renderProcesses(data.environment?.processes?.processes || []);
   const button = $('#theme');
   button.textContent = theme === 'dark' ? 'Light mode' : 'Dark mode';
 }
@@ -420,6 +421,7 @@ document.querySelectorAll('nav button').forEach(button => button.addEventListene
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b === button));
   document.querySelectorAll('.view').forEach(section => { section.hidden = section.id !== view; });
   if (view === 'use-cases') loadUseCases();
+  if (view === 'processes') fitProcessGraph();
 }));
 $('#task-list').addEventListener('click', event => {
   const item = event.target.closest('li[data-id]');
