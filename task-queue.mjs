@@ -327,7 +327,9 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   const getGoal = id => db.prepare('SELECT * FROM goals WHERE id = ?').get(id);
   const reviewPasses = goal => JSON.parse(goal.review_passes || '[]');
   const reviewPass = goal => reviewPasses(goal).at(-1) || null;
-  const reviewStageKey = goal => `${goal.id}:${goal.stage}:${reviewPass(goal)?.id || 'original'}`;
+  const reviewStageKey = goal => `${goal.id}:${goal.stage}${reviewPass(goal)?.id ? `:${reviewPass(goal).id}` : ''}`;
+  const sameReviewStage = (goal, saved) => saved === reviewStageKey(goal)
+    || (!reviewPass(goal) && saved === `${reviewStageKey(goal)}:original`);
   const priorStageProof = (goal, stageKey) => reviewPasses(goal).flatMap(pass => pass.completed.map(item => ({ ...item, review_pass_id: pass.id }))).filter(item => item.stage === stageKey);
   const updateGoal = (id, fields) => {
     const keys = Object.keys(fields);
@@ -582,7 +584,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       delivery_owner: record?.delivery_owner || null, owner: record?.continuation?.owner || null,
       implementation_coordinator: record?.implementation_coordinator || null,
       implementation_executor: record?.implementation_executor || null,
-      registration, checkpoint, selected_case: savedCase.value?.case ?? null,
+      registration, checkpoint, case_binding: { pilot: savedCase.value?.pilot ?? null, task_id: savedCase.value?.task_id ?? null }, selected_case: savedCase.value?.case ?? null,
       source_wake: {
         route: record?.continuation?.incoming_route || null, observer_state: source?.state || null,
         last_error: source?.last_error || null,
@@ -593,6 +595,9 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     };
     const affected = (dependency, evidence) => ({ ...continuation, recovery: { dependency, task_id: task.id, checkpoint, evidence, customer_trigger: false } });
     if (registered.error || savedCase.error) return [affected('continuation_registration', registered.error || savedCase.error)];
+    if (savedCase.value?.pilot !== 'AGENCY-PILOT-01' || savedCase.value?.task_id !== task.id) {
+      return [affected('continuation_binding', { file: checkpoint, ...continuation.case_binding, expected_pilot: 'AGENCY-PILOT-01', expected_task_id: task.id })];
+    }
     if (record.task_id !== task.id || record.case_checkpoint !== checkpoint || !continuation.owner || !continuation.execution_owner || !continuation.source_wake.route) {
       return [affected('continuation_binding', { registration, task_id: record.task_id, case_checkpoint: record.case_checkpoint })];
     }
@@ -612,7 +617,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     let answered = 0;
     try { answered = JSON.parse(readFileSync(path.join(directory, 'user_questions.json'), 'utf8')).questions.filter(q => q.status !== 'pending').length; } catch {}
     const goals = db.prepare('SELECT id, status, stage, position FROM goals ORDER BY id').all();
-    return JSON.stringify({ goal: goal.id, stage: goal.stage, review_pass_id: reviewPass(goal)?.id || null, tasks, answered, notes: ownerNotes().length, goals, assessment: newestMtime(path.join(directory, 'assessment')), continuations: stageContinuations(goal) });
+    return JSON.stringify({ goal: goal.id, stage: goal.stage, ...(reviewPass(goal)?.id ? { review_pass_id: reviewPass(goal).id } : {}), tasks, answered, notes: ownerNotes().length, goals, assessment: newestMtime(path.join(directory, 'assessment')), continuations: stageContinuations(goal) });
   }
   // Adding/restoring the same healthy continuation can settle an old stuck
   // handoff. Do not consume other new work or owner direction in that shortcut.
@@ -626,6 +631,10 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       const next = JSON.parse(current);
       const unchanged = previous.continuations === undefined || JSON.stringify(previous.continuations) === JSON.stringify(next.continuations);
       delete previous.continuations; delete next.continuations;
+      if (!reviewPass(goal)) {
+        if (previous.review_pass_id == null) delete previous.review_pass_id;
+        if (next.review_pass_id == null) delete next.review_pass_id;
+      }
       if (unchanged && JSON.stringify(previous) === JSON.stringify(next)) setSetting('goal_review_state', current);
     }
     return true;
@@ -693,7 +702,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     try {
       const view = goalView(goal);
       // The last review's conclusions stand; the review gets what changed since, not the stage's whole history.
-      const sameStage = setting('goal_review_handoff_stage') === reviewStageKey(goal);
+      const sameStage = sameReviewStage(goal, setting('goal_review_handoff_stage'));
       const stuck = sameStage && setting('goal_stuck') === '1';
       setSetting('goal_review_mode', stuck ? 'stuck' : 'normal');
       setSetting('goal_stuck', null);
@@ -816,7 +825,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         const goal = activeGoal();
         // A review that moved the goal to a new stage without queuing work for it leaves that
         // stage unplanned: the next review starts now, whatever the pace.
-        const moved = goal && setting('goal_review_stage') !== reviewStageKey(goal);
+        const moved = goal && !sameReviewStage(goal, setting('goal_review_stage'));
         const unplanned = moved && !stageTasks(goal.id, stagesFor(goal.kind)[goal.stage].key).length;
         let settled = {};
         try { settled = await settleReview(goal, job, moved); } catch (error) { console.error('Goal review settle failed:', error.message); }
@@ -839,7 +848,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   // under way, with nothing new since (no task run, owner answer or note), is judged now.
   async function resumeStuck() {
     const goal = activeGoal();
-    if (!goal || setting('goal_review_handoff_stage') !== reviewStageKey(goal)) return;
+    if (!goal || !sameReviewStage(goal, setting('goal_review_handoff_stage'))) return;
     if (settleContinuationWait(goal)) {
       const consult = setting('goal_m3ntor_job');
       if (consult) followConsult(consult);
