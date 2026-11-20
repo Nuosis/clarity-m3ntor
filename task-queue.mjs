@@ -88,6 +88,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   for (const [name, type] of [['remove_on_completion', 'INTEGER NOT NULL DEFAULT 0'], ['success', 'TEXT'], ['constraints', 'TEXT'], ['category', 'TEXT'], ['goal_id', 'TEXT'], ['stage', 'TEXT'], ['set_at', 'TEXT'], ['process_ids', 'TEXT'], ['trigger_input', 'TEXT']]) if (!columns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
   const goalColumns = new Set(db.prepare('PRAGMA table_info(goals)').all().map(column => column.name));
   if (!goalColumns.has('process_ids')) db.exec('ALTER TABLE goals ADD COLUMN process_ids TEXT');
+  if (!goalColumns.has('review_passes')) db.exec("ALTER TABLE goals ADD COLUMN review_passes TEXT NOT NULL DEFAULT '[]'");
   const encodeProcessIds = ids => {
     if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !id.trim())) throw new Error('process_ids must be a list of registered process IDs.');
     return JSON.stringify([...new Set(ids)]);
@@ -104,7 +105,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   const view = task => task && { ...task, recurrence: task.recurrence ? JSON.parse(task.recurrence) : null, constraints: task.constraints ? JSON.parse(task.constraints) : [], process_ids: JSON.parse(taskProcessIds(task) || '[]'), trigger_input: task.trigger_input ? JSON.parse(task.trigger_input) : null };
   const watchers = new Map();
   let timer = null;
-  let pilotPendingWatcher = null, pilotReadError = null, pilotInputVersion = null, pilotRejectedVersion = null;
+  let pilotPendingWatcher = null, pilotContinuationWatcher = null, pilotReadError = null, pilotInputVersion = null, pilotRejectedVersion = null;
 
   // USER-AUTHORIZED — Marcus, November 20, 2026: this one-case pilot reuses
   // its SAME local inov8 task. Preserve the running task, CASE/cursor, contract,
@@ -157,6 +158,10 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   if (existsSync(pilotDirectory(cwd))) {
     pilotPendingWatcher = watch(pilotDirectory(cwd), (_event, filename) => {
       if (String(filename) === 'SOURCE-PENDING.json' || String(filename) === 'CASE.json') schedule();
+    });
+    const continuationDirectory = path.join(pilotDirectory(cwd), 'RECOVERY-04');
+    if (existsSync(continuationDirectory)) pilotContinuationWatcher = watch(continuationDirectory, (_event, filename) => {
+      if (String(filename) === 'CASE-CONTINUATION.json') schedule();
     });
   }
 
@@ -320,6 +325,10 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     ? db.prepare('DELETE FROM settings WHERE key = ?').run(key)
     : db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, String(value));
   const getGoal = id => db.prepare('SELECT * FROM goals WHERE id = ?').get(id);
+  const reviewPasses = goal => JSON.parse(goal.review_passes || '[]');
+  const reviewPass = goal => reviewPasses(goal).at(-1) || null;
+  const reviewStageKey = goal => `${goal.id}:${goal.stage}:${reviewPass(goal)?.id || 'original'}`;
+  const priorStageProof = (goal, stageKey) => reviewPasses(goal).flatMap(pass => pass.completed.map(item => ({ ...item, review_pass_id: pass.id }))).filter(item => item.stage === stageKey);
   const updateGoal = (id, fields) => {
     const keys = Object.keys(fields);
     db.prepare(`UPDATE goals SET ${keys.map(k => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`).run(...keys.map(k => fields[k]), now(), id);
@@ -331,7 +340,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     return { id: goal.id, title: goal.title, kind: goal.kind, outcome: goal.outcome, source: goal.source, position: goal.position, status: goal.status, process_ids: JSON.parse(goal.process_ids || '[]'),
       stage: current ? { index: goal.stage + 1, key: current.key, name: current.name, work: current.work, done_check: current.done } : null,
       stages: stages.map((stage, index) => ({ index: index + 1, key: stage.key, name: stage.name, state: index < goal.stage ? 'done' : index === goal.stage ? 'current' : 'later' })),
-      completed: JSON.parse(goal.completed), stop_reason: goal.stop_reason, created_at: goal.created_at, updated_at: goal.updated_at };
+      completed: JSON.parse(goal.completed), review_pass: reviewPass(goal), review_passes: reviewPasses(goal), stop_reason: goal.stop_reason, created_at: goal.created_at, updated_at: goal.updated_at };
   };
   // The working environment goal exists from install and always comes first.
   if (!db.prepare("SELECT id FROM goals WHERE kind = 'environment'").get()) {
@@ -404,14 +413,17 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const stages = stagesFor(goal.kind); const stage = stages[goal.stage];
     if (stage.key === 'improve') throw new Error('The Improve stage is recurring and does not complete.');
     const tasks = stageTasks(goal.id, stage.key);
+    // Re-review accepts a fresh account of still-valid accepted proof without requiring
+    // another task or interrupting work that already has authority to continue.
+    const acceptedProof = priorStageProof(goal, stage.key);
     // A recurring routine waiting for its next run is ongoing work, not unfinished work.
-    if (tasks.some(task => ['delivered', 'executing', 'finalizing', 'clearing'].includes(task.status) || (task.status === 'queued' && !task.recurrence))) throw new Error(`Tasks for the ${stage.name} stage are still queued or running.`);
+    if (!acceptedProof.length && tasks.some(task => ['delivered', 'executing', 'finalizing', 'clearing'].includes(task.status) || (task.status === 'queued' && !task.recurrence))) throw new Error(`Tasks for the ${stage.name} stage are still queued or running.`);
     if (goal.kind === 'environment') {
       // The working environment's stages are checked against its records, not the agent's claim.
       const missing = await environmentCheck(cwd, stage.key);
       if (missing) throw new Error(`The ${stage.name} done-check is not met: ${missing}`);
 
-    } else {
+    } else if (!acceptedProof.length) {
       if (!tasks.length) throw new Error(`No task has run for the ${stage.name} stage yet.`);
       const last = tasks.filter(task => task.last_run_at).sort((a, b) => String(b.last_run_at).localeCompare(String(a.last_run_at)))[0];
       if (last?.last_status !== 'completed') throw new Error(`The ${stage.name} stage's last task did not end STATUS: done.`);
@@ -433,7 +445,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     if (goal.kind === 'function' && ['process', 'agency'].includes(stage.key)) {
       await recordProcessStage(cwd, JSON.parse(goal.process_ids || '[]'), stage.key, evidence.trim(), completedAt);
     }
-    const completed = [...JSON.parse(goal.completed), { stage: stage.key, name: stage.name, evidence: evidence.trim(), at: completedAt }];
+    const completed = [...JSON.parse(goal.completed), { stage: stage.key, name: stage.name, evidence: evidence.trim(), at: completedAt,
+      ...(acceptedProof.length ? { prior_proof: acceptedProof.map(item => ({ review_pass_id: item.review_pass_id, at: item.at })) } : {}) }];
     const nextIndex = goal.stage + 1;
     const nextStage = stages[nextIndex];
     // The last stage that ends (the recurring Improve stage does not) completes the goal:
@@ -448,6 +461,27 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     if (goalCompleted && nextStage) ensureImproveTask(getGoal(goal.id));
     if (goalCompleted) await journalGoalCompleted(getGoal(goal.id));
     activeGoal(); schedule();
+    return goalView(getGoal(goal.id));
+  }
+
+  // USER-AUTHORIZED — Marcus, November 20, 2026: new failure context restarts
+  // readiness review at Scope, retaining accepted proof and customer execution state.
+  async function restartGoalReview(goalId, evidence, failureRef) {
+    const goal = getGoal(goalId);
+    if (!goal) throw new Error('Goal not found.');
+    const passes = reviewPasses(goal);
+    if (!failureRef?.trim()) throw new Error('Name the stable failure or owner-direction record reference.');
+    // A repeated delivery never rewinds an existing pass, even after it advances.
+    if (passes.some(pass => pass.failure_ref === failureRef.trim())) return goalView(goal);
+    if (goal.status !== 'active' || goal.kind !== 'function') throw new Error('Only an active function goal can restart its readiness review at Scope.');
+    if (!evidence?.trim()) throw new Error('Describe the new finding and how it changes earlier preparation, or the owner direction.');
+    const pass = { id: randomUUID(), started_at: now(), reason: evidence.trim(), failure_ref: failureRef.trim(),
+      from_stage: stagesFor(goal.kind)[goal.stage].key, completed: JSON.parse(goal.completed) };
+    updateGoal(goal.id, { stage: 0, completed: '[]', review_passes: JSON.stringify([...passes, pass]) });
+    await journalOnce(cwd, `goal-review-pass-${goal.id}-${pass.id}`, { kind: 'activity', source: 'goals',
+      content: `Goal "${goal.title}": readiness review restarted at Scope.\n${pass.reason}\nReference: ${pass.failure_ref}`,
+      metadata: { goal_id: goal.id, review_pass_id: pass.id, failure_ref: pass.failure_ref } });
+    schedule();
     return goalView(getGoal(goal.id));
   }
 
@@ -524,16 +558,81 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     } catch {}
     return notes.sort((a, b) => String(b.at).localeCompare(String(a.at)));
   }
+  // USER-AUTHORIZED — Marcus, November 20, 2026, AGENCY-WAIT-BOOKKEEPING-01:
+  // recognize the retained source-owned continuation without changing task/run
+  // status or using set_task to represent waiting. Recovery concerns only an
+  // evidenced failed/lost dependency; elapsed waiting is not failure evidence.
+  function stageContinuations(goal) {
+    const task = get(AGENCY_PILOT_TASK);
+    const stage = stagesFor(goal.kind)[goal.stage];
+    if (!task || task.goal_id !== goal.id || task.stage !== stage.key) return [];
+    const checkpoint = path.join(pilotDirectory(cwd), 'CASE.json');
+    const registration = path.join(pilotDirectory(cwd), 'RECOVERY-04', 'CASE-CONTINUATION.json');
+    const artifact = file => {
+      try { return { value: JSON.parse(readFileSync(file, 'utf8')) }; }
+      catch (error) { return { error: { file, code: error.code || error.name } }; }
+    };
+    const registered = artifact(registration), savedCase = artifact(checkpoint), pending = artifact(pilotPendingFile(cwd));
+    const record = registered.value;
+    const source = pending.value;
+    const ledger = db.prepare('SELECT source_event_id, intake_id, message_id, state, job_id FROM agency_pilot_sources WHERE task_id = ? ORDER BY source_event_id').all(task.id);
+    const continuation = {
+      task_id: task.id, task_status: task.status, last_run_status: task.last_status,
+      draft_status: record?.draft_status || 'unknown', execution_owner: record?.execution_owner || null,
+      delivery_owner: record?.delivery_owner || null, owner: record?.continuation?.owner || null,
+      implementation_coordinator: record?.implementation_coordinator || null,
+      implementation_executor: record?.implementation_executor || null,
+      registration, checkpoint, selected_case: savedCase.value?.case ?? null,
+      source_wake: {
+        route: record?.continuation?.incoming_route || null, observer_state: source?.state || null,
+        last_error: source?.last_error || null,
+        notifications: Object.entries(source?.notifications || {}).map(([id, value]) => ({ message_id: id, state: value.state })).sort((a, b) => a.message_id.localeCompare(b.message_id)),
+        pending_source_ids: Object.keys(source?.events || {}).sort(), ledger,
+      },
+      work_underway: false, recovery: null,
+    };
+    const affected = (dependency, evidence) => ({ ...continuation, recovery: { dependency, task_id: task.id, checkpoint, evidence, customer_trigger: false } });
+    if (registered.error || savedCase.error) return [affected('continuation_registration', registered.error || savedCase.error)];
+    if (record.task_id !== task.id || record.case_checkpoint !== checkpoint || !continuation.owner || !continuation.execution_owner || !continuation.source_wake.route) {
+      return [affected('continuation_binding', { registration, task_id: record.task_id, case_checkpoint: record.case_checkpoint })];
+    }
+    if (pending.error) return [affected('source_observer', pending.error)];
+    if (source.task_id !== task.id || source.pilot !== 'AGENCY-PILOT-01') return [affected('source_wake_binding', { file: pilotPendingFile(cwd), task_id: source.task_id, pilot: source.pilot })];
+    // An intentionally selected case leaves the original wait; its native task
+    // and case evidence govern the remaining customer outcome, not this wait.
+    if (savedCase.value.case) return [continuation];
+    if (source.last_error || !['connecting', 'waiting_for_original_source'].includes(source.state)) {
+      return [affected('source_observer', { file: pilotPendingFile(cwd), state: source.state, last_error: source.last_error || null })];
+    }
+    return [{ ...continuation, work_underway: true }];
+  }
   function reviewState(goal) {
     const stage = stagesFor(goal.kind)[goal.stage];
     const tasks = stageTasks(goal.id, stage.key).map(task => [task.id, task.status, task.last_run_at]);
     let answered = 0;
     try { answered = JSON.parse(readFileSync(path.join(directory, 'user_questions.json'), 'utf8')).questions.filter(q => q.status !== 'pending').length; } catch {}
     const goals = db.prepare('SELECT id, status, stage, position FROM goals ORDER BY id').all();
-    return JSON.stringify({ goal: goal.id, stage: goal.stage, tasks, answered, notes: ownerNotes().length, goals, assessment: newestMtime(path.join(directory, 'assessment')) });
+    return JSON.stringify({ goal: goal.id, stage: goal.stage, review_pass_id: reviewPass(goal)?.id || null, tasks, answered, notes: ownerNotes().length, goals, assessment: newestMtime(path.join(directory, 'assessment')), continuations: stageContinuations(goal) });
+  }
+  // Adding/restoring the same healthy continuation can settle an old stuck
+  // handoff. Do not consume other new work or owner direction in that shortcut.
+  function settleContinuationWait(goal) {
+    if (!stageContinuations(goal).some(item => item.work_underway)) return false;
+    setSetting('goal_stuck', null); setSetting('goal_review_mode', 'normal');
+    const current = reviewState(goal);
+    let previous;
+    try { previous = JSON.parse(setting('goal_review_state')); } catch {}
+    if (previous) {
+      const next = JSON.parse(current);
+      const unchanged = previous.continuations === undefined || JSON.stringify(previous.continuations) === JSON.stringify(next.continuations);
+      delete previous.continuations; delete next.continuations;
+      if (unchanged && JSON.stringify(previous) === JSON.stringify(next)) setSetting('goal_review_state', current);
+    }
+    return true;
   }
   const BLOCKED_OR_DONE = new Set(['completed', 'done', 'failed', 'paused']);
   let reviewTimer = null, reviewStarting = false;
+  const consultWatchers = new Set();
   // A question inov8 asked that the owner has not answered pauses reviews until it is answered
   // (the owner's Run still starts one).
   function waitingOnOwner() {
@@ -576,29 +675,31 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   }
   // ask_m3ntor during a review: the service waits for that job before deciding the stage is stuck.
   function noteAction(jobId) { if (jobId && setting('goal_review_job')) setSetting('goal_m3ntor_job', jobId); }
-  // Work under way toward the stage's done-check: a stage task queued or running, or a question
-  // inov8 asked that the owner has not answered. A request to M3NT0R is not: it only advises.
+  // Native task work, an owner question or a registered healthy continuation
+  // keeps the outcome owned. A request to M3NT0R only advises.
   async function underWay(goal) {
     const stage = stagesFor(goal.kind)[goal.stage];
     if (stageTasks(goal.id, stage.key).some(task => ['queued', 'delivered', 'executing', 'finalizing'].includes(task.status))) return true;
+    if (stageContinuations(goal).some(item => item.work_underway)) return true;
     return (await questionState(cwd)).pending.some(q => q.source === 'inov8');
   }
-  const STUCK_REASON = 'the last review left nothing under way toward the done-check: no stage task queued or running and no question waiting on the owner.';
+  const STUCK_REASON = 'the last review left nothing under way toward the done-check: no stage task queued or running, no registered healthy continuation and no question waiting on the owner.';
   async function startReview(goal, state) {
     reviewStarting = true;
     const jobId = randomUUID();
     setSetting('goal_review_job', jobId);
-    setSetting('goal_review_stage', `${goal.id}:${goal.stage}`);
+    setSetting('goal_review_stage', reviewStageKey(goal));
     setSetting('goal_review_started_at', now());
     try {
       const view = goalView(goal);
       // The last review's conclusions stand; the review gets what changed since, not the stage's whole history.
-      const sameStage = setting('goal_review_handoff_stage') === `${goal.id}:${goal.stage}`;
+      const sameStage = setting('goal_review_handoff_stage') === reviewStageKey(goal);
       const stuck = sameStage && setting('goal_stuck') === '1';
       setSetting('goal_review_mode', stuck ? 'stuck' : 'normal');
       setSetting('goal_stuck', null);
       const since = sameStage ? setting('goal_review_finished_at') : null;
       const tasks = stageTasks(goal.id, view.stage.key).map(task => ({ task_id: task.id, title: task.title, status: task.status, success: task.success, last_status: task.last_status, last_run_at: task.last_run_at, last_error: task.last_error, pause_reason: task.pause_reason, ...(since ? {} : { last_result: String(task.last_result || '').slice(-1500) }) }));
+      const continuations = stageContinuations(goal);
       const others = db.prepare("SELECT * FROM goals WHERE status IN ('waiting', 'inactive') ORDER BY position").all().map(g => ({ goal_id: g.id, title: g.title, status: g.status }));
       let question = `Goal: ${view.title} (goal_id ${view.id})\nOutcome: ${view.outcome}\nCurrent stage ${view.stage.index} of ${view.stages.length}: ${view.stage.name} (stage key "${view.stage.key}")\nWork: ${view.stage.work}\nDone when: ${view.stage.done_check}`;
       if (stuck) question += `\n\n${STUCK_INSTRUCTION}\n\n${UNSTUCK_SKILL}`;
@@ -617,10 +718,11 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         new_owner_answers: ownerAnswers.filter(a => a.new).length,
         new_owner_notes: notes.filter(n => n.new).length,
         assessment: latest ? { revision_id: latest.revision_id, [view.stage.score]: latest.ratings?.[view.stage.score]?.score ?? null, new: String(latest.assessed_at || '') > since } : null,
+        continuations,
       } : null;
       const lastReview = since ? { finished_at: since, conclusions: setting('goal_review_handoff') } : null;
       const stuckContext = stuck ? { reason: STUCK_REASON, score: latest && view.stage.score ? latest.ratings?.[view.stage.score]?.score ?? null : null, done_check_missing: stillMissing || null } : null;
-      await startGoalReviewJob({ jobId, question, context: { goal_id: goal.id, process_ids: view.process_ids, ...(lastReview ? { last_review: lastReview, changes_since_last_review: changes } : {}), ...(stuckContext ? { stuck: stuckContext } : {}), owner_answers: ownerAnswers, owner_notes: notes, ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl, ...agentRun() });
+      await startGoalReviewJob({ jobId, question, context: { goal_id: goal.id, process_ids: view.process_ids, ...(view.review_pass ? { review_pass: view.review_pass, prior_stage_proof: priorStageProof(goal, view.stage.key), review_passes: view.review_passes } : {}), ...(lastReview ? { last_review: lastReview, changes_since_last_review: changes } : {}), ...(stuckContext ? { stuck: stuckContext } : {}), owner_answers: ownerAnswers, owner_notes: notes, ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, stage_continuations: continuations, continuation_recovery: continuations.flatMap(item => item.recovery ? [item.recovery] : []), completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl, ...agentRun() });
       setSetting('goal_review_state', state);
       setSetting('goal_last_review_at', now());
       if (pace().pace !== 'yolo') setSetting('goal_next_review_at', nextClock().toISOString());
@@ -650,12 +752,12 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const stage = stagesFor(goal.kind)[goal.stage];
     const wasStuck = setting('goal_review_mode') === 'stuck';
     setSetting('goal_review_handoff', String(job.output || '').slice(0, 6000));
-    setSetting('goal_review_handoff_stage', `${goal.id}:${goal.stage}`);
+    setSetting('goal_review_handoff_stage', reviewStageKey(goal));
     setSetting('goal_review_finished_at', now());
     return judgeStuck(goal, stage, job.output, wasStuck, moved);
   }
   async function judgeStuck(goal, stage, output, wasStuck, moved = false) {
-    if (moved || await underWay(goal)) { setSetting('goal_stuck', null); return {}; }
+    if (moved || await underWay(goal)) { setSetting('goal_stuck', null); setSetting('goal_review_mode', 'normal'); return {}; }
     if (wasStuck) {
       setSetting('goal_stuck', null); setSetting('goal_review_mode', 'normal');
       await askOwnerStuck(goal, `a review working on getting it unstuck again left nothing under way toward the done-check.`, output);
@@ -674,17 +776,29 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   function startStuckReview() {
     const goal = activeGoal();
     if (!goal || !enabled() || reviewStarting || setting('goal_review_job') || setting('goal_stuck') !== '1') return;
+    if (settleContinuationWait(goal)) return;
     startReview(goal, reviewState(goal));
   }
   // The stuck-mode review waits for the M3NT0R answer the last review asked for.
   function followConsult(jobId) {
-    let fsWatcher = null, liveness = null;
+    if (consultWatchers.has(jobId)) return;
+    consultWatchers.add(jobId);
+    let fsWatcher = null, liveness = null, busy = false, settled = false;
     const check = async () => {
-      let job; try { job = await getM3ntorResult(jobId); } catch { job = { status: 'failed' }; }
-      if (!terminal.has(job.status)) return;
-      fsWatcher?.close(); clearInterval(liveness);
-      setSetting('goal_m3ntor_job', null);
-      startStuckReview();
+      if (busy || settled) return;
+      busy = true;
+      try {
+        let job; try { job = await getM3ntorResult(jobId); } catch { job = { status: 'failed' }; }
+        if (!terminal.has(job.status)) return;
+        settled = true; fsWatcher?.close(); clearInterval(liveness); consultWatchers.delete(jobId);
+        if (setting('goal_m3ntor_job') === jobId) setSetting('goal_m3ntor_job', null);
+        const goal = activeGoal();
+        if (!goal) return;
+        if (settleContinuationWait(goal)) { schedule(); return; }
+        const judged = await judgeStuck(goal, stagesFor(goal.kind)[goal.stage], setting('goal_review_handoff'), setting('goal_review_mode') === 'stuck');
+        if (judged.waitFor) followConsult(judged.waitFor); else if (judged.startStuck) startStuckReview();
+        schedule();
+      } finally { busy = false; }
     };
     try { fsWatcher = watch(jobDirectory(jobId), () => { check(); }); } catch {}
     liveness = setInterval(check, 60000);
@@ -702,7 +816,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         const goal = activeGoal();
         // A review that moved the goal to a new stage without queuing work for it leaves that
         // stage unplanned: the next review starts now, whatever the pace.
-        const moved = goal && setting('goal_review_stage') !== `${goal.id}:${goal.stage}`;
+        const moved = goal && setting('goal_review_stage') !== reviewStageKey(goal);
         const unplanned = moved && !stageTasks(goal.id, stagesFor(goal.kind)[goal.stage].key).length;
         let settled = {};
         try { settled = await settleReview(goal, job, moved); } catch (error) { console.error('Goal review settle failed:', error.message); }
@@ -725,7 +839,12 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   // under way, with nothing new since (no task run, owner answer or note), is judged now.
   async function resumeStuck() {
     const goal = activeGoal();
-    if (!goal || setting('goal_review_handoff_stage') !== `${goal.id}:${goal.stage}`) return;
+    if (!goal || setting('goal_review_handoff_stage') !== reviewStageKey(goal)) return;
+    if (settleContinuationWait(goal)) {
+      const consult = setting('goal_m3ntor_job');
+      if (consult) followConsult(consult);
+      return;
+    }
     if (setting('goal_stuck') === '1') {
       const consult = setting('goal_m3ntor_job');
       if (consult) return followConsult(consult);
@@ -751,7 +870,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
 
   return {
     agencyPilotSources: () => ({ task_id: AGENCY_PILOT_TASK, error: pilotReadError, sources: db.prepare('SELECT source_event_id, task_id, intake_id, message_id, state, received_at, queued_at, job_id, settled_at FROM agency_pilot_sources ORDER BY received_at').all() }),
-    closePilotWatcher() { pilotPendingWatcher?.close(); },
+    closePilotWatcher() { pilotPendingWatcher?.close(); pilotContinuationWatcher?.close(); },
     // Something outside the queue changed (an owner answer, a saved assessment).
     poke() { schedule(); },
     noteAction,
@@ -777,7 +896,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     // Task with its runs, for the owner UI.
     detail(taskId) {
       const task = view(get(taskId));
-      return task && { task, runs: db.prepare('SELECT * FROM runs WHERE task_id = ? ORDER BY started_at DESC').all(taskId), worker: workerState() };
+      const goal = task?.goal_id ? getGoal(task.goal_id) : null;
+      return task && { task, runs: db.prepare('SELECT * FROM runs WHERE task_id = ? ORDER BY started_at DESC').all(taskId), ...(goal ? { continuations: stageContinuations(goal).filter(item => item.task_id === taskId) } : {}), worker: workerState() };
     },
     call(name, input) {
       if (name === 'set_task') {
@@ -839,6 +959,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       if (name === 'list_goals') return { goals: listGoals(), pace: pace(), review_error: setting('goal_review_error') };
       if (name === 'set_goal') return { goal: setGoal(input), goals: listGoals() };
       if (name === 'complete_stage') return completeStage(input.goal_id, input.evidence).then(goal => ({ goal }));
+      if (name === 'restart_goal_review') return restartGoalReview(input.goal_id, input.evidence, input.failure_ref).then(goal => ({ goal }));
       if (name === 'reopen_stage') return reopenStage(input.goal_id, input.evidence).then(goal => ({ goal }));
       if (name === 'stop_goal') return stopGoal(input.goal_id, input.reason).then(goal => ({ goal, goals: listGoals() }));
       if (name === 'set_pace') {
