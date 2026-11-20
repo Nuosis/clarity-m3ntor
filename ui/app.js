@@ -195,21 +195,52 @@ function renderSettings() {
     } catch (error) { showError(error); }
   });
 }
-function renderGoal(goal) {
+function renderGoalStages(goal) {
+  return `<span class="stages" role="list">${goal.stages.map(stage => `<span role="listitem" class="${esc(stage.state)}">${esc(stage.name)}</span>`).join('')}</span>`;
+}
+function renderGoalFlowDetails(goal) {
   const tasks = openTasks().filter(task => task.goal_id === goal.id && (!goal.stage || task.stage === goal.stage.key));
-  return `<article class="card goal">
-    <div class="title"><h2>${esc(goal.title)}</h2> ${status(GOAL_STATUS[goal.status] || goal.status)}</div>
-    <details data-detail="${esc(goal.id)}"><summary>Details</summary>
-    <div class="goal-details">
-    ${goal.outcome ? `<div class="prose">${renderMarkdown(goal.outcome)}</div>` : ''}
-    <ol class="stages">${goal.stages.map(stage => `<li class="${stage.state}">${esc(stage.name)}</li>`).join('')}</ol>
-    ${goal.status !== 'stopped' && goal.stage ? `
-      <h3>Stage ${goal.stage.index} of ${goal.stages.length}: ${esc(goal.stage.name)}</h3>
+  return `${renderGoalStages(goal)}
+    ${goal.stage ? `<h3>Stage ${goal.stage.index} of ${goal.stages.length}: ${esc(goal.stage.name)}</h3>
       <div class="prose">${renderMarkdown(goal.stage.work)}</div>
       <dl><dt>Done when</dt><dd class="prose">${renderMarkdown(goal.stage.done_check)}</dd></dl>
       ${tasks.length ? `<ul class="goal-tasks">${tasks.map(task => `<li><a href="#" data-task="${esc(task.id)}">${esc(task.title)}</a> ${status(task.status)}</li>`).join('')}</ul>` : '<p class="empty">No tasks for this stage yet.</p>'}` : ''}
+    ${goal.completed.length ? `<details><summary>Completed stages</summary>${goal.completed.map(item => `<div class="entry"><div class="meta">${esc(item.name)} · ${when(item.at)}</div><div class="prose">${renderMarkdown(item.evidence)}</div></div>`).join('')}</details>` : ''}`;
+}
+function openGoalFlow(goal) {
+  let modal = $('#goal-flow-modal');
+  if (!modal) {
+    modal = document.createElement('dialog');
+    modal.id = 'goal-flow-modal';
+    modal.setAttribute('aria-labelledby', 'goal-flow-title');
+    document.body.appendChild(modal);
+    modal.addEventListener('click', event => {
+      if (event.target.closest('[data-close-goal-flow]')) modal.close();
+      const task = event.target.closest('[data-task]');
+      if (task) {
+        event.preventDefault(); modal.close();
+        document.querySelector('nav button[data-view="tasks"]').click();
+        showTask(task.dataset.task);
+      }
+      if (event.target === modal) {
+        const bounds = modal.getBoundingClientRect();
+        if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) modal.close();
+      }
+    });
+    modal.addEventListener('close', () => document.querySelector(`[data-goal-flow="${CSS.escape(modal.dataset.goal)}"]`)?.focus());
+  }
+  modal.dataset.goal = goal.id;
+  modal.innerHTML = `<div class="process-modal-header"><h2 id="goal-flow-title">${esc(goal.title)}</h2><button type="button" class="ghost" data-close-goal-flow autofocus>Close</button></div><div class="process-modal-body">${renderGoalFlowDetails(goal)}</div>`;
+  if (!modal.open) modal.showModal();
+}
+function renderGoal(goal) {
+  return `<article class="card goal">
+    <div class="title"><h2>${esc(goal.title)}</h2> ${status(GOAL_STATUS[goal.status] || goal.status)}</div>
+    <button type="button" class="goal-flow-trigger" data-goal-flow="${esc(goal.id)}" aria-label="View stage details for ${esc(goal.title)}" aria-haspopup="dialog">${renderGoalStages(goal)}</button>
+    <details data-detail="${esc(goal.id)}"><summary>Details</summary>
+    <div class="goal-details">
+    ${goal.outcome ? `<div class="prose">${renderMarkdown(goal.outcome)}</div>` : ''}
     ${goal.kind === 'environment' ? environmentRecords(goal) : ''}
-    ${goal.completed.length ? `<details data-detail="${esc(goal.id)}-completed"><summary>Completed stages</summary>${goal.completed.map(item => `<div class="entry"><div class="meta">${esc(item.name)} · ${when(item.at)}</div><div class="prose">${renderMarkdown(item.evidence)}</div></div>`).join('')}</details>` : ''}
     ${goal.stop_reason ? `<h3>Stopped</h3><div class="prose">${renderMarkdown(goal.stop_reason)}</div>` : ''}
     ${goal.kind !== 'environment' && goal.status !== 'stopped' ? `<form class="stop-goal" data-id="${esc(goal.id)}">
       <textarea name="reason" placeholder="Reason for stopping this goal" aria-label="Reason for stopping this goal" required></textarea>
@@ -241,6 +272,12 @@ function environmentRecords(goal) {
     </details>`;
 }
 $('#goals').addEventListener('click', event => {
+  const flow = event.target.closest('[data-goal-flow]');
+  if (flow) {
+    const goal = (data.goals || []).find(item => item.id === flow.dataset.goalFlow);
+    if (goal) openGoalFlow(goal);
+    return;
+  }
   const id = event.target.dataset?.task;
   if (!id) return;
   event.preventDefault();
