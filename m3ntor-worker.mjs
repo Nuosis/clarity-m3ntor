@@ -53,7 +53,7 @@ const LOCAL_TOOLS = ['ask_m3ntor', 'assess_poma', 'reassess_poma', 'get_m3ntor_r
   'set_task', 'list_tasks', 'clear_task', 'start_task_worker', 'stop_task_worker', 'save_poma_reassessment', 'get_coaching_context',
   'read_journal', 'add_journal', 'user_question_set', 'user_question_read',
   'list_goals', 'complete_stage', 'reopen_stage', 'stop_goal', 'set_pace', 'run_goal_review',
-  'read_environment', 'record_source', 'set_plate', 'record_process',
+  'read_environment', 'record_source', 'set_plate', 'record_process', 'delete_process',
   'get_task', 'list_assessments', 'list_running_jobs', 'read_answered_questions', 'revoke_utility', 'boost_utility', 'resolve_utility'];
 const codexApprove = (server, names) => names.flatMap(name => ['-c', `mcp_servers.${server}.tools.${name}.approval_mode="approve"`]);
 

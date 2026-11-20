@@ -155,11 +155,14 @@ function renderProcesses(flows) {
   if (!flows.some(flow => flow.id === currentProcess)) currentProcess = flows[0].id;
   const flow = flows.find(item => item.id === currentProcess);
   const open = box.querySelector('.process-notes')?.open || false;
-  box.innerHTML = `<div class="process-workspace">
+  const agentic = flows.filter(item => item.agentic === true).length;
+  const unknown = flows.filter(item => typeof item.agentic !== 'boolean').length;
+  box.innerHTML = `<div class="process-metric">Confirmed agentic: ${agentic}/${flows.length} (${Math.round(agentic / flows.length * 100)}%)${unknown ? ` · ${unknown} not assessed` : ''}</div><div class="process-workspace">
     <aside class="process-picker" aria-label="Processes">${flows.map(item => `<button type="button" data-process="${processText(item.id)}" class="${item.id === flow.id ? 'selected' : ''}" aria-pressed="${item.id === flow.id}"><span class="status ${processText(processStatus(item))}">${processText(processStatusLabel(item))}</span><span>${processText(processName(item.name))}</span></button>`).join('')}</aside>
     <article class="process-view"><div class="process-header"><div><span class="status ${processText(processStatus(flow))}">${processText(processStatusLabel(flow))}</span><h2>${processText(processName(flow.name))}</h2></div><div class="process-controls"><button type="button" data-zoom="out" aria-label="Zoom out">−</button><span data-process-zoom>100%</span><button type="button" data-zoom="in" aria-label="Zoom in">+</button><button type="button" data-zoom="actual">Actual size</button><button type="button" data-zoom="fit">Fit diagram</button></div></div>
       <div class="process-canvas" role="region" aria-label="Process diagram" tabindex="0"><p class="meta">Loading diagram…</p></div>
       <details class="process-notes"${open ? ' open' : ''}><summary>Details</summary><div class="prose">
+        <p class="meta">Agentic: ${flow.agentic === true ? 'Yes' : flow.agentic === false ? 'No' : 'Not assessed'}</p>${flow.agentic_evidence ? renderMarkdown(flow.agentic_evidence) : ''}
         <h3>Trigger</h3>${renderMarkdown(flow.trigger || '')}<h3>Completion</h3>${renderMarkdown(flow.completion || '')}
         <h3>Handoffs</h3><ul>${(flow.handoffs || []).map(item => `<li>${processText(item)}</li>`).join('')}</ul>
         <h3>Step signals</h3>${(flow.signals || []).map(item => `<h4>${processText(item.step)}</h4>${renderMarkdown(item.signal)}<p class="meta">${processText(item.source)}</p>`).join('')}

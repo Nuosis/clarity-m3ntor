@@ -28,7 +28,11 @@ const recent = (at, days) => at && Date.now() - new Date(at).getTime() <= days *
 
 export async function readEnvironment(cwd) {
   const f = files(cwd);
-  return { sources: await load(f.sources, { sources: [] }), plate: await load(f.plate, { commitments: [], priorities: [], updated_at: null }), processes: await load(f.processes, { processes: [] }) };
+  const processes = await load(f.processes, { processes: [] });
+  const total = processes.processes.length;
+  const confirmed = processes.processes.filter(flow => flow.agentic === true).length;
+  const nonAgentic = processes.processes.filter(flow => flow.agentic === false).length;
+  return { sources: await load(f.sources, { sources: [] }), plate: await load(f.plate, { commitments: [], priorities: [], updated_at: null }), processes: { ...processes, agentic_summary: { total, confirmed, non_agentic: nonAgentic, unassessed: total - confirmed - nonAgentic, confirmed_percentage: total ? Math.round(confirmed / total * 100) : null } } };
 }
 
 // Seed the source list once from the assessment's "Information centres" table in CONTEXT.md.
@@ -92,13 +96,22 @@ async function recordProcessNow(cwd, input) {
   let flow = input.process_id ? record.processes.find(item => item.id === input.process_id) : null;
   const creating = !input.process_id;
   if (input.process_id && !flow) throw new Error('Process not found.');
-  if (!flow) { if (!input.name?.trim()) throw new Error('Give the process a name.'); flow = { id: randomUUID(), name: input.name.trim(), status: 'unverified' }; record.processes.push(flow); }
-  for (const key of ['name', 'trigger', 'steps', 'handoffs', 'completion', 'signals', 'failure_conditions', 'documented_at', 'examples']) if (input[key] !== undefined) flow[key] = input[key];
+  if (!flow) { if (!input.name?.trim()) throw new Error('Give the process a name.'); flow = { id: randomUUID(), name: input.name.trim(), status: 'unverified', agentic: null }; record.processes.push(flow); }
+  for (const key of ['name', 'trigger', 'steps', 'handoffs', 'completion', 'signals', 'failure_conditions', 'documented_at', 'examples', 'agentic', 'agentic_evidence']) if (input[key] !== undefined) flow[key] = input[key];
   if (!creating && input.status !== undefined) flow.status = input.status;
   flow.status ??= 'unverified';
   flow.updated_at = now();
   return save(cwd, f.processes, record);
 }
+
+export function deleteProcess(cwd, input) { return serial(async () => {
+  const f = files(cwd);
+  const record = await load(f.processes, { processes: [] });
+  const before = record.processes.length;
+  record.processes = record.processes.filter(flow => flow.id !== input.process_id);
+  if (record.processes.length !== before) await save(cwd, f.processes, record);
+  return { process_id: input.process_id, deleted: record.processes.length !== before, remaining: record.processes.length };
+}); }
 
 // Done-checks the service applies; each returns null when met, otherwise what is missing.
 export async function environmentCheck(cwd, stageKey) {
@@ -128,8 +141,10 @@ export async function environmentCheck(cwd, stageKey) {
   }
   if (stageKey === 'process') {
     if (!processes.processes.length) return 'No processes are recorded.';
-    const incomplete = processes.processes.filter(item => !item.trigger || !item.steps?.length || !item.completion || !item.examples?.length || !item.signals?.length || !item.failure_conditions?.length);
-    return incomplete.length ? `These processes need a trigger, steps, completion, step signals, failure conditions and at least one example: ${incomplete.map(item => item.name).join(', ')}.` : null;
+    // USER-AUTHORIZED — Marcus, November 19, 2026: setup needs mapped processes
+    // surfaced in the owner UI, not verified adoption or agentic execution.
+    const mapped = processes.processes.filter(item => item.name && item.trigger && item.steps?.length && item.completion);
+    return mapped.length ? null : 'Map at least one business process with a title, trigger, steps and completion; saved processes appear in the owner Process tab.';
   }
   return null;
 }
@@ -138,6 +153,7 @@ const ref = { type: 'object', properties: { ref: { type: 'string', description: 
 const str = description => ({ type: 'string', description });
 const strings = description => ({ type: 'array', description, items: { type: 'string' } });
 export const environmentTools = [
+  { name: 'delete_process', description: 'Delete a business process definition by its ID. Does not delete source records, task history or assessments.', inputSchema: { type: 'object', properties: { process_id: str('The process ID from read_environment.') }, required: ['process_id'], additionalProperties: false } },
   { name: 'read_environment', description: 'Use before working on the working environment goal, before writing tasks that touch the owner\'s systems, work or processes, and to check a stage\'s done-check: returns the sources the agent runs on (whether each is needed and its last read-back), the owner\'s plate (commitments and priorities) and the recorded business processes.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } },
   { name: 'record_source', description: 'Use when you find a system the business runs on, decide whether the owner\'s work depends on it, have just read from it, or have just sent a test notice through it: add or update that source in the working environment. The service stamps the read-back time.', inputSchema: { type: 'object', properties: {
     source_id: str('Existing source to update (from read_environment); omit to add a new one.'),
@@ -163,6 +179,8 @@ export const environmentTools = [
     trigger: str('What starts it.'),
     steps: strings('The steps in order.'),
     status: { ...str('Process status, e.g. unverified, active or errored. Applied on updates; creation always starts unverified. Omit on updates to preserve the current status.'), default: 'unverified' },
+    agentic: { type: ['boolean', 'null'], description: 'Whether triggered agent execution of this process is evidenced: true, false for known non-agentic execution, or null when unassessed. Independent of definition status and setup completion.' },
+    agentic_evidence: str('Evidence supporting the agentic assessment; do not infer it from a written procedure or a model capability.'),
     handoffs: strings('Where work passes between people, agents or systems.'),
     completion: str('What shows the process is finished.'),
     failure_conditions: { type: 'array', description: 'When a step counts as failed.', items: { type: 'object', properties: { step: str('The step.'), condition: str('The expected signal that has not appeared, e.g. "no customer reply".'), after: str('How long before it counts as failed, e.g. "5 business days".') }, required: ['step', 'condition', 'after'], additionalProperties: false } },

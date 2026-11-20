@@ -344,6 +344,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       if (!(score >= 8)) throw new Error(`${stage.name} needs the weekly assessment to score 8 or higher; the latest scores ${Number.isFinite(score) ? score : 'unknown'}.`);
       evidence = `${evidence.trim()}\nAssessment ${latest.revision_id}: ${stage.name} ${score}/10.`;
     }
+    if (goal.kind === 'environment' && stage.key === 'process') {
+      const { processes } = await readEnvironment(cwd);
+      await setUserQuestions(cwd, { only_if_absent: true, source: 'process_setup', questions: [{
+        id: `process-review-${goal.id}`,
+        question: `We have sketched ${processes.processes.length} business processes in the Process tab. Would you like to review them? You can ask your agent to add, read, change or delete flows through MCP. These are unverified sketches; reviewing them is optional and does not block environment setup.`,
+      }] });
+    }
     const completed = [...JSON.parse(goal.completed), { stage: stage.key, name: stage.name, evidence: evidence.trim(), at: now() }];
     const nextIndex = goal.stage + 1;
     const nextStage = stages[nextIndex];

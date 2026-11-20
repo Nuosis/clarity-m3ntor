@@ -217,3 +217,5 @@ main:has(#processes:not([hidden])) { max-width: none; }
 .status.errored { color: var(--bad); }
 .process-picker .status { justify-self: start; }
 .process-header .status + h2 { margin-top: 8px; }
+
+.process-metric { color: var(--muted); font-size: 12px; margin-bottom: 16px; }

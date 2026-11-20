@@ -14,7 +14,7 @@ import { clarityRequest } from './clarity-client.mjs';
 import { startA2AReceiver } from './a2a-receiver.mjs';
 import { taskTools, startTaskQueue } from './task-queue.mjs';
 import { goalTools } from './goals.mjs';
-import { environmentTools, readEnvironment, seedSources, recordSource, setPlate, recordProcess, environmentCheck } from './environment.mjs';
+import { environmentTools, readEnvironment, seedSources, recordSource, setPlate, recordProcess, deleteProcess, environmentCheck } from './environment.mjs';
 
 // Local loopback MCP for the owner's harness: M3NT0R coaching and business
 // assessment (run as local background jobs), private records, utility cases,
@@ -270,8 +270,8 @@ async function mcp(req, res, coach = false) {
       } else if (name === 'read_environment') {
         const record = await readEnvironment(cwd);
         result = { content: [{ type: 'text', text: JSON.stringify({ ...record, missing: { infrastructure: await environmentCheck(cwd, 'infrastructure'), observability: await environmentCheck(cwd, 'observability'), process: await environmentCheck(cwd, 'process') } }) }] };
-      } else if (['record_source', 'set_plate', 'record_process'].includes(name)) {
-        const saved = await ({ record_source: recordSource, set_plate: setPlate, record_process: recordProcess })[name](cwd, input);
+      } else if (['record_source', 'set_plate', 'record_process', 'delete_process'].includes(name)) {
+        const saved = await ({ record_source: recordSource, set_plate: setPlate, record_process: recordProcess, delete_process: deleteProcess })[name](cwd, input);
         taskQueue.poke();
         result = { content: [{ type: 'text', text: JSON.stringify(saved) }] };
       } else if (name === 'get_task') {
