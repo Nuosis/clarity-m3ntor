@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getM3ntorResult, jobDirectory, startTaskJob, startGoalReviewJob } from './m3ntor-jobs.mjs';
 import { stagesFor, STUCK_INSTRUCTION } from './goals.mjs';
 import { createReviewLedger, historicReviewList, reviewDefinition, reviewHash, reviewRunDetail } from './inov8-review-process.mjs';
+import { createGoalRunLedger, goalRunBoundary, goalRunDefinition, goalRunStages } from './inov8-goal-run.mjs';
 import { environmentCheck, readEnvironment, recordProcessStage } from './environment.mjs';
 import { appendJournalInWrite, businessDate, questionState, readJournal, serializeBusinessWrites, setUserQuestions } from './business-journal.mjs';
 import { AGENCY_PILOT_TASK, agencyPilotContinuation, pilotDirectory, pilotPendingFile } from './agency-pilot-observer.mjs';
@@ -116,6 +117,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       completed TEXT NOT NULL DEFAULT '[]', stop_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   `);
   const reviewLedger = createReviewLedger(db);
+  const goalRuns = createGoalRunLedger(db);
   const columns = new Set(db.prepare('PRAGMA table_info(tasks)').all().map(column => column.name));
   for (const [name, type] of [['remove_on_completion', 'INTEGER NOT NULL DEFAULT 0'], ['success', 'TEXT'], ['constraints', 'TEXT'], ['category', 'TEXT'], ['goal_id', 'TEXT'], ['stage', 'TEXT'], ['set_at', 'TEXT'], ['process_ids', 'TEXT'], ['trigger_input', 'TEXT']]) if (!columns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
   const goalColumns = new Set(db.prepare('PRAGMA table_info(goals)').all().map(column => column.name));
@@ -404,16 +406,20 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const delivery = transaction(() => {
       const claimed = db.prepare("UPDATE tasks SET status = 'delivered', job_id = ?, updated_at = ? WHERE id = ? AND status = 'queued'").run(jobId, now(), task.id);
       if (!claimed.changes) return null;
-      db.prepare('INSERT INTO runs (id, task_id, job_id, status, started_at) VALUES (?, ?, ?, ?, ?)').run(randomUUID(), task.id, jobId, 'executing', now());
+      const runId = randomUUID();
+      const startedAt = now();
+      db.prepare('INSERT INTO runs (id, task_id, job_id, status, started_at) VALUES (?, ?, ?, ?, ?)').run(runId, task.id, jobId, 'executing', startedAt);
+      const parent = openGoalRunForTask(task);
+      if (parent) goalRuns.linkJob(parent.id, task, runId, jobId, startedAt);
       const event = db.prepare(`UPDATE task_continuation_events SET state = 'claimed', job_id = ?
         WHERE continuation_id = (SELECT id FROM task_continuations WHERE task_id = ?) AND state = 'queued' RETURNING *`).get(jobId, task.id);
       const source = db.prepare("UPDATE agency_pilot_sources SET state = 'executing', job_id = ? WHERE task_id = ? AND state = 'queued'").run(jobId, task.id);
-      return { event, pilotSource: Boolean(source.changes) };
+      return { event, pilotSource: Boolean(source.changes), goalRunId: parent?.id };
     });
     if (!delivery) return;
     try {
       const continuationEvent = delivery.event ? eventContext(task.id, delivery.event) : null;
-      await startTaskJob({ ...task, process_ids: taskProcessIds(task), job_id: jobId, continuation_event: continuationEvent }, { cwd, harness, mcpUrl, ...agentRun() });
+      await startTaskJob({ ...task, process_ids: taskProcessIds(task), job_id: jobId, continuation_event: continuationEvent, goal_run_id: delivery.goalRunId }, { cwd, harness, mcpUrl, ...agentRun() });
     }
     catch (error) {
       if (delivery.event || delivery.pilotSource || error.code === 'PROCESS_NOT_FOUND') {
@@ -615,7 +621,17 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     // it is marked inactive and the next waiting goal takes the active slot.
     const goalCompleted = !nextStage || nextStage.key === 'improve';
     // A function goal stays at its Improve stage, which the service runs as a weekly comparison.
-    updateGoal(goal.id, { stage: nextStage ? nextIndex : goal.stage, completed: JSON.stringify(completed), status: goalCompleted ? 'inactive' : 'active' });
+    transaction(() => {
+      updateGoal(goal.id, { stage: nextStage ? nextIndex : goal.stage, completed: JSON.stringify(completed), status: goalCompleted ? 'inactive' : 'active' });
+      if (stage.key === goalRunBoundary(goal.kind)) {
+        const accepted = completed.at(-1);
+        goalRuns.complete(goal, completed, {
+          goal_id: goal.id, stage: accepted.stage, name: accepted.name, accepted_at: accepted.at, evidence: accepted.evidence,
+          source: 'goal.completed', process_ids: JSON.parse(goal.process_ids || '[]'),
+          ...(accepted.prior_proof ? { prior_proof: accepted.prior_proof } : {}),
+        });
+      }
+    });
     // A stage reached with no work planned for it gets a review now, whatever the pace.
     const nextGoal = activeGoal();
     if (nextGoal && !stageTasks(nextGoal.id, stagesFor(nextGoal.kind)[nextGoal.stage].key).length) setSetting('goal_next_review_at', now());
@@ -683,6 +699,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       for (const { id } of queued) { db.prepare('DELETE FROM runs WHERE task_id = ?').run(id); db.prepare('DELETE FROM tasks WHERE id = ?').run(id); }
       for (const task of db.prepare('SELECT id FROM tasks WHERE goal_id = ?').all(goal.id)) closeTaskContinuation(task.id);
       updateGoal(goal.id, { status: 'stopped', stop_reason: reason.trim() });
+      goalRuns.stop(goal, JSON.parse(getGoal(goal.id).completed), reason.trim());
     });
     activeGoal(); schedule();
     return goalView(getGoal(goal.id));
@@ -842,9 +859,9 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         : (run.fullAccess ? 'dangerously-bypass-approvals-and-sandbox' : 'workspace-write'),
     };
   }
-  function traceDecision(origin, decision, reason, goal, { jobId, config = reviewConfig(), semantic } = {}) {
+  function traceDecision(origin, decision, reason, goal, { jobId, goalRunId, config = reviewConfig(), semantic } = {}) {
     try {
-      return reviewLedger.record({ origin, decision, reason, goal, stage: goal ? stagesFor(goal.kind)[goal.stage]?.key : null, jobId, config, semantic });
+      return reviewLedger.record({ origin, decision, reason, goal, stage: goal ? stagesFor(goal.kind)[goal.stage]?.key : null, jobId, goalRunId, config, semantic });
     } catch (error) { console.error('Saving goal review decision failed:', error.message); }
   }
   function traceNode(jobId, node, evidence, options) {
@@ -941,19 +958,155 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     return null;
   }
   const STUCK_REASON = 'the last review left nothing under way toward the done-check: no stage task queued or running, no registered healthy continuation and no question waiting on the owner.';
+  function openGoalRunForTask(task) {
+    if (!task.goal_id || !task.stage) return null;
+    const parent = goalRuns.forGoal(task.goal_id);
+    return parent?.lifecycle === 'open' && goalRunStages(parent.goal_kind).some(stage => stage.key === task.stage) ? parent : null;
+  }
+
+  function goalRunCheckpoint(row, goal, childReviews) {
+    if (row.lifecycle !== 'open') return { status: row.lifecycle, stage: null };
+    const stage = goal ? stagesFor(goal.kind)[goal.stage]?.key : null;
+    const work = stage ? stageTasks(row.goal_id, stage) : [];
+    const continuations = work.flatMap(task => taskContinuations(task));
+    const active = work.filter(task => ['queued', 'delivered', 'executing', 'finalizing'].includes(task.status));
+    const recoveries = continuations.flatMap(item => item.recovery ? [item.recovery] : []);
+    const reviews = childReviews ?? (row.id ? reviewLedger.forGoalRun(row.id) : []);
+    const lastReview = reviews.find(child => child.stage === stage);
+    const currentReview = lastReview && lastReview.job_id === setting('goal_review_job');
+    const checkpoint = { stage, task_ids: active.map(task => task.id), review_job_id: currentReview ? lastReview.job_id : null };
+    if (goal?.status === 'waiting') return { ...checkpoint, status: 'waiting', reason: 'Waiting for the active goal slot' };
+    if (recoveries.length) return { ...checkpoint, status: 'recovery', reason: 'A continuation needs recovery', recoveries };
+    if (goal?.status === 'active' && waitingOnOwner()) {
+      const ids = lastReview ? reviewLedger.detail(lastReview.id)?.nodes['owner-wait']?.output?.question_ids : null;
+      const asked = setting('goal_stuck_question');
+      return { ...checkpoint, status: 'waiting', reason: 'Waiting for the owner', question_ids: ids ?? (asked ? [asked] : []) };
+    }
+    if (currentReview || active.some(task => enabled() || task.status !== 'queued')) return { ...checkpoint, status: 'running', reason: 'Review or task work underway' };
+    // An event-owned wait remains healthy even when the last native task run failed.
+    const waiting = continuations.filter(item => item.work_underway);
+    if (waiting.length) return {
+      ...checkpoint, status: 'waiting', reason: 'Waiting on a registered continuation',
+      continuations: waiting.map(item => ({
+        task_id: item.task_id, continuation_id: item.continuation_id, owner: item.owner, checkpoint: item.checkpoint,
+        state: item.state, return_route: item.return_route, source_wake: item.source_wake,
+      })),
+    };
+    const failed = work.filter(task => ['failed', 'paused'].includes(task.status));
+    const childSettlement = lastReview ? reviewLedger.detail(lastReview.id)?.nodes : null;
+    const stuck = goal && sameReviewStage(goal, setting('goal_review_handoff_stage')) && setting('goal_stuck') === '1';
+    if (stuck || failed.length || ['agent', 'context', 'settlement'].some(node => childSettlement?.[node]?.status === 'failed')) return {
+      ...checkpoint, status: 'recovery', reason: 'Work remains for this stage', affected_task_ids: failed.map(task => task.id),
+    };
+    return { ...checkpoint, status: 'open', reason: 'Stage awaiting its next action' };
+  }
+
+  function goalRunSummary(row, checkpoint = goalRunCheckpoint(row, getGoal(row.goal_id))) {
+    return {
+      id: row.id, process_id: goalRunDefinition().id, goal_id: row.goal_id, goal_title: row.goal_title, goal_kind: row.goal_kind,
+      lifecycle: row.lifecycle, status: checkpoint.status, current_stage: checkpoint.stage,
+      created_at: row.started_at, finished_at: row.finished_at,
+    };
+  }
+
+  function goalRunView(row, goal = getGoal(row.goal_id)) {
+    const preview = !row.id;
+    const reviews = preview ? [] : reviewLedger.forGoalRun(row.id);
+    const checkpoint = goalRunCheckpoint(row, goal, reviews);
+    const definition = JSON.parse(row.definition);
+    const initial = JSON.parse(row.initial_proof);
+    const accepted = JSON.parse(row.final_proof || goal?.completed || '[]');
+    const success = row.success ? JSON.parse(row.success) : null;
+    const links = preview ? goalRunStages(goal.kind).flatMap(stage => stageTasks(goal.id, stage.key).map(task => ({
+      task_id: task.id, stage: task.stage, title: task.title,
+    }))) : goalRuns.tasks(row.id);
+    const jobs = preview ? [] : goalRuns.taskJobs(row.id);
+    const nodes = {
+      ...(preview ? {} : { intake: { status: 'completed', started_at: row.started_at, output: { goal_id: row.goal_id, stage: row.initial_stage, origin: JSON.parse(row.origin) } } }),
+      ...(row.lifecycle === 'open' ? { checkpoint: { status: 'current', reason: checkpoint.reason, output: checkpoint } } : {}),
+      ...(success ? { success: { status: 'completed', finished_at: success.accepted_at, output: success } } : {}),
+    };
+    if (checkpoint.status === 'waiting' || checkpoint.status === 'recovery') {
+      nodes[checkpoint.status] = { status: checkpoint.status, reason: checkpoint.reason, output: checkpoint };
+    }
+    for (const node of definition.nodes.filter(node => node.stage)) {
+      const proof = accepted.find(item => item.stage === node.stage);
+      const fromBefore = proof && initial.some(item => item.stage === proof.stage && item.at === proof.at);
+      const reused = proof?.prior_proof?.length > 0;
+      const tasks = links.filter(link => link.stage === node.stage).map(link => {
+        const task = get(link.task_id);
+        const present = task && task.goal_id === row.goal_id && task.stage === node.stage;
+        const receipts = db.prepare('SELECT id, job_id, status, started_at, finished_at, error FROM runs WHERE task_id = ? ORDER BY started_at').all(link.task_id);
+        const related = new Map(jobs.filter(job => job.task_id === link.task_id && job.stage === node.stage).map(job => [
+          job.run_id, { id: job.run_id, job_id: job.job_id, started_at: job.started_at, status: 'not_recorded' },
+        ]));
+        for (const receipt of receipts) {
+          if (related.has(receipt.id) || (present && (!row.finished_at || receipt.started_at <= row.finished_at))) related.set(receipt.id, receipt);
+        }
+        const continuations = present ? taskContinuations(task).map(item => ({
+          continuation_id: item.continuation_id, owner: item.owner, checkpoint: item.checkpoint, state: item.state,
+          return_route: item.return_route, source_wake: item.source_wake, recovery: item.recovery,
+        })) : [];
+        return { id: link.task_id, title: present ? task.title : link.title, status: present ? task.status : null, record_available: Boolean(present), runs: [...related.values()], continuations };
+      });
+      const prior = goal && row.lifecycle === 'open' && !proof ? priorStageProof(goal, node.stage) : [];
+      nodes[node.id] = {
+        status: proof ? (fromBefore || reused ? 'prior' : 'completed') : checkpoint.stage === node.stage ? 'current' : null,
+        ...(proof ? { finished_at: proof.at, proof: { ...proof, origin: fromBefore ? 'before_run' : reused ? 'reused' : 'accepted_in_run' } } : {}),
+        ...(prior.length ? { prior_proof: prior } : {}),
+        tasks, reviews: reviews.filter(child => child.stage === node.stage),
+        ...(checkpoint.stage === node.stage ? { checkpoint } : {}),
+      };
+    }
+    const traversed = preview ? [] : definition.edges.filter(edge => {
+      if (edge.from === 'checkpoint' || edge.to === 'checkpoint') return Boolean(nodes[edge.to]?.status);
+      const target = nodes[edge.to]?.status, source = nodes[edge.from]?.status;
+      return target && target !== 'prior' && source === 'completed';
+    }).map(edge => edge.id);
+    return {
+      ...goalRunSummary(row, checkpoint), ...(preview ? { preview: true, status: 'not_started', lifecycle: 'not_started' } : {}),
+      initial_stage: row.initial_stage, definition, version: definition.version,
+      configuration: preview ? null : JSON.parse(row.configuration), configuration_version: row.configuration_version,
+      origin: preview ? null : JSON.parse(row.origin), child_reviews: reviews, success, stop_reason: row.stop_reason,
+      checkpoint, nodes, traversed,
+    };
+  }
+  function currentGoalPreview(goal) {
+    if (!goal) return null;
+    const stage = stagesFor(goal.kind)[goal.stage]?.key;
+    if (!goalRunStages(goal.kind).some(item => item.key === stage) || goalRuns.forGoal(goal.id)) return null;
+    const proof = JSON.parse(goal.completed);
+    if (proof.some(item => item.stage === goalRunBoundary(goal.kind))) return null;
+    // This is a read-only view of the active goal's existing evidence.
+    return goalRunView({
+      id: null, goal_id: goal.id, goal_title: goal.title, goal_kind: goal.kind, lifecycle: 'open',
+      started_at: null, finished_at: null, initial_stage: null, initial_proof: goal.completed,
+      definition: JSON.stringify(goalRunDefinition(goal.kind)), configuration_version: null,
+    }, goal);
+  }
+
   async function startReview(goal, state, origin, reason) {
     if (closed) return;
     reviewStarting = true;
     const jobId = randomUUID();
-    const run = agentRun();
-    const config = reviewConfig(run);
-    const traceId = traceDecision(origin, 'proceeded', reason, goal, { jobId, config });
     let contextReady = false;
-    traceNode(jobId, 'context', { status: 'started', started_at: now() }, { from: 'eligibility' });
-    setSetting('goal_review_job', jobId);
-    setSetting('goal_review_stage', reviewStageKey(goal));
-    setSetting('goal_review_started_at', now());
     try {
+      const run = agentRun();
+      const config = reviewConfig(run);
+      const parent = transaction(() => {
+        const admitted = goalRuns.admit(goal, stagesFor(goal.kind)[goal.stage].key, origin, config);
+        if (admitted) {
+          for (const stage of goalRunStages(goal.kind)) {
+            for (const task of stageTasks(goal.id, stage.key)) goalRuns.linkTask(admitted.id, task);
+          }
+        }
+        return admitted;
+      });
+      const traceId = traceDecision(origin, 'proceeded', reason, goal, { jobId, goalRunId: parent?.id, config });
+      traceNode(jobId, 'context', { status: 'started', started_at: now() }, { from: 'eligibility' });
+      setSetting('goal_review_job', jobId);
+      setSetting('goal_review_stage', reviewStageKey(goal));
+      setSetting('goal_review_started_at', now());
       const view = goalView(goal);
       // The last review's conclusions stand; the review gets what changed since, not the stage's whole history.
       const sameStage = sameReviewStage(goal, setting('goal_review_handoff_stage'));
@@ -991,12 +1144,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         task_count: tasks.length, owner_answer_count: ownerAnswers.length, owner_note_count: notes.length, continuation_count: continuations.length,
       } });
       await startGoalReviewJob({ jobId, question, reviewTrace: traceId ? {
-        process_id: reviewDefinition.id, version: reviewDefinition.version, configuration_version: reviewHash(config), run_id: traceId, node_id: 'agent',
-      } : null, context: { goal_id: goal.id, process_ids: view.process_ids, ...(view.review_pass ? { review_pass: view.review_pass, prior_stage_proof: priorStageProof(goal, view.stage.key), review_passes: view.review_passes } : {}), ...(lastReview ? { last_review: lastReview, changes_since_last_review: changes } : {}), ...(stuckContext ? { stuck: stuckContext } : {}), owner_answers: ownerAnswers, owner_notes: notes, ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, stage_continuations: continuations, continuation_recovery: continuations.flatMap(item => item.recovery ? [item.recovery] : []), completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl, ...run });
+        process_id: reviewDefinition.id, version: reviewDefinition.version, configuration_version: reviewHash(config), run_id: traceId, node_id: 'agent', ...(parent ? { goal_run_id: parent.id } : {}),
+      } : null, context: { goal_id: goal.id, process_ids: view.process_ids, ...(view.review_pass ? { review_pass: view.review_pass, prior_stage_proof: priorStageProof(goal, view.stage.key), review_passes: view.review_passes } : {}), ...(lastReview ? { last_review: lastReview, changes_since_last_review: changes } : {}), ...(stuckContext ? { stuck: stuckContext } : {}), owner_answers: ownerAnswers, owner_notes: notes, ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, stage_continuations: continuations, continuation_recovery: continuations.flatMap(item => item.recovery ? [item.recovery] : []), completed_stages: view.completed, other_goals: others, ...(parent ? { goal_run_id: parent.id } : {}) } }, { cwd, harness, mcpUrl, ...run });
       setSetting('goal_review_state', state);
       setSetting('goal_last_review_at', now());
       if (pace().pace !== 'yolo') setSetting('goal_next_review_at', nextClock().toISOString());
       followReview(jobId);
+      return { review_job_id: jobId, goal_run_id: parent?.id ?? null };
     } catch (error) {
       traceNode(jobId, contextReady ? 'agent' : 'context', { status: 'failed', error: error.message, finished_at: now() },
         { ...(contextReady ? { from: 'context' } : {}), finished: true });
@@ -1231,13 +1385,17 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         traceDecision(origin, 'skipped', 'No active goal', null);
         throw new Error('There is no active goal to review.');
       }
-      await startReview(goal, reviewState(goal), origin, 'Explicit Run bypasses automatic cadence and change checks');
-      if (!setting('goal_review_job')) throw new Error(setting('goal_review_error') || 'The goal review did not start.');
-      return pace();
+      const receipt = await startReview(goal, reviewState(goal), origin, 'Explicit Run bypasses automatic cadence and change checks');
+      if (!receipt) throw new Error(setting('goal_review_error') || 'The goal review did not start.');
+      return { ...pace(), ...receipt };
     },
     internalProcesses() {
       const configuration = reviewConfig();
-      return [{ ...reviewDefinition, configuration, configuration_version: reviewHash(configuration) }];
+      const configuration_version = reviewHash(configuration);
+      return [{
+        ...goalRunDefinition(), configuration, configuration_version,
+        review_process: { ...reviewDefinition, configuration, configuration_version },
+      }];
     },
     async reviewRuns() {
       const recorded = reviewLedger.list();
@@ -1245,6 +1403,18 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       return [...recorded, ...historical].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     },
     reviewRun: id => reviewRunDetail(id, reviewLedger.detail(id)),
+    goalRunCatalog() {
+      const active = db.prepare("SELECT * FROM goals WHERE status = 'active' ORDER BY position LIMIT 1").get();
+      return {
+        runs: goalRuns.list().map(row => goalRunSummary(row)),
+        current_goal: currentGoalPreview(active),
+        active_run_id: active ? goalRuns.forGoal(active.id)?.id ?? null : null,
+      };
+    },
+    goalRun(id) {
+      const row = goalRuns.get(id);
+      return row ? goalRunView(row) : null;
+    },
     configureReview(input) {
       const allowed = ['pace', 'time', 'agent_harness'];
       if (!Object.keys(input).length || Object.keys(input).some(key => !allowed.includes(key))) throw new Error('Choose cadence, daily time or agent runner.');
@@ -1290,6 +1460,9 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         if (removeOnCompletion && recurrence) throw new Error('remove_on_completion applies to one-off tasks only.');
         if (existing) update(id, { title: input.title, instruction: input.instruction, recurrence, next_run_at: nextRun, status: 'queued', consecutive_failures: 0, pause_reason: null, remove_on_completion: removeOnCompletion, set_at: now(), ...contract });
         else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, remove_on_completion, success, constraints, category, goal_id, stage, set_at, process_ids, trigger_input) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, input.title, input.instruction, recurrence, nextRun, 'queued', now(), now(), removeOnCompletion, contract.success, contract.constraints, contract.category, contract.goal_id, contract.stage, now(), contract.process_ids, contract.trigger_input);
+        const saved = get(id);
+        const parent = openGoalRunForTask(saved);
+        if (parent) goalRuns.linkTask(parent.id, saved);
         schedule();
         return { task: view(get(id)), created: !existing, worker: workerState() };
       }

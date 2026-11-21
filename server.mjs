@@ -14,6 +14,7 @@ import { clarityRequest } from './clarity-client.mjs';
 import { startA2AReceiver } from './a2a-receiver.mjs';
 import { taskTools, startTaskQueue } from './task-queue.mjs';
 import { REVIEW_PROCESS_ID } from './inov8-review-process.mjs';
+import { GOAL_RUN_PROCESS_ID } from './inov8-goal-run.mjs';
 import { readPilotPending, startAgencyPilotObserver } from './agency-pilot-observer.mjs';
 import { goalTools } from './goals.mjs';
 import { environmentTools, readEnvironment, seedSources, recordSource, setPlate, recordProcess, deleteProcess, environmentCheck } from './environment.mjs';
@@ -419,6 +420,15 @@ async function ownerApi(req, res, url) {
     return json(res, 200, { job_id: id, status: result.status, output: result.output || '', error: result.error || null, started_at: result.started_at, finished_at: result.finished_at });
   }
   if (req.method === 'GET' && url.pathname === '/api/overview') return json(res, 200, await overview());
+  if (parts[1] === 'processes' && parts[2] === GOAL_RUN_PROCESS_ID) {
+    if (req.method === 'GET' && parts[3] === 'runs' && parts.length === 4) {
+      return json(res, 200, taskQueue.goalRunCatalog());
+    }
+    if (req.method === 'GET' && parts[3] === 'runs' && parts.length === 5) {
+      const run = taskQueue.goalRun(parts[4]);
+      return run ? json(res, 200, run) : json(res, 404, { error: 'Goal run not found.' });
+    }
+  }
   if (parts[1] === 'processes' && parts[2] === REVIEW_PROCESS_ID) {
     if (req.method === 'GET' && parts[3] === 'runs' && parts.length === 4) {
       return json(res, 200, { runs: await taskQueue.reviewRuns() });
@@ -482,8 +492,8 @@ async function ownerApi(req, res, url) {
     return json(res, 200, await overview());
   }
   if (req.method === 'POST' && url.pathname === '/api/goals/run') {
-    await taskQueue.runReview('owner_view');
-    return json(res, 200, await overview());
+    const review = await taskQueue.runReview('owner_view');
+    return json(res, 200, { ...await overview(), goal_run_id: review.goal_run_id, review_job_id: review.review_job_id });
   }
   if (req.method === 'POST' && url.pathname === '/api/settings') {
     const input = await body(req);

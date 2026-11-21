@@ -116,6 +116,7 @@ export async function startTaskJob(task, environment) {
   };
   const context = {
     task_id: task.id, title: task.title, category: task.category, goal_id: task.goal_id || null, stage: task.stage || null,
+    ...(task.goal_run_id ? { goal_run_id: task.goal_run_id } : {}),
     instruction: task.instruction, requested_outcome: task.success || 'the task above is carried out.',
     trigger_input: triggerInput,
     ...(task.continuation_event ? { continuation_event: task.continuation_event } : {}),
