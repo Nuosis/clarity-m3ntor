@@ -11,8 +11,9 @@ function processText(value) {
 }
 function processStatus(flow) { return flow.status || 'unverified'; }
 function processOrderRank(flow) {
+  if (flow.kind === 'internal') return 0;
   const value = processStatus(flow);
-  return value === 'validated' ? 0 : value === 'unverified' ? 2 : 1;
+  return value === 'validated' ? 1 : value === 'unverified' ? 3 : 2;
 }
 function sortProcesses(flows) {
   return [...flows].sort((a, b) => processOrderRank(a) - processOrderRank(b));
