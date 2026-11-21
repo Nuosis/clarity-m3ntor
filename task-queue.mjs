@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getM3ntorResult, jobDirectory, startTaskJob, startGoalReviewJob } from './m3ntor-jobs.mjs';
 import { stagesFor, STUCK_INSTRUCTION } from './goals.mjs';
 import { createReviewLedger, historicReviewList, reviewDefinition, reviewHash, reviewRunDetail } from './inov8-review-process.mjs';
+import { extraInternalDefinitions } from './internal-flows.mjs';
 import { createTriggerFlow, triggerFlowTools } from './trigger-flow.mjs';
 import { environmentCheck, readEnvironment, recordProcessStage } from './environment.mjs';
 import { appendJournalInWrite, businessDate, questionState, readJournal, serializeBusinessWrites, setUserQuestions } from './business-journal.mjs';
@@ -122,6 +123,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     enqueueTask: input => api.call('set_task', input),
     resolveFlow: id => {
       if (id === reviewDefinition.id) return reviewDefinition;
+      const extra = extraInternalDefinitions.find(item => item.id === id);
+      if (extra) return extra;
       try {
         const raw = JSON.parse(readFileSync(path.join(directory, 'environment', 'processes.json'), 'utf8'));
         return (raw.processes || []).find(item => item.id === id) || null;
@@ -1250,10 +1253,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     internalProcesses() {
       const configuration = reviewConfig();
       const validated = reviewDefinition.version === '03c2a1b15a5e808430957ebb6335f3c8f68fb3bbab7d7dcf817e593097f28995';
-      return [{ ...reviewDefinition, configuration, configuration_version: reviewHash(configuration),
-        status: validated ? 'validated' : 'unverified',
-        ...(validated ? { validation_evidence: '15 focused service and browser checks on implementation 1ff51ad27ca5747c28d370351ad8da0c1a867847. Definition and supported configuration validated; owner-answer and consultation-return execution were not separately exercised. Customer Agency remains unproven.' } : {}),
-      }];
+      return [
+        { ...reviewDefinition, configuration, configuration_version: reviewHash(configuration),
+          status: validated ? 'validated' : 'unverified',
+          ...(validated ? { validation_evidence: '15 focused service and browser checks on implementation 1ff51ad27ca5747c28d370351ad8da0c1a867847. Definition and supported configuration validated; owner-answer and consultation-return execution were not separately exercised. Customer Agency remains unproven.' } : {}),
+        },
+        ...extraInternalDefinitions.map(def => ({ ...def, status: 'unverified' })),
+      ];
     },
     async reviewRuns() {
       const recorded = reviewLedger.list();

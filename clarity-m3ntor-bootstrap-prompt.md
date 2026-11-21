@@ -6,9 +6,11 @@ Keep detailed business records, email, sessions, tool output, identities, financ
 
 ## 1. Establish local persistence, MCP and A2A access
 
-### Workspace and private records
+### Workspace, private records and autonomous channel discovery
 
-Reuse the appropriate workspace and compatible installation. Create or extend `.clarity_coach/CONTEXT.md`, `assessment/YYYY-MM-DD.json`, `journal/YYYY-MM-DD.json` and the action system's `action.sqlite3`. Context may be as detailed as needed; keep secrets in their established storage. Preserve daily assessment revisions and existing data. Use owner-private permissions for new local records and logs.
+Reuse the appropriate workspace and compatible installation. Create or extend `.clarity_coach/CONTEXT.md`, `assessment/YYYY-MM-DD.json`, `journal/YYYY-MM-DD.json` and the action system's `action.sqlite3`. Private runtime data and `action.sqlite3` stay local and git-ignored (never committed or shared across users); the three internal workflows (`inov8-goal-review`, `poma-assessment`, `m3ntor-coaching`) and their built-in triggers are shipped in code and loaded automatically on startup. Context may be as detailed as needed; keep secrets in their established storage. Preserve daily assessment revisions and existing data. Use owner-private permissions for new local records and logs.
+
+Before asking the owner anything, autonomously inspect existing agent sessions, local files, configured MCPs/connectors and discoverable processes to uncover the business's **customer communication channels** (email, SMS, phone, chat, CRM/portal, A2A, webhooks, etc.) as best you can. **Do not ask the user** during this pass—document your best current understanding of customer communication channels in `CONTEXT.md` (with source refs and unknowns), since these become key future trigger sources (building any middleware to bridge them is out of scope for bootstrap).
 
 ### Download and run the MCP
 
@@ -20,16 +22,20 @@ git clone https://github.com/Nuosis/clarity-m3ntor.git "$M3NTOR_SOURCE"
 
 Resolve `M3NTOR_SOURCE` to the actual installation directory before running the command. For an existing checkout inspect its branch and local edits before updating; preserve and finish unrelated work rather than resetting it. Read that checkout's README and `ACCESS-PATTERN.md`; use its supported Node.js version (currently Node.js 22 or newer). The current package has no dependency-install step.
 
-Determine the current business workspace and harness CLI (`codex` or `claude`). Reuse a matching running service; otherwise choose an unused loopback port and install the package under the operating system's service manager (macOS LaunchAgent, Linux `systemd --user`, Windows current-user logon task), so it starts at login, restarts after a crash and keeps that port:
+Determine the current business workspace and interactive harness (`codex`, `claude`, or `antigravity`). For the background service worker, pass an installed worker CLI (`codex` or `claude`) to `install-service.mjs`. Reuse a matching running service; otherwise choose an unused loopback port and install the package under the operating system's service manager (macOS LaunchAgent, Linux `systemd --user`, Windows current-user logon task), so it starts at login, restarts after a crash and keeps that port:
 
 ```sh
 node "$M3NTOR_SOURCE/install-service.mjs" --workspace "$M3NTOR_WORKSPACE" \
-  --harness "$M3NTOR_HARNESS" --port "$M3NTOR_PORT"
+  --harness "$M3NTOR_WORKER_HARNESS" --port "$M3NTOR_PORT"
 ```
 
 It prints one JSON status with the label, definition file, port, URL, whether it is loaded and whether the service is responding. An existing service with that label is kept with its port and settings; pass `--replace` only when it points at the wrong source, workspace or harness. `port_in_use` names the program already on that port; choose another port. Stop any shell-started copy on the same port first. Read back that the service is responding, then end the service's node process and confirm the service manager brings it back on the same port (allow up to 30 seconds). Record the definition file, port and URL `http://127.0.0.1:<port>/mcp/local`, and both read-backs. Bind only to loopback. On Linux, report the returned `linger` value: without it the service runs only while the owner is logged in.
 
-Register that URL under `clarity_m3ntor` in the CURRENT harness using its supported configuration scope. Check for an existing entry and preserve unrelated configuration. Examples, substituting the actual port:
+### Owner View UI & Dock / PWA setup
+
+Verify the Owner View frontend responds at `http://127.0.0.1:<port>/` right after service startup. It serves Goals, **Process** (internal workflows first—`inov8-goal-review`, `poma-assessment`, `m3ntor-coaching`—then verified business flows, then unverified flows, each with typed nodes, registered triggers and run traces), Tasks, Questions, Assessment, Context, Journal, Use cases and Settings. Tell the owner its address and how to save it as an app / Dock shortcut now: in Chrome or Edge, open `http://127.0.0.1:<port>/` and click **Install** in the address bar; in Safari, choose **File > Add to Dock**.
+
+Register the MCP URL under `clarity_m3ntor` in the CURRENT harness using its supported configuration scope. Check for an existing entry and preserve unrelated configuration. Examples, substituting the actual port:
 
 ```sh
 # Codex
@@ -37,17 +43,20 @@ codex mcp add clarity_m3ntor --url http://127.0.0.1:<port>/mcp/local
 
 # Claude Code (choose the current workspace's appropriate existing scope)
 claude mcp add --transport http --scope local clarity_m3ntor http://127.0.0.1:<port>/mcp/local
+
+# Antigravity (Streamable HTTP in ~/.gemini/config/mcp_config.json)
+# Merge under "mcpServers": { "clarity_m3ntor": { "url": "http://127.0.0.1:<port>/mcp/local" } }
 ```
 
 Use the current harness's supported MCP refresh/reconnect mechanism; if tool discovery requires a new session, preserve this task's continuation. A saved config entry alone does not prove tools are connected. Initialize the MCP, list its actual tools and record the working connection. Do not turn choosing another harness into a user journey.
 
-Register the session-start hook in the CURRENT harness, so every new owner session opens with any Coach questions waiting on the owner (inov8's goal work pauses until they are answered):
+Register the session-start hook in the CURRENT harness (`codex`, `claude`, or `antigravity`), so every new owner session opens with any Coach questions waiting on the owner (inov8's goal work pauses until they are answered):
 
 ```sh
 node "$M3NTOR_SOURCE/install-session-hook.mjs" --harness "$M3NTOR_HARNESS" --port <port>
 ```
 
-It keeps every other hook and setting and prints one JSON status with the file it changed. Run it again after a port change. Read back the hook: run `node "$M3NTOR_SOURCE/session-start-hook.mjs" --port <port>`; it prints the opening context when a question is pending and nothing otherwise. Codex runs a new or changed hook only after the owner trusts it; tell the owner to trust the Clarity M3NT0R SessionStart hook when their next interactive Codex session asks, and record that step as pending until they have. Claude Code runs it from the next session.
+It keeps every other hook and setting and prints one JSON status with the file it changed (`~/.codex/hooks.json`, `~/.claude/settings.json`, or `~/.gemini/config/hooks.json` for Antigravity). Run it again after a port change. Read back the hook: run `node "$M3NTOR_SOURCE/session-start-hook.mjs" --port <port>` (add `--format antigravity` for Antigravity); it prints the opening context when a question is pending and nothing (or `{}` for Antigravity) otherwise. Codex runs a new or changed hook only after the owner trusts it; tell the owner to trust the Clarity M3NT0R SessionStart hook when their next interactive Codex session asks, and record that step as pending until they have. Claude Code and Antigravity run it from the next session.
 
 ### Register and receive the Clarity token
 
@@ -104,16 +113,20 @@ The `clarity_m3ntor` service includes the action queue: `set_task`, `list_tasks`
 
 Call `start_task_worker` (the setting persists) and record its state, then confirm with `list_tasks`.
 
-### Establish and verify triggers, receiver and flow traces
+### Establish and verify internal flows, triggers, receiver and traces
 
-The service provides the foundational `trigger >> flow >> log/trace` layer in `action.sqlite3`: `register_trigger`, `list_triggers`, `fire_trigger`, `list_flow_runs`, `get_flow_run` and `clear_synthetic_traces`, plus the loopback HTTP receiver `POST /api/triggers/<trigger_id>/fire`. Built-in system triggers are seeded automatically, every business process saved with `record_process` automatically gets a bound event trigger (`flow-<process_id>`), and remote external events stay authenticated through Clarity's SSE stream or a local adapter (never by exposing the local port).
+All three internal flows (`inov8-goal-review`, `poma-assessment`, `m3ntor-coaching`) and their built-in triggers are shipped in code and registered automatically in the local `action.sqlite3` on startup—never copied from another user's database. Every business process saved with `record_process` also automatically gets a bound event trigger (`flow-<process_id>`).
 
-Verify the live pipe on day 1 before handoff:
-1. Call `list_triggers` and confirm the built-in triggers are registered with their receiver paths.
-2. Fire one labelled synthetic smoke event with `fire_trigger` (`trigger_id: "inov8-manual"`, `synthetic: true`, `dry_run: true`, `dedupe_key: "bootstrap-smoke-<uuid>"`, `payload: { check: "bootstrap" }`) and confirm `accepted: true` with an `event_id` and `flow_run_id`.
-3. Replay the exact same `dedupe_key` once and confirm `accepted: false` with `disposition: "duplicate"`.
-4. Read back the recorded trace with `get_flow_run` using that `flow_run_id` and confirm the trigger event receipt, eligibility decision and terminal node are persisted.
-5. Remove the synthetic check trace with `clear_synthetic_traces` (`run_id: <flow_run_id>`) and report the verified receipt IDs, deduplication result and cleanup count.
+The foundational `trigger >> flow >> log/trace` layer exposes `register_trigger`, `list_triggers`, `fire_trigger`, `list_flow_runs`, `get_flow_run` and `clear_synthetic_traces`, plus the loopback HTTP webhook receiver `POST /api/triggers/<trigger_id>/fire`. Remote external events stay authenticated through Clarity's SSE stream (A2A) or a local adapter—never by exposing the local port.
+
+Verify the live pipe as core infrastructure on day 1 before handoff:
+1. Call `list_triggers` and confirm the built-in triggers for all three internal flows (`inov8-*`, `poma-*`, `m3ntor-*`) are registered with their receiver paths.
+2. Verify trigger ingest across core channels:
+   - **MCP (`fire_trigger`) & deduplication:** fire one labelled synthetic smoke event (`trigger_id: "poma-event"`, `synthetic: true`, `dry_run: true`, `dedupe_key: "bootstrap-smoke-<uuid>"`, `payload: { check: "bootstrap" }`) and confirm `accepted: true` (`event_id`, `flow_run_id`); replay the same `dedupe_key` and confirm `accepted: false`, `disposition: "duplicate"`.
+   - **Local HTTP webhook (`POST /api/triggers/<id>/fire`):** confirm loopback HTTP delivery accepts a labelled synthetic event and persists a trace.
+   - **A2A stream:** confirm `a2a_status` reports `ready`.
+3. Read back the recorded trace with `get_flow_run` using that `flow_run_id` and confirm the trigger event receipt, eligibility decision and terminal node are persisted, then remove the synthetic smoke traces with `clear_synthetic_traces` and record the verified receipt IDs and cleanup count.
+4. **End-to-end worker proof (POMA assessment flow):** when running the initial POMA assessment (or verifying the worker on a fresh install), you may queue the `poma-assessment` flow as a task via `set_task` and confirm the background worker claims it, runs `assess_poma`, and persists the saved/submitted receipts.
 
 ## 4. Schedule weekly POMA reassessment separately
 
@@ -135,10 +148,6 @@ Call `list_goals` to confirm the working environment goal is active, then call `
 
 Consult `ask_m3ntor` with a question and the full business context it needs (it runs locally on the owner's subscription, can read local files and search the web and the utility library, and changes nothing), retrieve the same background job and retain the response. Preserve proposed, authorized, attempted and completed status; advice is not proof of an adopted plan or improved result.
 
-## Owner view
-
-The service serves the owner's view at `http://127.0.0.1:<port>/`: the goals with each one's stages, tasks and evidence; the **Process** view (internal workflows first, then verified flows, then unverified flows, each with typed nodes, registered triggers and run traces); the task queue (each task's contract, runs, what the agent did and the result); questions waiting on the owner; the latest POMA assessment; the business journal; use cases; and Settings (agent pace, full access and runner). Tell the owner its address and that it installs as an app: in Chrome or Edge, open the address and use the Install button in the address bar; in Safari, choose File > Add to Dock.
-
 ## 6. Report the bootstrap result
 
-Return the source installation and private context/assessment/journal paths; actual current-harness MCP tools/URL; network identity and distinct connectivity evidence; business-linked ratings; source-supported productivity or missing inputs; feedback or outstanding questions; worker/restart/result state; registered triggers and the verified `trigger >> flow >> trace` smoke-check receipts (`event_id`, `flow_run_id`, deduplication check and synthetic cleanup count); the active goal, its current stage, what its done-check is still missing and the first goal review's job and result; questions waiting on the owner; separate weekly review schedule/executor; and actual coach/report receipts. State unresolved provisioning and unproven behavior alongside the affected claim. Keep detailed private evidence local.
+Return the source installation and private context/assessment/journal paths; discovered customer communication channels recorded in `CONTEXT.md` (with source refs and unknowns); Owner View URL (`http://127.0.0.1:<port>/`) and PWA/Dock install status; actual current-harness MCP tools/URL and SessionStart hook status; network identity and distinct connectivity evidence; business-linked ratings; source-supported productivity or missing inputs; feedback or outstanding questions; worker/restart/result state; the three loaded internal flows (`inov8-goal-review`, `poma-assessment`, `m3ntor-coaching`), registered triggers and verified core trigger-ingest checks (local webhook, MCP `fire_trigger` + dedupe, A2A `ready`, `get_flow_run` receipts and `clear_synthetic_traces` cleanup count); the active goal, its current stage, what its done-check is still missing and the first goal review's job and result; questions waiting on the owner; separate weekly review schedule/executor; and actual coach/report receipts. State unresolved provisioning and unproven behavior alongside the affected claim. Keep detailed private evidence local.

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { REVIEW_PROCESS_ID } from './inov8-review-process.mjs';
+import { M3NTOR_PROCESS_ID, POMA_PROCESS_ID } from './internal-flows.mjs';
 
 const VALID_KINDS = new Set(['schedule', 'event', 'adapter', 'manual']);
 const VALID_OVERLAP = new Set(['allow', 'skip', 'queue']);
@@ -167,6 +168,11 @@ export function createTriggerFlow(db, { enqueueTask = null, resolveFlow = null }
       { id: 'inov8-manual', flow_id: REVIEW_PROCESS_ID, node_id: 'trigger-manual', kind: 'manual', name: 'Manual Run', config: { builtin: true } },
       { id: 'inov8-answer', flow_id: REVIEW_PROCESS_ID, node_id: 'trigger-answer', kind: 'event', name: 'Owner answer', config: { builtin: true } },
       { id: 'inov8-recovery', flow_id: REVIEW_PROCESS_ID, node_id: 'trigger-recovery', kind: 'event', name: 'Recovery return', config: { builtin: true } },
+      { id: 'poma-weekly', flow_id: POMA_PROCESS_ID, node_id: 'trigger-weekly', kind: 'schedule', name: 'Weekly POMA schedule', config: { builtin: true, schedule: { weekly: { day: 'monday', time: '08:00' } } } },
+      { id: 'poma-manual', flow_id: POMA_PROCESS_ID, node_id: 'trigger-manual', kind: 'manual', name: 'Manual / Bootstrap POMA', config: { builtin: true } },
+      { id: 'poma-event', flow_id: POMA_PROCESS_ID, node_id: 'trigger-event', kind: 'event', name: 'POMA trigger receiver', config: { builtin: true } },
+      { id: 'm3ntor-ask', flow_id: M3NTOR_PROCESS_ID, node_id: 'trigger-ask', kind: 'event', name: 'MCP ask_m3ntor', config: { builtin: true } },
+      { id: 'm3ntor-weekly', flow_id: M3NTOR_PROCESS_ID, node_id: 'trigger-weekly', kind: 'schedule', name: 'Weekly goal review consult', config: { builtin: true } },
     ];
     const at = now();
     const stmt = db.prepare(`INSERT OR IGNORE INTO triggers (id, flow_id, node_id, kind, name, config_json, overlap_policy, enabled, created_at, updated_at)
