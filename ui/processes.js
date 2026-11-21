@@ -1,14 +1,11 @@
 // Business records and built-in flows share the draw.io view.
 let currentProcess = null;
-let showingChildReviews = false;
-let visibleProcessDiagram = null;
-const runHistories = new Map();
-function runHistory(flow) {
-  if (!runHistories.has(flow.id)) runHistories.set(flow.id, {
-    selected: '', runs: [], detail: null, preview: null, error: null, loading: false, version: 0, manualSelection: false,
-  });
-  return runHistories.get(flow.id);
-}
+let selectedProcessRun = '';
+let processRunList = [];
+let processRunDetail = null;
+let processRunError = null;
+let processRunListPending = false;
+let processRunDetailVersion = 0;
 function processText(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -84,11 +81,7 @@ const evidenceJson = value => JSON.stringify(value, (_key, field) => (
   typeof field === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(field) ? reviewTime(field) : field
 ), 2);
 const reviewSources = { clock: 'Automatic cadence', manual: 'Manual Run', answer: 'Owner answer', recovery: 'Recovery return' };
-const runStateLabels = {
-  started: 'Running', running: 'Running', completed: 'Completed', failed: 'Failed', waiting: 'Waiting',
-  skipped: 'Skipped', prior: 'Prior proof', current: 'Current', recovery: 'Recovery', open: 'Open',
-  succeeded: 'Succeeded', stopped: 'Stopped', not_started: 'Run not started', not_recorded: 'Not recorded',
-};
+const runStateLabels = { started: 'Running', completed: 'Completed', failed: 'Failed', waiting: 'Waiting', skipped: 'Skipped' };
 const processRunPath = flow => '/api/processes/' + encodeURIComponent(flow.id) + '/runs';
 
 function internalDiagramXml(flow, run) {
@@ -96,8 +89,8 @@ function internalDiagramXml(flow, run) {
   const text = dark ? '#e0e0e0' : '#333333';
   const neutral = dark ? '#8a8a8a' : '#777777';
   const palette = dark
-    ? { started: '#8db3ff', current: '#8db3ff', completed: '#60c482', prior: '#84ad94', failed: '#f28891', recovery: '#f28891', waiting: '#e5b966', skipped: '#aab3c1' }
-    : { started: '#385eaa', current: '#385eaa', completed: '#268046', prior: '#526f5f', failed: '#ad3f48', recovery: '#ad3f48', waiting: '#8d5b16', skipped: '#667080' };
+    ? { started: '#8db3ff', completed: '#60c482', failed: '#f28891', waiting: '#e5b966', skipped: '#aab3c1' }
+    : { started: '#385eaa', completed: '#268046', failed: '#ad3f48', waiting: '#8d5b16', skipped: '#667080' };
   const traversed = new Set(run?.traversed || []);
   const color = id => palette[run?.nodes?.[id]?.status];
   const cells = flow.nodes.map(node => {
@@ -105,16 +98,15 @@ function internalDiagramXml(flow, run) {
     const stroke = color(node.id);
     const fill = dark ? '#222222' : '#f5f5f5';
     const style = shape + `whiteSpace=wrap;html=0;fontSize=16;fontFamily=Arial;fillColor=${fill};fontColor=${text};strokeColor=${stroke || neutral};strokeWidth=${stroke ? 3 : 1};`;
-    const height = node.type === 'decision' || node.id === 'success' ? 72 : 58;
+    const decision = node.type === 'decision';
     const status = runStateLabels[run?.nodes?.[node.id]?.status];
     const value = processText(node.label) + (status ? '&#xa;' + processText(status) : '');
-    return `<mxCell id="${node.id}" value="${value}" style="${style}" vertex="1" parent="1"><mxGeometry x="${24 + node.column * 182}" y="${24 + node.row * 107}" width="152" height="${height}" as="geometry"/></mxCell>`;
+    return `<mxCell id="${node.id}" value="${value}" style="${style}" vertex="1" parent="1"><mxGeometry x="${24 + node.column * 182}" y="${24 + node.row * 107}" width="152" height="${decision ? 72 : 58}" as="geometry"/></mxCell>`;
   });
   for (const edge of flow.edges) {
     const active = traversed.has(edge.id);
     const colorOnEdge = active ? color(edge.to) || color(edge.from) || neutral : neutral;
-    const side = edge.to === 'skip' ? 'exitX=0;exitY=0.5;entryX=1;entryY=0.5;'
-      : edge.to === 'checkpoint' ? 'exitX=1;exitY=0.5;entryX=0;entryY=0.5;' : 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;';
+    const side = edge.to === 'skip' ? 'exitX=0;exitY=0.5;entryX=1;entryY=0.5;' : 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;';
     cells.push(`<mxCell id="${edge.id}" value="${processText(edge.label)}" style="edgeStyle=orthogonalEdgeStyle;rounded=1;endArrow=block;endFill=1;fontSize=13;labelBackgroundColor=${dark ? '#222222' : '#ffffff'};fontColor=${text};strokeColor=${colorOnEdge};strokeWidth=${active ? 3 : 1};${side}" edge="1" parent="1" source="${edge.from}" target="${edge.to}"><mxGeometry relative="1" as="geometry"/></mxCell>`);
   }
   return `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>${cells.join('')}</root></mxGraphModel>`;
@@ -131,7 +123,7 @@ function fitProcessGraph() {
   if (bounds.width > 0 && bounds.height > 0) activeProcessGraph.zoomTo(Math.min(1, (host.clientWidth - 48) / (bounds.width / scale), (host.clientHeight - 48) / (bounds.height / scale)));
   host.scrollLeft = 0; host.scrollTop = 0;
 }
-async function mountProcessDiagram(flow, run = null, openInternal) {
+async function mountProcessDiagram(flow, run = null) {
   const version = ++processRenderVersion;
   activeProcessGraph?.destroy(); activeProcessGraph = null;
   const host = document.querySelector('.process-canvas');
@@ -141,7 +133,7 @@ async function mountProcessDiagram(flow, run = null, openInternal) {
   const internalNodes = new Map((diagram.nodes || []).map(node => [node.id, node]));
   const stepFromCell = id => internal ? internalNodes.get(id) : /^step-\d+$/.test(id) && flow.steps[Number(id.slice(5))];
   const openCell = id => {
-    if (internal) openInternal(internalNodes.get(id));
+    if (internal) openInternalNode(flow, internalNodes.get(id), run);
     else openProcessStep(flow, Number(id.slice(5)));
   };
   if (!internal && !flow.steps?.length) { host.textContent = 'No steps recorded yet.'; return; }
@@ -243,17 +235,17 @@ function evidenceFields(evidence) {
     ${evidence.output ? `<details><summary>Output reference</summary><pre>${processText(evidenceJson(evidence.output))}</pre></details>` : ''}
     ${tools.length ? `<h4>Tool activity</h4><ul class="process-tool-list">${tools.map(tool => `<li><strong>${processText(tool.label)}</strong>${tool.server ? ' · ' + processText(tool.server) : ''} · ${processText(runStateLabels[tool.status] || tool.status)}<span class="meta"> · line ${processText(tool.result_line)}</span></li>`).join('')}</ul>` : ''}`;
 }
-function openReviewNode(flow, node, run, selected) {
+function openInternalNode(flow, node, run) {
   if (!node) return;
   const modal = processStepModal();
-  const editable = !selected && Boolean(node.configuration);
-  const config = run?.configuration || (!selected ? flow.configuration : node.id === 'agent' ? run?.nodes?.agent : null);
+  const editable = !selectedProcessRun && Boolean(node.configuration);
+  const config = run?.configuration || (!selectedProcessRun ? flow.configuration : node.id === 'agent' ? run?.nodes?.agent : null);
   modal.dataset.step = node.id;
   modal.innerHTML = `<div class="process-modal-header"><div><p class="meta">${processText(flow.name)}</p><h2 id="process-step-title">${processText(node.label)}</h2></div><button type="button" class="ghost" data-close-step autofocus>Close</button></div>
     <div class="process-modal-body prose">
       <h3>Configuration</h3><p>${processText(node.detail)}</p><p class="meta">${processText(node.binding)}</p>
       <form class="process-node-config">${configurationFields(node, config, editable)}${editable ? '<button type="submit" class="primary">Save</button><span role="status" data-config-feedback></span>' : ''}</form>
-      ${selected ? `<h3>Run evidence</h3>${evidenceFields(run?.nodes?.[node.id])}` : ''}
+      ${selectedProcessRun ? `<h3>Run evidence</h3>${evidenceFields(run?.nodes?.[node.id])}` : ''}
       ${run?.version && node.id === 'eligibility' ? `<details><summary>Saved versions</summary><dl class="process-evidence-fields"><dt>Definition</dt><dd>${processText(run.version)}</dd><dt>Configuration</dt><dd>${processText(run.configuration_version)}</dd></dl></details>` : ''}
     </div>`;
   const form = modal.querySelector('form');
@@ -280,101 +272,48 @@ function openReviewNode(flow, node, run, selected) {
   if (!modal.open) modal.showModal();
 }
 
-function taskEvidence(task) {
-  return `<details class="process-task-evidence"><summary>${processText(task.title)} · ${processText(task.status || 'Task record unavailable')}</summary>
-    ${task.continuations.map(item => `<dl class="process-evidence-fields"><dt>Checkpoint</dt><dd>${processText(item.checkpoint || 'Not recorded')}</dd><dt>Owner</dt><dd>${processText(item.owner || 'Not recorded')}</dd><dt>Return</dt><dd>${processText(item.return_route || 'Not recorded')} · ${processText(item.state || 'Not recorded')}</dd></dl>`).join('')}
-    ${task.runs.length ? `<ul>${task.runs.map(item => `<li>${processText(reviewTime(item.started_at))} · ${processText(runStateLabels[item.status] || item.status)}${item.error ? `<p class="meta">${processText(item.error)}</p>` : ''}</li>`).join('')}</ul>` : ''}
-    <details><summary>Saved references</summary><pre>${processText(evidenceJson({ task_id: task.id, runs: task.runs.map(({ id, job_id }) => ({ id, job_id })), continuations: task.continuations }))}</pre></details>
-  </details>`;
-}
-function openGoalRunNode(flow, node, run, showReview) {
-  if (!node) return;
-  const modal = processStepModal();
-  const evidence = run?.nodes?.[node.id];
-  const proof = evidence?.proof;
-  const reviews = evidence?.reviews || (node.id === 'checkpoint' ? run?.child_reviews : []) || [];
-  const prior = proof?.origin === 'before_run' || proof?.origin === 'reused';
-  const proofHeading = prior ? 'Prior accepted evidence' : 'Evidence accepted in this run';
-  const accepted = proof || (node.id === 'success' ? run?.success : null);
-  const checkpoint = evidence?.checkpoint || (['checkpoint', 'waiting', 'recovery'].includes(node.id) ? evidence?.output : null);
-  modal.dataset.step = node.id;
-  modal.innerHTML = `<div class="process-modal-header"><div><p class="meta">${processText(run?.goal_title || flow.name)}</p><h2 id="process-step-title">${processText(node.label)}</h2></div><button type="button" class="ghost" data-close-step autofocus>Close</button></div>
-    <div class="process-modal-body prose">
-      ${node.work ? `<h3>Work</h3><p>${processText(node.work)}</p><h3>Done when</h3><p>${processText(node.done)}</p>` : `<p>${processText(node.detail)}</p>`}
-      ${accepted ? `<h3>${proofHeading}</h3><p class="meta">${processText(reviewTime(accepted.at || accepted.accepted_at))}</p><p class="process-proof">${processText(accepted.evidence)}</p>` : ''}
-      ${evidence?.prior_proof?.length ? `<details><summary>Earlier proof available</summary>${evidence.prior_proof.map(item => `<p class="meta">${processText(reviewTime(item.at))}</p><p class="process-proof">${processText(item.evidence)}</p>`).join('')}</details>` : ''}
-      ${checkpoint ? `<h3>Current checkpoint</h3><p>${processText(checkpoint.reason)}</p>${checkpoint.continuations?.map(item => `<p>${processText(item.owner || 'Owner not recorded')} · ${processText(item.checkpoint || 'Checkpoint not recorded')}</p>`).join('') || ''}<details><summary>Checkpoint references</summary><pre>${processText(evidenceJson(checkpoint))}</pre></details>` : ''}
-      ${evidence?.tasks?.length ? `<h3>Tasks</h3>${evidence.tasks.map(taskEvidence).join('')}` : ''}
-      ${reviews.length ? `<h3>Child reviews</h3><ul class="process-tool-list">${reviews.map(review => `<li><button type="button" class="ghost" data-child-review="${processText(review.id)}">${processText(reviewSources[review.source] || 'Review')} · ${processText(reviewTime(review.created_at))}</button></li>`).join('')}</ul>` : ''}
-      ${node.id === 'intake' && evidence ? evidenceFields(evidence) : ''}
-      ${node.id === 'checkpoint' && run?.configuration ? `<details><summary>Initial configuration</summary><pre>${processText(evidenceJson(run.configuration))}</pre></details>` : ''}
-    </div>`;
-  modal.querySelectorAll('[data-child-review]').forEach(button => button.addEventListener('click', () => {
-    modal.close();
-    showReview(button.dataset.childReview);
-  }));
-  if (!modal.open) modal.showModal();
-}
-
-async function fetchProcessRun(flow, history, id, render) {
-  const version = ++history.version;
+async function fetchProcessRun(flow, id, render) {
+  const version = ++processRunDetailVersion;
   try {
     const detail = await api(processRunPath(flow) + '/' + encodeURIComponent(id));
-    if (version !== history.version || history.selected !== id) return;
-    if (JSON.stringify(history.detail) === JSON.stringify(detail) && !history.error) return;
-    history.detail = detail;
-    history.error = null;
+    if (version !== processRunDetailVersion || selectedProcessRun !== id) return;
+    if (JSON.stringify(processRunDetail) === JSON.stringify(detail)) return;
+    processRunDetail = detail;
+    processRunError = null;
     render();
   } catch (error) {
-    if (version === history.version && history.selected === id) {
-      history.error = error.message;
+    if (version === processRunDetailVersion && selectedProcessRun === id) {
+      processRunError = error.message;
       render();
     }
   }
 }
-async function refreshProcessRuns(flow, history, render) {
-  if (history.loading) return;
-  history.loading = true;
+async function refreshProcessRuns(flow, render) {
+  if (processRunListPending) return;
+  processRunListPending = true;
   try {
-    const { runs, current_goal = null, active_run_id } = await api(processRunPath(flow));
-    const selectActive = active_run_id && !history.manualSelection && !history.selected;
-    if (selectActive) history.selected = active_run_id;
-    if (selectActive || JSON.stringify(history.runs) !== JSON.stringify(runs) || JSON.stringify(history.preview) !== JSON.stringify(current_goal) || history.error) {
-      history.runs = runs;
-      history.preview = current_goal;
-      history.error = null;
+    const { runs } = await api(processRunPath(flow));
+    if (JSON.stringify(processRunList) !== JSON.stringify(runs) || processRunError) {
+      processRunList = runs;
+      processRunError = null;
       render();
     }
-    if (history.selected) {
-      const row = runs.find(item => item.id === history.selected);
-      const childUnsettled = history.detail?.child_reviews?.some(child => !child.finished_at);
-      if (history.detail?.id !== history.selected || !row?.finished_at || !history.detail?.finished_at || childUnsettled) {
-        await fetchProcessRun(flow, history, history.selected, render);
-      }
+    if (selectedProcessRun) {
+      const row = runs.find(item => item.id === selectedProcessRun);
+      if (processRunDetail?.id !== selectedProcessRun || !row?.finished_at || !processRunDetail?.finished_at) await fetchProcessRun(flow, selectedProcessRun, render);
     }
-  } catch (error) { history.error = error.message; render(); }
-  finally { history.loading = false; }
+  } catch (error) { processRunError = error.message; render(); }
+  finally { processRunListPending = false; }
 }
-function runPicker(flow, run, history, child, parentId) {
-  const option = row => {
-    const parent = row.goal_title ? row.goal_title + ' · ' + (runStateLabels[row.status] || row.status) : null;
-    const review = reviewSources[row.source] || 'Historical review';
-    const label = parent ? parent + ' · ' + reviewTime(row.created_at) : reviewTime(row.created_at) + ' · ' + review + (row.decision === 'skipped' ? ' · Skipped' : '');
-    return `<option value="${processText(row.id)}"${row.id === history.selected ? ' selected' : ''}>${processText(label)}</option>`;
-  };
-  const group = (label, rows) => rows.length ? `<optgroup label="${label}">${rows.map(option).join('')}</optgroup>` : '';
-  const options = child ? [
-    group('Selected goal run', history.runs.filter(row => parentId && row.goal_run_id === parentId)),
-    group('Other linked reviews', history.runs.filter(row => row.goal_run_id && row.goal_run_id !== parentId)),
-    group('Earlier or unlinked reviews', history.runs.filter(row => !row.goal_run_id)),
-  ].join('') : history.runs.map(option).join('');
-  const message = history.error || (history.selected && !run ? 'Loading run…' : run?.historical ? 'Historical · Trigger and version not recorded' : '');
-  const current = !child && history.preview ? history.preview.goal_title + ' · Run not started' : child ? 'Current configuration' : 'Goal run definition';
-  return `<div class="process-run-controls">
-    ${child ? '<button type="button" class="ghost" data-parent-diagram>Back to goal run</button>' : '<button type="button" class="ghost" data-child-diagram>Review traces and settings</button>'}
-    <label>${child ? 'Child review' : 'Goal run'} <select data-process-run><option value="">${processText(current)}</option>${options}</select></label>
+function runPicker(flow, run) {
+  const options = processRunList.map(row => {
+    const label = reviewTime(row.created_at) + ' · ' + (reviewSources[row.source] || 'Historical') + (row.decision === 'skipped' ? ' · Skipped' : '');
+    return `<option value="${processText(row.id)}"${row.id === selectedProcessRun ? ' selected' : ''}>${processText(label)}</option>`;
+  }).join('');
+  const status = processRunError || (selectedProcessRun && !run ? 'Loading run…' : run?.historical ? 'Historical · Trigger and version not recorded' : '');
+  return `<div class="process-run-controls"><label>View <select data-process-run><option value="">Current configuration</option>${options}</select></label>
     <span class="meta">${flow.configuration.automatic_enabled ? 'Automatic reviews enabled' : 'Automatic reviews paused'}</span>
-    ${message ? `<span class="meta" role="status">${processText(message)}</span>` : ''}</div>`;
+    ${status ? `<span class="meta" role="status">${processText(status)}</span>` : ''}</div>`;
 }
 
 function renderProcesses(businessFlows, internalFlows = [], refreshHistory = true) {
@@ -382,37 +321,20 @@ function renderProcesses(businessFlows, internalFlows = [], refreshHistory = tru
   const box = document.querySelector('#processes');
   if (!flows.length) { box.innerHTML = '<p class="empty">No processes recorded yet.</p>'; return; }
   if (!flows.some(flow => flow.id === currentProcess)) currentProcess = flows[0].id;
-  const primary = flows.find(item => item.id === currentProcess);
+  const flow = flows.find(item => item.id === currentProcess);
   const open = box.querySelector('.process-notes')?.open || false;
-  const internal = primary.kind === 'internal';
-  const child = Boolean(internal && showingChildReviews && primary.review_process);
-  const flow = child ? primary.review_process : primary;
-  visibleProcessDiagram = flow.id;
-  const history = internal ? runHistory(flow) : null;
-  const run = !history ? null : history.selected ? (history.detail?.id === history.selected ? history.detail : null) : history.preview;
+  const internal = flow.kind === 'internal';
+  const run = internal && processRunDetail?.id === selectedProcessRun ? processRunDetail : null;
   const render = () => {
-    if (visibleProcessDiagram === flow.id) renderProcesses(businessFlows, internalFlows, false);
+    if (currentProcess === flow.id) renderProcesses(businessFlows, internalFlows, false);
   };
-  const showReview = id => {
-    if (!primary.review_process) return;
-    const childHistory = runHistory(primary.review_process);
-    if (id) {
-      childHistory.selected = id;
-      childHistory.detail = null;
-      childHistory.version += 1;
-    }
-    childHistory.error = null;
-    showingChildReviews = true;
-    renderProcesses(businessFlows, internalFlows);
-  };
-  const openNode = node => child ? openReviewNode(flow, node, run, history.selected) : openGoalRunNode(flow, node, run, showReview);
   const agentic = businessFlows.filter(item => item.agentic === true).length;
   const unknown = businessFlows.filter(item => typeof item.agentic !== 'boolean').length;
   const badge = item => item.kind === 'internal' ? '<span class="meta">Internal</span>' : processStatus(item) === 'validated' ? '' : `<span class="status ${processText(processStatus(item))}">${processText(processStatusLabel(item))}</span>`;
   box.innerHTML = `${businessFlows.length ? `<div class="process-metric">Confirmed agentic: ${agentic}/${businessFlows.length} (${Math.round(agentic / businessFlows.length * 100)}%)${unknown ? ` · ${unknown} not assessed` : ''}</div>` : ''}<div class="process-workspace">
-    <aside class="process-picker" aria-label="Processes">${flows.map(item => `<button type="button" data-process="${processText(item.id)}" class="${item.id === primary.id ? 'selected' : ''}" aria-pressed="${item.id === primary.id}">${badge(item)}${processNameWithBadge(item)}</button>`).join('')}</aside>
+    <aside class="process-picker" aria-label="Processes">${flows.map(item => `<button type="button" data-process="${processText(item.id)}" class="${item.id === flow.id ? 'selected' : ''}" aria-pressed="${item.id === flow.id}">${badge(item)}${processNameWithBadge(item)}</button>`).join('')}</aside>
     <article class="process-view"><div class="process-header"><div>${badge(flow)}<h2>${processNameWithBadge(flow)}</h2></div><div class="process-controls"><button type="button" data-zoom="out" aria-label="Zoom out">−</button><span data-process-zoom>100%</span><button type="button" data-zoom="in" aria-label="Zoom in">+</button><button type="button" data-zoom="actual">Actual size</button><button type="button" data-zoom="fit">Fit diagram</button></div></div>
-      ${internal ? runPicker(flow, run, history, child, runHistory(primary).selected) : ''}
+      ${internal ? runPicker(flow, run) : ''}
       <div class="process-canvas" role="region" aria-label="Process diagram" tabindex="0"><p class="meta">Loading diagram…</p></div>
       ${internal ? '' : `<details class="process-notes"${open ? ' open' : ''}><summary>Details</summary><div class="prose">
         <p class="meta">Agentic: ${flow.agentic === true ? 'Yes' : flow.agentic === false ? 'No' : 'Not assessed'}</p>${flow.agentic_evidence ? renderMarkdown(flow.agentic_evidence) : ''}
@@ -427,9 +349,7 @@ function renderProcesses(businessFlows, internalFlows = [], refreshHistory = tru
     </article></div>`;
   box.onclick = event => {
     const picker = event.target.closest('[data-process]');
-    if (picker) { currentProcess = picker.dataset.process; showingChildReviews = false; renderProcesses(businessFlows, internalFlows); return; }
-    if (event.target.closest('[data-child-diagram]')) { showReview(); return; }
-    if (event.target.closest('[data-parent-diagram]')) { showingChildReviews = false; renderProcesses(businessFlows, internalFlows); return; }
+    if (picker) { currentProcess = picker.dataset.process; renderProcesses(businessFlows, internalFlows); return; }
     const zoom = event.target.closest('[data-zoom]');
     if (zoom) {
       if (zoom.dataset.zoom === 'fit') fitProcessGraph();
@@ -439,23 +359,22 @@ function renderProcesses(businessFlows, internalFlows = [], refreshHistory = tru
     }
     const step = event.target.closest('[data-step]');
     if (step) {
-      if (internal) openNode((run?.definition || flow).nodes.find(node => node.id === step.dataset.step));
+      if (internal) openInternalNode(flow, (run?.definition || flow).nodes.find(node => node.id === step.dataset.step), run);
       else openProcessStep(flow, Number(step.dataset.step));
     }
   };
   if (internal) {
     box.querySelector('[data-process-run]').onchange = event => {
-      history.manualSelection = true;
-      history.selected = event.target.value;
-      history.detail = null;
-      history.error = null;
-      history.version += 1;
+      selectedProcessRun = event.target.value;
+      processRunDetail = null;
+      processRunError = null;
+      processRunDetailVersion += 1;
       render();
       box.querySelector('[data-process-run]')?.focus();
-      if (history.selected) fetchProcessRun(flow, history, history.selected, render);
+      if (selectedProcessRun) fetchProcessRun(flow, selectedProcessRun, render);
     };
-    if (refreshHistory && !box.hidden) refreshProcessRuns(flow, history, render);
+    if (refreshHistory && !box.hidden) refreshProcessRuns(flow, render);
   }
-  mountProcessDiagram(flow, run, openNode);
+  mountProcessDiagram(flow, run);
   box.onkeydown = event => { if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('[data-step]')) { event.preventDefault(); event.target.dispatchEvent(new MouseEvent('click', { bubbles: true })); } };
 }

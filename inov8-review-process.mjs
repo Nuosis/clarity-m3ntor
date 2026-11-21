@@ -42,20 +42,14 @@ export function createReviewLedger(db) {
       configuration_version TEXT NOT NULL, evidence TEXT NOT NULL, traversed TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS goal_review_trace_source ON goal_review_traces (source, created_at);
   `);
-  if (!db.prepare('PRAGMA table_info(goal_review_traces)').all().some(column => column.name === 'goal_run_id')) {
-    db.exec('ALTER TABLE goal_review_traces ADD COLUMN goal_run_id TEXT');
-  }
-  db.exec('CREATE INDEX IF NOT EXISTS goal_review_trace_parent ON goal_review_traces (goal_run_id)');
   const get = id => db.prepare('SELECT * FROM goal_review_traces WHERE id = ?').get(id);
   const latestKey = source => db.prepare('SELECT skip_key FROM goal_review_traces WHERE source = ? ORDER BY rowid DESC LIMIT 1').get(source)?.skip_key;
   const summary = row => ({
     id: row.id, process_id: REVIEW_PROCESS_ID, job_id: row.job_id, source: row.source, decision: row.decision, reason: row.reason,
-    goal_run_id: row.goal_run_id, goal_id: row.goal_id, stage: row.stage,
     created_at: row.created_at, finished_at: row.finished_at, version: row.version, configuration_version: row.configuration_version,
   });
-  const summaryColumns = 'id, job_id, source, decision, reason, goal_run_id, goal_id, stage, created_at, finished_at, version, configuration_version';
   return {
-    record({ jobId = null, goalRunId = null, origin, decision, reason, goal, stage, config, semantic }) {
+    record({ jobId = null, origin, decision, reason, goal, stage, config, semantic }) {
       const configVersion = reviewHash(config);
       const correlation = origin.correlation || null;
       const skipKey = decision === 'skipped' && semantic ? reviewHash([reason, correlation, goal?.id, stage, configVersion, semantic]) : null;
@@ -71,10 +65,10 @@ export function createReviewLedger(db) {
       };
       const traversed = [reviewEdge(trigger, 'eligibility'), ...(decision === 'skipped' ? [reviewEdge('eligibility', 'skip')] : [])];
       db.prepare(`INSERT INTO goal_review_traces (id, job_id, source, correlation, decision, reason, skip_key, goal_id, stage, created_at, finished_at,
-        definition, configuration, version, configuration_version, evidence, traversed, goal_run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        definition, configuration, version, configuration_version, evidence, traversed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(id, jobId, origin.source, JSON.stringify(correlation), decision, reason, skipKey, input.goal_id, input.stage, at,
           decision === 'skipped' ? at : null, JSON.stringify(reviewDefinition), JSON.stringify(config), reviewDefinition.version,
-          configVersion, JSON.stringify(evidence), JSON.stringify(traversed), goalRunId);
+          configVersion, JSON.stringify(evidence), JSON.stringify(traversed));
       return id;
     },
     node(id, nodeId, evidence, { from, finished = false } = {}) {
@@ -87,8 +81,7 @@ export function createReviewLedger(db) {
       db.prepare('UPDATE goal_review_traces SET evidence = ?, traversed = ?, finished_at = ? WHERE id = ?')
         .run(JSON.stringify(nodes), JSON.stringify([...traversed]), finished ? new Date().toISOString() : row.finished_at, id);
     },
-    list() { return db.prepare(`SELECT ${summaryColumns} FROM goal_review_traces ORDER BY rowid DESC`).all().map(summary); },
-    forGoalRun(id) { return db.prepare(`SELECT ${summaryColumns} FROM goal_review_traces WHERE goal_run_id = ? ORDER BY rowid DESC`).all(id).map(summary); },
+    list() { return db.prepare('SELECT id, job_id, source, decision, reason, created_at, finished_at, version, configuration_version FROM goal_review_traces ORDER BY rowid DESC').all().map(summary); },
     detail(id) {
       const row = get(id);
       return row && { ...summary(row), correlation: JSON.parse(row.correlation), goal_id: row.goal_id, stage: row.stage,

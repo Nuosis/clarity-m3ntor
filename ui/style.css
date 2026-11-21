@@ -237,5 +237,3 @@ main:has(#processes:not([hidden])) { max-width: none; }
 .process-evidence-fields dt { color: var(--muted); }
 .process-evidence-fields dd { margin: 0; }
 .process-modal-body pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-.process-proof { white-space: pre-wrap; }
-.process-task-evidence { margin-bottom: 8px; }
