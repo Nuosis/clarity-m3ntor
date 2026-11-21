@@ -6,30 +6,39 @@ import { getM3ntorResult, jobDirectory, jobRoot } from './m3ntor-jobs.mjs';
 export const REVIEW_PROCESS_ID = 'inov8-goal-review';
 export const reviewHash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
+export const NODE_TYPES = {
+  trigger: { label: 'Trigger', definition: 'Entry event that can initiate a flow run.' },
+  decision: { label: 'Decision', definition: 'Evaluates conditions and routes the run along one branch.' },
+  operation: { label: 'Operation', definition: 'Deterministic service step that reads or updates local records.' },
+  agent: { label: 'Agentic', definition: 'LLM-driven step that reasons over context and acts through tools.' },
+  process: { label: 'Process', definition: 'Invokes or depends on another process flow (documented or undocumented).' },
+  terminal: { label: 'Terminal', definition: 'End state that terminates the run with a recorded disposition.' },
+};
+
 const nodes = [
   { id: 'trigger-clock', type: 'trigger', label: 'Automatic cadence', binding: 'considerReview · armClock', configuration: 'cadence', detail: 'Hourly and daily reviews use the clock. On change reviews wait for the current stage’s tasks to settle.', column: 0.5, row: 0 },
   { id: 'trigger-manual', type: 'trigger', label: 'Manual Run', binding: 'runReview', detail: 'An explicit Run can start a review while automatic reviews are paused. It requires an active goal and no overlapping review.', column: 1.5, row: 0 },
   { id: 'trigger-answer', type: 'trigger', label: 'Owner answer', binding: 'questionsSettled', detail: 'An answer or dismissal can start a review when no owner questions remain pending, the worker is enabled and no review overlaps.', column: 2.5, row: 0 },
   { id: 'trigger-recovery', type: 'trigger', label: 'Recovery return', binding: 'startStuckReview · followConsult · resumeStuck', detail: 'An unsettled stage or a consultation return can reach stuck-mode review. A healthy continuation can settle the wait.', column: 3.5, row: 0 },
   { id: 'eligibility', type: 'decision', label: 'Review eligible?', binding: 'Review entry functions', detail: 'Automatic review considers the worker, active goal, overlap, owner wait, meaningful change and cadence. Manual, answer and recovery paths apply their own conditions.', column: 2, row: 1 },
-  { id: 'skip', type: 'outcome', label: 'Skip review', binding: 'Review entry functions', detail: 'An ineligible trigger leaves a decision without a harness job.', column: 0.5, row: 1 },
+  { id: 'skip', type: 'terminal', label: 'Skip review', binding: 'Review entry functions', detail: 'Terminal outcome: an ineligible trigger ends the run with a recorded skip decision and no harness job.', column: 0.5, row: 1 },
   { id: 'context', type: 'operation', label: 'Build context', binding: 'startReview', detail: 'Build the review input from the goal and stage, previous conclusions, changed tasks, owner direction, process references and continuations.', column: 2, row: 2 },
-  { id: 'agent', type: 'operation', label: 'Agent review', binding: 'startGoalReviewJob · m3ntor-worker', configuration: 'agent', detail: 'The selected harness receives the review context. Tool activity shown here comes from its saved event stream.', column: 2, row: 3 },
+  { id: 'agent', type: 'agent', label: 'Agent review', binding: 'startGoalReviewJob · m3ntor-worker', configuration: 'agent', detail: 'Agentic harness run: reviews the active goal’s current stage (in the undocumented goal-implementation lifecycle), recent changes, owner direction, tasks and continuations, then acts through MCP tools to queue/update tasks, ask the owner, advance the stage or trigger recovery. Tool activity shown here comes from its saved event stream.', column: 2, row: 3 },
   { id: 'settlement', type: 'operation', label: 'Consume result', binding: 'followReview · settleReview', detail: 'Save the review result and inspect the actual goal, task, question and continuation records for its disposition.', column: 2, row: 4 },
-  { id: 'work-underway', type: 'outcome', label: 'Work underway', binding: 'judgeStuck · reviewWork', detail: 'The stage has a task queued, running or finalizing.', column: 0, row: 5 },
-  { id: 'healthy-wait', type: 'outcome', label: 'Healthy wait', binding: 'judgeStuck · reviewWork', detail: 'A registered continuation is waiting with an accountable owner, checkpoint and return route.', column: 1, row: 5 },
-  { id: 'stage-changed', type: 'outcome', label: 'Stage changed', binding: 'followReview', detail: 'The active goal or its current stage changed during review.', column: 2, row: 5 },
-  { id: 'owner-wait', type: 'outcome', label: 'Owner wait', binding: 'judgeStuck · askOwnerStuck', detail: 'An owner question is pending.', column: 3, row: 5 },
-  { id: 'recovery', type: 'outcome', label: 'Recovery', binding: 'judgeStuck · followConsult', detail: 'The stage requires recovery or is awaiting a consultation return.', column: 4, row: 5 },
+  { id: 'work-underway', type: 'terminal', label: 'Work underway', binding: 'judgeStuck · reviewWork', detail: 'Terminal outcome: the run ends because the stage has a task queued, running or finalizing.', column: 0, row: 5 },
+  { id: 'healthy-wait', type: 'terminal', label: 'Healthy wait', binding: 'judgeStuck · reviewWork', detail: 'Terminal outcome: the run ends because a registered continuation is waiting with an accountable owner, checkpoint and return route.', column: 1, row: 5 },
+  { id: 'stage-changed', type: 'terminal', label: 'Stage changed', binding: 'followReview', detail: 'Terminal outcome: the run ends because the active goal or its current stage changed during review.', column: 2, row: 5 },
+  { id: 'owner-wait', type: 'terminal', label: 'Owner wait', binding: 'judgeStuck · askOwnerStuck', detail: 'Terminal outcome: the run ends because an owner question is pending.', column: 3, row: 5 },
+  { id: 'recovery', type: 'terminal', label: 'Recovery', binding: 'judgeStuck · followConsult', detail: 'Terminal outcome: the run ends in recovery or awaiting a consultation return.', column: 4, row: 5 },
 ];
 export const reviewEdge = (from, to) => from + '--' + to;
 const edges = [
   ...nodes.filter(node => node.type === 'trigger').map(node => [node.id, 'eligibility']),
   ['eligibility', 'skip', 'Skip'], ['eligibility', 'context', 'Proceed'],
   ['context', 'agent'], ['agent', 'settlement'],
-  ...nodes.filter(node => node.type === 'outcome' && node.id !== 'skip').map(node => ['settlement', node.id]),
+  ...nodes.filter(node => node.type === 'terminal' && node.id !== 'skip').map(node => ['settlement', node.id]),
 ].map(([from, to, label]) => ({ id: reviewEdge(from, to), from, to, label }));
-const definition = { id: REVIEW_PROCESS_ID, name: 'inov8 goal review', kind: 'internal', definition_version: 1, nodes, edges };
+const definition = { id: REVIEW_PROCESS_ID, name: 'inov8 goal review', kind: 'internal', definition_version: 2, node_types: NODE_TYPES, nodes, edges };
 export const reviewDefinition = { ...definition, version: reviewHash(definition) };
 
 export function createReviewLedger(db) {

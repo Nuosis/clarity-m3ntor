@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getM3ntorResult, jobDirectory, startTaskJob, startGoalReviewJob } from './m3ntor-jobs.mjs';
 import { stagesFor, STUCK_INSTRUCTION } from './goals.mjs';
 import { createReviewLedger, historicReviewList, reviewDefinition, reviewHash, reviewRunDetail } from './inov8-review-process.mjs';
+import { createTriggerFlow, triggerFlowTools } from './trigger-flow.mjs';
 import { environmentCheck, readEnvironment, recordProcessStage } from './environment.mjs';
 import { appendJournalInWrite, businessDate, questionState, readJournal, serializeBusinessWrites, setUserQuestions } from './business-journal.mjs';
 import { AGENCY_PILOT_TASK, agencyPilotContinuation, pilotDirectory, pilotPendingFile } from './agency-pilot-observer.mjs';
@@ -116,6 +117,11 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       completed TEXT NOT NULL DEFAULT '[]', stop_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   `);
   const reviewLedger = createReviewLedger(db);
+  let api;
+  const triggerFlow = createTriggerFlow(db, {
+    enqueueTask: input => api.call('set_task', input),
+    resolveFlow: id => (id === reviewDefinition.id ? reviewDefinition : null),
+  });
   const columns = new Set(db.prepare('PRAGMA table_info(tasks)').all().map(column => column.name));
   for (const [name, type] of [['remove_on_completion', 'INTEGER NOT NULL DEFAULT 0'], ['success', 'TEXT'], ['constraints', 'TEXT'], ['category', 'TEXT'], ['goal_id', 'TEXT'], ['stage', 'TEXT'], ['set_at', 'TEXT'], ['process_ids', 'TEXT'], ['trigger_input', 'TEXT']]) if (!columns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
   const goalColumns = new Set(db.prepare('PRAGMA table_info(goals)').all().map(column => column.name));
@@ -1191,7 +1197,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
 
   const workerState = () => ({ enabled: enabled(), database: path.join(directory, 'action.sqlite3'), executing: db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status = 'executing'").get().n, next_run_at: db.prepare("SELECT MIN(next_run_at) AS at FROM tasks WHERE status = 'queued'").get()?.at || null });
 
-  return {
+  return (api = {
     agencyPilotSources: () => ({ task_id: AGENCY_PILOT_TASK, error: pilotReadError, sources: db.prepare('SELECT source_event_id, task_id, intake_id, message_id, state, received_at, queued_at, job_id, settled_at FROM agency_pilot_sources ORDER BY received_at').all() }),
     close() {
       closed = true;
@@ -1249,6 +1255,12 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       return [...recorded, ...historical].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     },
     reviewRun: id => reviewRunDetail(id, reviewLedger.detail(id)),
+    listTriggers: flowId => triggerFlow.listTriggers(flowId),
+    registerTrigger: input => triggerFlow.registerTrigger(input),
+    receiveTrigger: input => triggerFlow.receiveTrigger(input),
+    listFlowRuns: (flowId, limit) => triggerFlow.listFlowRuns(flowId, limit),
+    getFlowRun: id => triggerFlow.getFlowRun(id),
+    clearSyntheticTraces: runId => triggerFlow.clearSyntheticTraces(runId),
     configureReview(input) {
       const allowed = ['pace', 'time', 'agent_harness'];
       if (!Object.keys(input).length || Object.keys(input).some(key => !allowed.includes(key))) throw new Error('Choose cadence, daily time or agent runner.');
@@ -1265,6 +1277,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       return task && { task, runs: db.prepare('SELECT * FROM runs WHERE task_id = ? ORDER BY started_at DESC').all(taskId), continuations: taskContinuations(task, { includeEvents: true }), worker: workerState() };
     },
     call(name, input) {
+      if (triggerFlowTools.some(tool => tool.name === name)) return triggerFlow.call(name, input);
       if (name === 'record_task_continuation') return recordContinuation(input);
       if (name === CONTINUATION_RETURN) return receiveContinuationEvent(input);
       if (name === 'set_task') {
@@ -1344,5 +1357,5 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       if (name === 'stop_task_worker') { setEnabled(false); clearTimeout(timer); clearTimeout(reviewTimer); return workerState(); }
       throw new Error('Unknown task tool.');
     },
-  };
+  });
 }

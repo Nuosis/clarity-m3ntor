@@ -237,3 +237,15 @@ main:has(#processes:not([hidden])) { max-width: none; }
 .process-evidence-fields dt { color: var(--muted); }
 .process-evidence-fields dd { margin: 0; }
 .process-modal-body pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.process-legend { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; padding: 8px 16px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+.process-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.process-legend-item svg { width: 22px; height: 13px; fill: var(--bg); stroke: currentColor; stroke-width: 1.5; flex: none; }
+.process-legend-item.type-agent svg { fill: color-mix(in srgb, var(--accent) 18%, var(--bg)); stroke: var(--accent); stroke-width: 1.8; }
+.process-legend-item.type-process svg { fill: color-mix(in srgb, #8b74d6 18%, var(--bg)); stroke: #8b74d6; }
+.process-legend-item.type-terminal svg { fill: color-mix(in srgb, var(--warn) 16%, var(--bg)); stroke: var(--warn); stroke-width: 1.8; }
+.process-node-type { font-weight: 600; color: var(--text); }
+.process-node-type.type-agent { color: var(--accent); }
+.process-node-type.type-process { color: #8b74d6; }
+.process-node-type.type-terminal { color: var(--warn); }
+.process-triggers { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; padding: 6px 16px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.process-trigger-chip { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); }

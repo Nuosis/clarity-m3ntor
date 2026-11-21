@@ -10,6 +10,13 @@ function processText(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 function processStatus(flow) { return flow.status || 'unverified'; }
+function processOrderRank(flow) {
+  const value = processStatus(flow);
+  return value === 'validated' ? 0 : value === 'unverified' ? 2 : 1;
+}
+function sortProcesses(flows) {
+  return [...flows].sort((a, b) => processOrderRank(a) - processOrderRank(b));
+}
 function processStatusLabel(flow) { const value = processStatus(flow); return value.charAt(0).toUpperCase() + value.slice(1).replaceAll('_', ' '); }
 function processNameWithBadge(flow) {
   return `<span class="process-name-line"><span>${processText(processName(flow.name))}</span>${processStatus(flow) === 'validated' ? '<span class="process-validation-check" role="img" aria-label="Validated process definition" title="Definition validated"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="10" fill="currentColor"/><path d="m5.5 10 3 3 6-6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>' : ''}</span>`;
@@ -83,6 +90,34 @@ const evidenceJson = value => JSON.stringify(value, (_key, field) => (
 const reviewSources = { clock: 'Automatic cadence', manual: 'Manual Run', answer: 'Owner answer', recovery: 'Recovery return' };
 const runStateLabels = { started: 'Running', completed: 'Completed', failed: 'Failed', waiting: 'Waiting', skipped: 'Skipped' };
 const processRunPath = flow => '/api/processes/' + encodeURIComponent(flow.id) + '/runs';
+const defaultNodeTypes = {
+  trigger: { label: 'Trigger', definition: 'Entry event that can initiate a flow run.' },
+  decision: { label: 'Decision', definition: 'Evaluates conditions and routes the run along one branch.' },
+  operation: { label: 'Operation', definition: 'Deterministic service step that reads or updates local records.' },
+  agent: { label: 'Agentic', definition: 'LLM-driven step that reasons over context and acts through tools.' },
+  process: { label: 'Process', definition: 'Invokes or depends on another process flow (documented or undocumented).' },
+  terminal: { label: 'Terminal', definition: 'End state that terminates the run with a recorded disposition.' },
+};
+const normalizeNodeType = type => (type === 'outcome' ? 'terminal' : type || 'operation');
+const nodeTypeInfo = (flow, type) => {
+  const key = normalizeNodeType(type);
+  return flow?.node_types?.[key] || defaultNodeTypes[key] || { label: key, definition: '' };
+};
+const legendIcons = {
+  trigger: '<svg viewBox="0 0 24 14" aria-hidden="true"><polygon points="4,1 23,1 20,13 1,13"/></svg>',
+  decision: '<svg viewBox="0 0 24 14" aria-hidden="true"><polygon points="12,1 23,7 12,13 1,7"/></svg>',
+  operation: '<svg viewBox="0 0 24 14" aria-hidden="true"><rect x="2" y="1" width="20" height="12"/></svg>',
+  agent: '<svg viewBox="0 0 24 14" aria-hidden="true"><polygon points="6,1 18,1 23,7 18,13 6,13 1,7"/></svg>',
+  process: '<svg viewBox="0 0 24 14" aria-hidden="true"><rect x="2" y="1" width="20" height="12"/><line x1="6" y1="1" x2="6" y2="13"/><line x1="18" y1="1" x2="18" y2="13"/></svg>',
+  terminal: '<svg viewBox="0 0 24 14" aria-hidden="true"><rect x="2" y="1" width="20" height="12" rx="6" ry="6"/></svg>',
+};
+function nodeLegend(flow) {
+  const types = Object.keys(defaultNodeTypes);
+  return `<div class="process-legend" aria-label="Node types">${types.map(key => {
+    const info = nodeTypeInfo(flow, key);
+    return `<span class="process-legend-item type-${key}" title="${processText(info.definition)}">${legendIcons[key]}<span>${processText(info.label)}</span></span>`;
+  }).join('')}</div>`;
+}
 
 function internalDiagramXml(flow, run) {
   const dark = document.documentElement.dataset.theme === 'dark';
@@ -91,17 +126,32 @@ function internalDiagramXml(flow, run) {
   const palette = dark
     ? { started: '#8db3ff', completed: '#60c482', failed: '#f28891', waiting: '#e5b966', skipped: '#aab3c1' }
     : { started: '#385eaa', completed: '#268046', failed: '#ad3f48', waiting: '#8d5b16', skipped: '#667080' };
+  const typeFills = dark
+    ? { trigger: '#222222', decision: '#222222', operation: '#222222', agent: '#1b2738', process: '#252035', terminal: '#28241e' }
+    : { trigger: '#f5f5f5', decision: '#f5f5f5', operation: '#f5f5f5', agent: '#e8f1ff', process: '#f1ecff', terminal: '#f6f1e7' };
+  const typeShapes = {
+    trigger: 'shape=parallelogram;perimeter=parallelogramPerimeter;fixedSize=1;size=14;spacingLeft=12;spacingRight=12;',
+    decision: 'shape=rhombus;spacing=12;',
+    operation: 'rounded=0;',
+    agent: 'shape=hexagon;perimeter=hexagonPerimeter2;fixedSize=1;size=16;spacingLeft=18;spacingRight=18;',
+    process: 'shape=process;backgroundOutline=1;size=0.08;spacingLeft=14;spacingRight=14;',
+    terminal: 'rounded=1;arcSize=50;',
+  };
   const traversed = new Set(run?.traversed || []);
   const color = id => palette[run?.nodes?.[id]?.status];
   const cells = flow.nodes.map(node => {
-    const shape = node.type === 'decision' ? 'shape=rhombus;spacing=12;' : node.type === 'trigger' ? 'rounded=1;arcSize=18;' : 'rounded=0;';
+    const kind = normalizeNodeType(node.type);
+    const shape = typeShapes[kind] || typeShapes.operation;
     const stroke = color(node.id);
-    const fill = dark ? '#222222' : '#f5f5f5';
-    const style = shape + `whiteSpace=wrap;html=0;fontSize=16;fontFamily=Arial;fillColor=${fill};fontColor=${text};strokeColor=${stroke || neutral};strokeWidth=${stroke ? 3 : 1};`;
-    const decision = node.type === 'decision';
+    const fill = typeFills[kind] || typeFills.operation;
+    const strokeWidth = stroke ? 3 : kind === 'agent' || kind === 'terminal' ? 2 : 1;
+    const style = shape + `whiteSpace=wrap;html=0;fontSize=16;fontFamily=Arial;fillColor=${fill};fontColor=${text};strokeColor=${stroke || neutral};strokeWidth=${strokeWidth};`;
+    const decision = kind === 'decision';
+    const width = kind === 'agent' ? 172 : 152;
+    const x = 24 + node.column * 182 - (width - 152) / 2;
     const status = runStateLabels[run?.nodes?.[node.id]?.status];
     const value = processText(node.label) + (status ? '&#xa;' + processText(status) : '');
-    return `<mxCell id="${node.id}" value="${value}" style="${style}" vertex="1" parent="1"><mxGeometry x="${24 + node.column * 182}" y="${24 + node.row * 107}" width="152" height="${decision ? 72 : 58}" as="geometry"/></mxCell>`;
+    return `<mxCell id="${node.id}" value="${value}" style="${style}" vertex="1" parent="1"><mxGeometry x="${x}" y="${24 + node.row * 107}" width="${width}" height="${decision ? 72 : 58}" as="geometry"/></mxCell>`;
   });
   for (const edge of flow.edges) {
     const active = traversed.has(edge.id);
@@ -240,9 +290,12 @@ function openInternalNode(flow, node, run) {
   const modal = processStepModal();
   const editable = !selectedProcessRun && Boolean(node.configuration);
   const config = run?.configuration || (!selectedProcessRun ? flow.configuration : node.id === 'agent' ? run?.nodes?.agent : null);
+  const typeKey = normalizeNodeType(node.type);
+  const typeInfo = nodeTypeInfo(run?.definition || flow, node.type);
   modal.dataset.step = node.id;
-  modal.innerHTML = `<div class="process-modal-header"><div><p class="meta">${processText(flow.name)}</p><h2 id="process-step-title">${processText(node.label)}</h2></div><button type="button" class="ghost" data-close-step autofocus>Close</button></div>
+  modal.innerHTML = `<div class="process-modal-header"><div><p class="meta">${processText(flow.name)} · <span class="process-node-type type-${typeKey}">${processText(typeInfo.label)}</span></p><h2 id="process-step-title">${processText(node.label)}</h2></div><button type="button" class="ghost" data-close-step autofocus>Close</button></div>
     <div class="process-modal-body prose">
+      ${typeInfo.definition ? `<p class="meta">${processText(typeInfo.definition)}</p>` : ''}
       <h3>Configuration</h3><p>${processText(node.detail)}</p><p class="meta">${processText(node.binding)}</p>
       <form class="process-node-config">${configurationFields(node, config, editable)}${editable ? '<button type="submit" class="primary">Save</button><span role="status" data-config-feedback></span>' : ''}</form>
       ${selectedProcessRun ? `<h3>Run evidence</h3>${evidenceFields(run?.nodes?.[node.id])}` : ''}
@@ -316,8 +369,17 @@ function runPicker(flow, run) {
     ${status ? `<span class="meta" role="status">${processText(status)}</span>` : ''}</div>`;
 }
 
-function renderProcesses(businessFlows, internalFlows = [], refreshHistory = true) {
-  const flows = [...businessFlows, ...internalFlows];
+function triggerStrip(flow, triggers) {
+  const bound = (triggers || []).filter(item => item.flow_id === flow.id);
+  if (!bound.length) return '';
+  return `<div class="process-triggers" aria-label="Registered triggers"><span class="meta">Triggers (${bound.length}):</span>${bound.map(item => {
+    const last = item.last_event ? ` · last ${item.last_event.disposition}` : '';
+    return `<span class="process-trigger-chip" title="${processText(item.receiver_path)}">${processText(item.name)} <span class="meta">(${processText(item.kind)}${processText(last)})</span></span>`;
+  }).join('')}</div>`;
+}
+
+function renderProcesses(businessFlows, internalFlows = [], refreshHistory = true, triggers = []) {
+  const flows = sortProcesses([...businessFlows, ...internalFlows]);
   const box = document.querySelector('#processes');
   if (!flows.length) { box.innerHTML = '<p class="empty">No processes recorded yet.</p>'; return; }
   if (!flows.some(flow => flow.id === currentProcess)) currentProcess = flows[0].id;
@@ -326,7 +388,7 @@ function renderProcesses(businessFlows, internalFlows = [], refreshHistory = tru
   const internal = flow.kind === 'internal';
   const run = internal && processRunDetail?.id === selectedProcessRun ? processRunDetail : null;
   const render = () => {
-    if (currentProcess === flow.id) renderProcesses(businessFlows, internalFlows, false);
+    if (currentProcess === flow.id) renderProcesses(businessFlows, internalFlows, false, triggers);
   };
   const agentic = businessFlows.filter(item => item.agentic === true).length;
   const unknown = businessFlows.filter(item => typeof item.agentic !== 'boolean').length;
@@ -334,7 +396,8 @@ function renderProcesses(businessFlows, internalFlows = [], refreshHistory = tru
   box.innerHTML = `${businessFlows.length ? `<div class="process-metric">Confirmed agentic: ${agentic}/${businessFlows.length} (${Math.round(agentic / businessFlows.length * 100)}%)${unknown ? ` · ${unknown} not assessed` : ''}</div>` : ''}<div class="process-workspace">
     <aside class="process-picker" aria-label="Processes">${flows.map(item => `<button type="button" data-process="${processText(item.id)}" class="${item.id === flow.id ? 'selected' : ''}" aria-pressed="${item.id === flow.id}">${badge(item)}${processNameWithBadge(item)}</button>`).join('')}</aside>
     <article class="process-view"><div class="process-header"><div>${badge(flow)}<h2>${processNameWithBadge(flow)}</h2></div><div class="process-controls"><button type="button" data-zoom="out" aria-label="Zoom out">−</button><span data-process-zoom>100%</span><button type="button" data-zoom="in" aria-label="Zoom in">+</button><button type="button" data-zoom="actual">Actual size</button><button type="button" data-zoom="fit">Fit diagram</button></div></div>
-      ${internal ? runPicker(flow, run) : ''}
+      ${internal ? runPicker(flow, run) + nodeLegend(run?.definition || flow) : ''}
+      ${triggerStrip(flow, triggers)}
       <div class="process-canvas" role="region" aria-label="Process diagram" tabindex="0"><p class="meta">Loading diagram…</p></div>
       ${internal ? '' : `<details class="process-notes"${open ? ' open' : ''}><summary>Details</summary><div class="prose">
         <p class="meta">Agentic: ${flow.agentic === true ? 'Yes' : flow.agentic === false ? 'No' : 'Not assessed'}</p>${flow.agentic_evidence ? renderMarkdown(flow.agentic_evidence) : ''}
@@ -349,7 +412,7 @@ function renderProcesses(businessFlows, internalFlows = [], refreshHistory = tru
     </article></div>`;
   box.onclick = event => {
     const picker = event.target.closest('[data-process]');
-    if (picker) { currentProcess = picker.dataset.process; renderProcesses(businessFlows, internalFlows); return; }
+    if (picker) { currentProcess = picker.dataset.process; renderProcesses(businessFlows, internalFlows, true, triggers); return; }
     const zoom = event.target.closest('[data-zoom]');
     if (zoom) {
       if (zoom.dataset.zoom === 'fit') fitProcessGraph();

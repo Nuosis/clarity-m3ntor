@@ -14,6 +14,7 @@ import { clarityRequest } from './clarity-client.mjs';
 import { startA2AReceiver } from './a2a-receiver.mjs';
 import { taskTools, startTaskQueue } from './task-queue.mjs';
 import { REVIEW_PROCESS_ID } from './inov8-review-process.mjs';
+import { triggerFlowTools } from './trigger-flow.mjs';
 import { readPilotPending, startAgencyPilotObserver } from './agency-pilot-observer.mjs';
 import { goalTools } from './goals.mjs';
 import { environmentTools, readEnvironment, seedSources, recordSource, setPlate, recordProcess, deleteProcess, environmentCheck } from './environment.mjs';
@@ -220,7 +221,7 @@ async function mcp(req, res, coach = false) {
   if (call.method !== 'ping' && !session) return json(res,404,{error:'MCP session is missing or expired; initialize again.'});
   if (call.method === 'ping') result = {};
   else if (call.method === 'tools/list') {
-    const all = [...m3ntorTools, ...utilityTools, a2aStatusTool, ...taskTools, ...goalTools, ...environmentTools, ...tools, ...businessTools(await questionState(cwd))];
+    const all = [...m3ntorTools, ...utilityTools, a2aStatusTool, ...taskTools, ...goalTools, ...triggerFlowTools, ...environmentTools, ...tools, ...businessTools(await questionState(cwd))];
     result = { tools: all.filter(tool => coach ? COACH_TOOLS.has(tool.name) : !COACH_ONLY_TOOLS.has(tool.name)) };
   }
   else if (call.method === 'tools/call') {
@@ -245,7 +246,7 @@ async function mcp(req, res, coach = false) {
         // The working environment's source list starts from the first saved assessment's information centres.
         if (receipt.saved) { await seedSources(cwd).catch(error => console.error('Seeding the source list failed:', error.message)); taskQueue.poke(); }
         result = { ...(!receipt.saved || !receipt.submitted ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(receipt) }] };
-      } else if (taskTools.some(tool => tool.name === name) || goalTools.some(tool => tool.name === name)) {
+      } else if (taskTools.some(tool => tool.name === name) || goalTools.some(tool => tool.name === name) || triggerFlowTools.some(tool => tool.name === name)) {
         result = { content: [{ type: 'text', text: JSON.stringify(await taskQueue.call(name, input)) }] };
       } else if (name === 'a2a_status') {
         result = { content: [{ type: 'text', text: JSON.stringify(a2aReceiver.status()) }] };
@@ -387,6 +388,7 @@ async function overview() {
     assessments: await assessments(),
     ...taskQueue.goals(),
     internal_processes: taskQueue.internalProcesses(),
+    triggers: taskQueue.listTriggers(),
     environment: await readEnvironment(cwd),
     journal, activity: await activityHistory(),
   };
@@ -419,15 +421,34 @@ async function ownerApi(req, res, url) {
     return json(res, 200, { job_id: id, status: result.status, output: result.output || '', error: result.error || null, started_at: result.started_at, finished_at: result.finished_at });
   }
   if (req.method === 'GET' && url.pathname === '/api/overview') return json(res, 200, await overview());
-  if (parts[1] === 'processes' && parts[2] === REVIEW_PROCESS_ID) {
+  if (req.method === 'GET' && url.pathname === '/api/triggers') {
+    return json(res, 200, { triggers: taskQueue.listTriggers(url.searchParams.get('flow_id') || null) });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/triggers') {
+    return json(res, 200, taskQueue.registerTrigger(await body(req)));
+  }
+  if (req.method === 'POST' && parts[1] === 'triggers' && parts[2] && parts[3] === 'fire' && parts.length === 4) {
+    const input = await body(req);
+    return json(res, 200, taskQueue.receiveTrigger({ ...input, trigger_id: decodeURIComponent(parts[2]) }));
+  }
+  if (parts[1] === 'processes' && parts[2]) {
+    const processId = decodeURIComponent(parts[2]);
     if (req.method === 'GET' && parts[3] === 'runs' && parts.length === 4) {
-      return json(res, 200, { runs: await taskQueue.reviewRuns() });
+      const unified = taskQueue.listFlowRuns(processId);
+      if (processId === REVIEW_PROCESS_ID) {
+        const legacy = await taskQueue.reviewRuns();
+        const seen = new Set(unified.map(item => item.id));
+        const merged = [...unified, ...legacy.filter(item => !seen.has(item.id))].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+        return json(res, 200, { runs: merged });
+      }
+      return json(res, 200, { runs: unified });
     }
     if (req.method === 'GET' && parts[3] === 'runs' && parts.length === 5) {
-      const run = await taskQueue.reviewRun(parts[4]);
-      return run ? json(res, 200, run) : json(res, 404, { error: 'Review run not found.' });
+      const runId = decodeURIComponent(parts[4]);
+      const run = taskQueue.getFlowRun(runId) || (processId === REVIEW_PROCESS_ID ? await taskQueue.reviewRun(runId) : null);
+      return run ? json(res, 200, run) : json(res, 404, { error: 'Flow run not found.' });
     }
-    if (req.method === 'POST' && parts[3] === 'configuration' && parts.length === 4) {
+    if (processId === REVIEW_PROCESS_ID && req.method === 'POST' && parts[3] === 'configuration' && parts.length === 4) {
       return json(res, 200, { configuration: taskQueue.configureReview(await body(req)) });
     }
   }

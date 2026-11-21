@@ -42,7 +42,7 @@ function render() {
   const worker = data.worker;
   $('#worker').textContent = worker.enabled ? `Worker on${worker.next_run_at ? ` · next run ${when(worker.next_run_at)}` : ''}` : 'Worker off';
   $('#question-count').textContent = data.questions.pending.length ? `(${data.questions.pending.length})` : '';
-  renderRunning(); renderGoals(); renderProcesses(data.environment?.processes?.processes || [], data.internal_processes || []); renderSettings(); noticeReviewError(); renderTasks(); renderQuestions(); renderAssessment(); renderContext(); renderJournal();
+  renderRunning(); renderGoals(); renderProcesses(data.environment?.processes?.processes || [], data.internal_processes || [], true, data.triggers || []); renderSettings(); noticeReviewError(); renderTasks(); renderQuestions(); renderAssessment(); renderContext(); renderJournal();
   restoreDrafts();
 }
 
@@ -253,7 +253,7 @@ function environmentRecords(goal) {
   const env = data.environment || {};
   const sources = env.sources?.sources || [];
   const commitments = env.plate?.commitments || [];
-  const processes = env.processes?.processes || [];
+  const processes = sortProcesses(env.processes?.processes || []);
   const needed = value => value === true ? 'Needed' : value === false ? 'Not needed' : 'Undecided';
   return `
     <details data-detail="${esc(goal.id)}-infrastructure"><summary>Sources (${sources.filter(s => s.needed).length} needed of ${sources.length})</summary>
@@ -443,7 +443,7 @@ $('#journal').addEventListener('toggle', async event => {
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
-  if (data) renderProcesses(data.environment?.processes?.processes || [], data.internal_processes || []);
+  if (data) renderProcesses(data.environment?.processes?.processes || [], data.internal_processes || [], true, data.triggers || []);
   const button = $('#theme');
   button.textContent = theme === 'dark' ? 'Light mode' : 'Dark mode';
 }
@@ -459,7 +459,7 @@ document.querySelectorAll('nav button').forEach(button => button.addEventListene
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b === button));
   document.querySelectorAll('.view').forEach(section => { section.hidden = section.id !== view; });
   if (view === 'use-cases') loadUseCases();
-  if (view === 'processes' && data) renderProcesses(data.environment?.processes?.processes || [], data.internal_processes || []);
+  if (view === 'processes' && data) renderProcesses(data.environment?.processes?.processes || [], data.internal_processes || [], true, data.triggers || []);
 }));
 $('#task-list').addEventListener('click', event => {
   const item = event.target.closest('li[data-id]');
