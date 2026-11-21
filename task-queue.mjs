@@ -1237,7 +1237,11 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     },
     internalProcesses() {
       const configuration = reviewConfig();
-      return [{ ...reviewDefinition, configuration, configuration_version: reviewHash(configuration) }];
+      const validated = reviewDefinition.version === '03c2a1b15a5e808430957ebb6335f3c8f68fb3bbab7d7dcf817e593097f28995';
+      return [{ ...reviewDefinition, configuration, configuration_version: reviewHash(configuration),
+        status: validated ? 'validated' : 'unverified',
+        ...(validated ? { validation_evidence: '15 focused service and browser checks on implementation 1ff51ad27ca5747c28d370351ad8da0c1a867847. Definition and supported configuration validated; owner-answer and consultation-return execution were not separately exercised. Customer Agency remains unproven.' } : {}),
+      }];
     },
     async reviewRuns() {
       const recorded = reviewLedger.list();
