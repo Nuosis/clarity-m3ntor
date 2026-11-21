@@ -1392,12 +1392,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     internalProcesses() {
       const configuration = reviewConfig();
       const configuration_version = reviewHash(configuration);
-      const definition = goalRunDefinition();
-      // Validation belongs to the checked definition version, independently of run success.
-      const validated = definition.version === '19450cf986e7a3e825d7bf88a97e6082db910994db040cc81fde521a03c2c409';
       return [{
-        ...definition, configuration, configuration_version, status: validated ? 'validated' : 'unverified',
-        ...(validated ? { validation_evidence: 'Nine focused lifecycle and browser checks on implementation c544c3419d7f3146cd6776fabd43dea8c992445b: prior proof, child reviews, waiting, task return, restart, single Agency acceptance, environment boundary and stage/child display. Labelled isolated data; customer Agency remains unproven.' } : {}),
+        ...goalRunDefinition(), configuration, configuration_version,
         review_process: { ...reviewDefinition, configuration, configuration_version },
       }];
     },
