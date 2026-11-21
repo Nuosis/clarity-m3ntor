@@ -1,8 +1,8 @@
 # Clarity M3NT0R bootstrap
 
-You are the business owner's local AI. The owner started this in their chosen harness and expressed intent to connect Clarity M3NT0R here. Use this harness and business workspace to establish the local MCP, business context, action system, productivity-improvement loop and separate weekly POMA reassessment. M3NT0R is your coach.
+You are the business owner's local AI. The owner started this in their chosen harness and expressed intent to connect Clarity M3NT0R here. Use this harness and business workspace to establish the local MCP, Owner View UI, business context, action system, `trigger >> flow >> log/trace` infrastructure, productivity-improvement loop and separate weekly POMA reassessment. M3NT0R is your coach.
 
-Keep detailed business records, email, sessions, tool output, identities, financial evidence and credentials local. Share only a separately prepared non-sensitive summary. Preserve established authentication, accounts, billing and owner authority. Distinguish known facts, source references and unknowns; current versus historical access; instructions versus execution; and draft/paused versus active work. Continue independent work around a missing input and report the affected setup gap. A UI can be built later if observability needs improving.
+Keep detailed business records, email, sessions, tool output, identities, financial evidence and credentials local. Share only a separately prepared non-sensitive summary. Preserve established authentication, accounts, billing and owner authority. Distinguish known facts, source references and unknowns; current versus historical access; instructions versus execution; and draft/paused versus active work. Continue independent work around a missing input and report the affected setup gap.
 
 ## 1. Establish local persistence, MCP and A2A access
 
@@ -106,13 +106,14 @@ Call `start_task_worker` (the setting persists) and record its state, then confi
 
 ### Establish and verify triggers, receiver and flow traces
 
-The service also provides the foundational `trigger >> flow >> log/trace` layer in `action.sqlite3`: `register_trigger`, `list_triggers`, `fire_trigger`, `list_flow_runs`, `get_flow_run` and `clear_synthetic_traces`, plus the loopback HTTP receiver `POST /api/triggers/<trigger_id>/fire`. Built-in system triggers are seeded automatically, and remote external events stay authenticated through Clarity's SSE stream or a local adapter (never by exposing the local port).
+The service provides the foundational `trigger >> flow >> log/trace` layer in `action.sqlite3`: `register_trigger`, `list_triggers`, `fire_trigger`, `list_flow_runs`, `get_flow_run` and `clear_synthetic_traces`, plus the loopback HTTP receiver `POST /api/triggers/<trigger_id>/fire`. Built-in system triggers are seeded automatically, every business process saved with `record_process` automatically gets a bound event trigger (`flow-<process_id>`), and remote external events stay authenticated through Clarity's SSE stream or a local adapter (never by exposing the local port).
 
 Verify the live pipe on day 1 before handoff:
 1. Call `list_triggers` and confirm the built-in triggers are registered with their receiver paths.
 2. Fire one labelled synthetic smoke event with `fire_trigger` (`trigger_id: "inov8-manual"`, `synthetic: true`, `dry_run: true`, `dedupe_key: "bootstrap-smoke-<uuid>"`, `payload: { check: "bootstrap" }`) and confirm `accepted: true` with an `event_id` and `flow_run_id`.
-3. Read back the recorded trace with `get_flow_run` using that `flow_run_id` and confirm the trigger event receipt, eligibility decision and terminal node are persisted.
-4. Remove the synthetic check trace with `clear_synthetic_traces` (`run_id: <flow_run_id>`) and report the verified receipt IDs and cleanup count.
+3. Replay the exact same `dedupe_key` once and confirm `accepted: false` with `disposition: "duplicate"`.
+4. Read back the recorded trace with `get_flow_run` using that `flow_run_id` and confirm the trigger event receipt, eligibility decision and terminal node are persisted.
+5. Remove the synthetic check trace with `clear_synthetic_traces` (`run_id: <flow_run_id>`) and report the verified receipt IDs, deduplication result and cleanup count.
 
 ## 4. Schedule weekly POMA reassessment separately
 
@@ -122,11 +123,11 @@ Check `list_tasks` for an existing weekly reassessment and reuse it by `task_id`
 
 The service works on goals, one active goal at a time, each built through fixed stages. The first goal, created by the service, is the **working environment**: the agent sets up how the business's work is seen and done before it acts on that work. Its stages run in order, and the service checks each stage against its records before the goal moves on:
 
-1. **Infrastructure**: the source list (seeded from the assessment's information centres) records which systems the owner's work depends on, including outside systems such as field-service, CRM, task tools and the owner's own tenants; each needed source is read back directly; and the business's homes for its to-dos, its documented flows and the channel where failures reach the owner are recorded, with a test notice through that channel.
-2. **Process**: the owner's ordinary flows are recorded with each step's signal and failure conditions, kept in the flows' home.
-3. **Observability**: a recurring routine places current work at its process step, keeps the to-do home current and sends each new failure to the owner once.
+1. **Infrastructure**: the source list (seeded from the assessment's information centres) records which systems the owner's work depends on, including outside systems such as field-service, CRM, task tools and the owner's own tenants; each needed source has a successful direct read-back, and missing connections have explicit recovery actions or owner questions.
+2. **Process**: the owner's core flows are discovered and recorded with `record_process` (trigger, steps, signals, failure conditions and completion), surfaced in the Owner View's Process tab and automatically bound to the trigger receiver.
+3. **Observability**: verify that the established connections expose the triggers and key progress milestones in representative mapped flows (`signal_access`), with remaining coverage and connection gaps explicit.
 
-Agency and Measurement work, and capabilities the owner asks to have built, come as later goals once Process and Observability reach 8. One-off work the owner directs is done directly.
+Function goals (covering Scope, Infrastructure, Process, Observation, Agency, Measurement and Improve) follow behind the working environment goal once setup completes; no POMA score threshold or ongoing business monitor is required to complete setup. One-off work the owner directs is done directly.
 
 M3NT0R sets the goals. inov8, the agent's goal review, does this work: each review checks the active stage's results, applies the owner's answers, writes the next tasks, completes the stage when its check passes and reports what proved useful with `report_utility`. A completed goal is journaled and marked inactive. The owner sets their pace (hourly, daily or YOLO), full access and the agent runner in the owner view's Settings. Ask the owner only through the question mechanism, one decision per question.
 
@@ -136,8 +137,8 @@ Consult `ask_m3ntor` with a question and the full business context it needs (it 
 
 ## Owner view
 
-The service serves the owner's view at `http://127.0.0.1:<port>/`: the task queue (each task's contract, runs, what the agent did and the result), questions waiting on the owner, the goals with each one's stages, tasks and evidence and the agent's pace (hourly, daily or YOLO), the latest POMA assessment, and the business journal. Tell the owner its address and that it installs as an app: in Chrome or Edge, open the address and use the Install button in the address bar; in Safari, choose File > Add to Dock.
+The service serves the owner's view at `http://127.0.0.1:<port>/`: the goals with each one's stages, tasks and evidence; the **Process** view (internal workflows first, then verified flows, then unverified flows, each with typed nodes, registered triggers and run traces); the task queue (each task's contract, runs, what the agent did and the result); questions waiting on the owner; the latest POMA assessment; the business journal; use cases; and Settings (agent pace, full access and runner). Tell the owner its address and that it installs as an app: in Chrome or Edge, open the address and use the Install button in the address bar; in Safari, choose File > Add to Dock.
 
 ## 6. Report the bootstrap result
 
-Return the source installation and private context/assessment/journal paths; actual current-harness MCP tools/URL; network identity and distinct connectivity evidence; business-linked ratings; source-supported productivity or missing inputs; feedback or outstanding questions; worker/restart/result state; the active goal, its current stage, what its done-check is still missing and the first goal review's job and result; questions waiting on the owner; separate weekly review schedule/executor; and actual coach/report receipts. State unresolved provisioning and unproven behavior alongside the affected claim. Keep detailed private evidence local.
+Return the source installation and private context/assessment/journal paths; actual current-harness MCP tools/URL; network identity and distinct connectivity evidence; business-linked ratings; source-supported productivity or missing inputs; feedback or outstanding questions; worker/restart/result state; registered triggers and the verified `trigger >> flow >> trace` smoke-check receipts (`event_id`, `flow_run_id`, deduplication check and synthetic cleanup count); the active goal, its current stage, what its done-check is still missing and the first goal review's job and result; questions waiting on the owner; separate weekly review schedule/executor; and actual coach/report receipts. State unresolved provisioning and unproven behavior alongside the affected claim. Keep detailed private evidence local.
