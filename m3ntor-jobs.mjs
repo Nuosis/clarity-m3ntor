@@ -114,7 +114,14 @@ export async function startTaskJob(task, environment) {
       : (fullAccess ? 'dangerously-bypass-approvals-and-sandbox' : 'workspace-write'),
     network_access: true,
   };
-  return createJob({ context: { task_id: task.id, title: task.title, category: task.category, goal_id: task.goal_id || null, stage: task.stage || null, instruction: task.instruction, requested_outcome: task.success || 'the task above is carried out.', trigger_input: triggerInput, process_ids: processIds, processes: snapshots, execution_environment: executionEnvironment }, harness: environment.agentHarness }, environment, { identity: 'scheduled_task', question, promptId: null, jobId: task.job_id });
+  const context = {
+    task_id: task.id, title: task.title, category: task.category, goal_id: task.goal_id || null, stage: task.stage || null,
+    instruction: task.instruction, requested_outcome: task.success || 'the task above is carried out.',
+    trigger_input: triggerInput,
+    ...(task.continuation_event ? { continuation_event: task.continuation_event } : {}),
+    process_ids: processIds, processes: snapshots, execution_environment: executionEnvironment,
+  };
+  return createJob({ context, harness: environment.agentHarness }, environment, { identity: 'scheduled_task', question, promptId: null, jobId: task.job_id });
 }
 
 // The agent's review of its active goal, run in the owner's harness with the local tools.

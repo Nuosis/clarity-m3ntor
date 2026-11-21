@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { watch } from 'node:fs';
+import { readFileSync, watch } from 'node:fs';
 import { mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
@@ -12,6 +12,55 @@ import path from 'node:path';
 export const AGENCY_PILOT_TASK = 'bf145c4b-d440-4aeb-bd35-d0c9af1e1127';
 export const pilotDirectory = cwd => path.join(cwd, '.clarity_coach', 'infrastructure', 'customer-request-delivery', 'AGENCY-PILOT-01');
 export const pilotPendingFile = cwd => path.join(pilotDirectory(cwd), 'SOURCE-PENDING.json');
+
+// USER-AUTHORIZED — Marcus, November 20, 2026, AGENCY-WAIT-BOOKKEEPING-01:
+// project the original source wait from its registration and observer evidence.
+export function agencyPilotContinuation(cwd, taskId, ledger, dispatchError) {
+  const checkpoint = path.join(pilotDirectory(cwd), 'CASE.json');
+  const registration = path.join(pilotDirectory(cwd), 'RECOVERY-04', 'CASE-CONTINUATION.json');
+  const artifact = file => {
+    try { return { value: JSON.parse(readFileSync(file, 'utf8')) }; }
+    catch (error) { return { error: { file, code: error.code || error.name } }; }
+  };
+  const registered = artifact(registration), savedCase = artifact(checkpoint), pending = artifact(pilotPendingFile(cwd));
+  const record = registered.value;
+  const source = pending.value;
+  const continuation = {
+    draft_status: record?.draft_status || 'unknown', execution_owner: record?.execution_owner || null,
+    delivery_owner: record?.delivery_owner || null, owner: record?.continuation?.owner || null,
+    implementation_coordinator: record?.implementation_coordinator || null,
+    implementation_executor: record?.implementation_executor || null,
+    registration, checkpoint, case_binding: { pilot: savedCase.value?.pilot ?? null, task_id: savedCase.value?.task_id ?? null }, selected_case: savedCase.value?.case ?? null,
+    source_wake: {
+      route: record?.continuation?.incoming_route || null, observer_state: source?.state || null,
+      last_error: source?.last_error || null,
+      notifications: Object.entries(source?.notifications || {}).map(([id, value]) => ({ message_id: id, state: value.state })).sort((a, b) => a.message_id.localeCompare(b.message_id)),
+      pending_source_ids: Object.keys(source?.events || {}).sort(), ledger,
+    },
+  };
+  const affected = (dependency, evidence) => ({
+    ...continuation,
+    state: evidence.code === 'ENOENT' ? 'lost' : 'failed',
+    recovery: { dependency, task_id: taskId, checkpoint, evidence, customer_trigger: false },
+  });
+  if (registered.error || savedCase.error) return affected('continuation_registration', registered.error || savedCase.error);
+  if (savedCase.value?.pilot !== 'AGENCY-PILOT-01' || savedCase.value?.task_id !== taskId) {
+    return affected('continuation_binding', { file: checkpoint, ...continuation.case_binding, expected_pilot: 'AGENCY-PILOT-01', expected_task_id: taskId });
+  }
+  if (record?.task_id !== taskId || record.case_checkpoint !== checkpoint || !continuation.owner || !continuation.execution_owner || !continuation.source_wake.route) {
+    return affected('continuation_binding', { registration, task_id: record?.task_id ?? null, case_checkpoint: record?.case_checkpoint ?? null });
+  }
+  if (pending.error) return affected('source_observer', pending.error);
+  if (source?.task_id !== taskId || source.pilot !== 'AGENCY-PILOT-01') return affected('source_wake_binding', { file: pilotPendingFile(cwd), task_id: source?.task_id ?? null, pilot: source?.pilot ?? null });
+  // A selected case leaves the wait. Its evidence governs the remaining outcome.
+  if (savedCase.value.case) return { ...continuation, state: 'closed' };
+  if (source.last_error || !['connecting', 'waiting_for_original_source'].includes(source.state)) {
+    return affected('source_observer', { file: pilotPendingFile(cwd), state: source.state, last_error: source.last_error || null });
+  }
+  if (dispatchError) return affected('source_dispatch', { file: pilotPendingFile(cwd), error: dispatchError });
+  return { ...continuation, state: 'waiting' };
+}
+
 export async function readPilotPending(cwd) {
   try { return JSON.parse(await readFile(pilotPendingFile(cwd), 'utf8')); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }

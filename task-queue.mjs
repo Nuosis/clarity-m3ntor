@@ -6,7 +6,7 @@ import { getM3ntorResult, jobDirectory, startTaskJob, startGoalReviewJob } from 
 import { stagesFor, STUCK_INSTRUCTION } from './goals.mjs';
 import { environmentCheck, readEnvironment, recordProcessStage } from './environment.mjs';
 import { appendJournalInWrite, businessDate, questionState, readJournal, serializeBusinessWrites, setUserQuestions } from './business-journal.mjs';
-import { AGENCY_PILOT_TASK, pilotDirectory, pilotPendingFile } from './agency-pilot-observer.mjs';
+import { AGENCY_PILOT_TASK, agencyPilotContinuation, pilotDirectory, pilotPendingFile } from './agency-pilot-observer.mjs';
 
 // Journal entries with fixed ids, so a retried write updates the same entry.
 const journalOnce = (cwd, entryId, input) => serializeBusinessWrites(cwd, () => appendJournalInWrite(cwd, input, new Date(), entryId));
@@ -39,10 +39,28 @@ const recurrenceSchema = {
   additionalProperties: false,
 };
 const TASK_STATUSES = ['queued', 'delivered', 'executing', 'completed', 'failed', 'paused', 'done'];
+const CONTINUATION_STATES = ['waiting', 'failed', 'lost'];
+const CONTINUATION_RETURN = 'resume_task_continuation';
+const PILOT_RETURN = 'agency_pilot_source';
+const nonemptyText = value => typeof value === 'string' && Boolean(value.trim());
 
 export const taskTools = [
   { name: 'set_task', description: 'Use when work should run in the owner\'s harness now, later or on a schedule: the next work for the active goal\'s stage, the weekly assessment, a recurring routine, or one-off work the owner directs. Creates or updates a task in the owner\'s action queue; the service runs it when due and records the result. Supplying an existing task_id updates that task instead of adding another; use this to reuse a matching recurring task.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'Existing task to update; omit to create.' }, title: { type: 'string', description: 'Short name the owner sees in the task list.' }, instruction: { type: 'string', description: 'The task: what the owner\'s agent should do when it runs.' }, success: { type: 'string', description: 'Definition of success: what must be true for the run to count as done.' }, constraints: { type: 'array', items: { type: 'string' }, description: 'Optional constraints unique to this task.' }, category: { type: 'string', enum: ['assessment', 'use_case', 'other'], description: 'assessment for the weekly reassessment, use_case for researching an owner-reported use case.' }, run_at: { type: 'string', format: 'date-time', description: 'First run time; omit to run now (one-off) or at the next recurrence.' }, recurrence: recurrenceSchema, remove_on_completion: { type: 'boolean', description: 'One-off tasks only: after a successful run, journal the result and remove the task from the list (used for one-off work whose record belongs in the journal).' }, process_ids: { type: 'array', items: { type: 'string' }, description: 'Applicable registered process IDs. Omit to inherit the associated goal binding; an explicit empty list means no process binding.' }, trigger_input: { type: 'object', additionalProperties: true, description: 'The triggering input or event for this run, supplied as structured data.' }, goal_id: { type: 'string', description: 'The active goal this task works on; omit for one-off work the owner directs.' }, stage: { type: 'string', description: 'With goal_id: the goal\'s current stage key (list_goals). Tasks for a stage the goal has not reached are refused.' } }, required: ['title', 'instruction', 'success'], additionalProperties: false } },
   { name: 'list_tasks', description: 'Use before set_task, to reuse a matching task instead of adding a duplicate, and when checking what is queued, running or failed: lists tasks with status, next run time, last run and its result or error.', inputSchema: { type: 'object', properties: { status: { type: 'string', enum: TASK_STATUSES, description: 'Only tasks in this status; omit for all.' } }, additionalProperties: false }, annotations: { readOnlyHint: true } },
+  { name: 'record_task_continuation', description: 'Register durable waiting on an existing task before ending a run with its outcome still open. Save the accountable owner and a checkpoint or saved result reference. Use the returned task and continuation IDs with resume_task_continuation from the established local completion route. Registration records the local return route; the caller arranges actual event delivery. Update the same registration with its continuation_id, and supply evidence when reporting a failed or lost return dependency. With just the two IDs, record a heartbeat. Use state waiting to register a fresh wait after a return has started or to record a repaired route.', inputSchema: { type: 'object', properties: {
+    task_id: { type: 'string' },
+    continuation_id: { type: 'string', description: 'From the initial receipt or get_task. Omit when registering.' },
+    owner: { type: 'string', description: 'Accountable execution or return owner. Required for initial registration.' },
+    checkpoint: { type: 'string', description: 'Durable reference to the same task’s saved progress. Required for initial registration.' },
+    state: { type: 'string', enum: CONTINUATION_STATES, description: 'Defaults to waiting at registration.' },
+    evidence: { type: 'string', description: 'Observed error or evidence reference. Required for failed or lost.' },
+  }, required: ['task_id'], additionalProperties: false } },
+  { name: CONTINUATION_RETURN, description: 'Deliver a return event to the registered task with its original source identity, input, and provenance. The receipt confirms persistence. A busy or paused task keeps the event pending. Repeated delivery of the same event ID returns its existing record. Use get_task for the run and result.', inputSchema: { type: 'object', properties: {
+    task_id: { type: 'string' },
+    continuation_id: { type: 'string' },
+    event_id: { type: 'string', description: 'Stable identity from the original source, scoped to this continuation.' },
+    event_input: { type: 'object', additionalProperties: true, description: 'Original event data, including the actual result or its durable reference and provenance.' },
+  }, required: ['task_id', 'continuation_id', 'event_id', 'event_input'], additionalProperties: false } },
   { name: 'clear_task', description: 'Use when a task is finished for good or the owner decides against it: action done marks it finished and stops any recurrence (history kept); action delete removes it and its run history. A running job is not stopped. When the owner has decided against a task, give their reason: it is journaled so M3NT0R can take it into account on its next weekly run.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'The task, from list_tasks.' }, action: { type: 'string', enum: ['done', 'delete'], description: 'done keeps its history; delete removes it and its runs.' }, reason: { type: 'string', description: 'The owner\'s decision and reason, when they directed this.' } }, required: ['task_id', 'action'], additionalProperties: false } },
   { name: 'start_task_worker', description: 'Use at setup, or when the owner wants queued tasks to run again after stopping them: start running due tasks (persists across service restarts) and return the worker state.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'stop_task_worker', description: 'Use when the owner wants tasks paused, or to stop runaway or wasteful work: stop starting new tasks (persists across restarts). Jobs already running finish and their results are still recorded.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
@@ -63,6 +81,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   const db = new DatabaseSync(path.join(directory, 'action.sqlite3'));
   db.exec(`
     PRAGMA journal_mode = WAL;
+    PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY, title TEXT NOT NULL, instruction TEXT NOT NULL,
       recurrence TEXT, next_run_at TEXT, status TEXT NOT NULL,
@@ -74,6 +93,17 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       id TEXT PRIMARY KEY, task_id TEXT NOT NULL, job_id TEXT, status TEXT NOT NULL,
       started_at TEXT NOT NULL, finished_at TEXT, result TEXT, error TEXT);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS task_continuations (
+      id TEXT PRIMARY KEY, task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+      revision INTEGER NOT NULL, owner TEXT NOT NULL, checkpoint TEXT NOT NULL,
+      state TEXT NOT NULL, evidence TEXT, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS task_continuation_events (
+      continuation_id TEXT NOT NULL REFERENCES task_continuations(id) ON DELETE CASCADE,
+      event_id TEXT NOT NULL, revision INTEGER NOT NULL, owner TEXT NOT NULL, checkpoint TEXT NOT NULL,
+      event_input TEXT NOT NULL, state TEXT NOT NULL, received_at TEXT NOT NULL,
+      job_id TEXT, settled_at TEXT, error TEXT, PRIMARY KEY (continuation_id, event_id));
+    CREATE INDEX IF NOT EXISTS task_continuation_event_state ON task_continuation_events (state, received_at);
+    CREATE INDEX IF NOT EXISTS task_continuation_event_job ON task_continuation_events (job_id);
     CREATE TABLE IF NOT EXISTS agency_pilot_sources (
       source_event_id TEXT PRIMARY KEY, task_id TEXT NOT NULL,
       intake_id TEXT NOT NULL, message_id TEXT NOT NULL, event TEXT NOT NULL,
@@ -95,6 +125,14 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   };
   const taskProcessIds = task => task.process_ids ?? (task.goal_id ? db.prepare('SELECT process_ids FROM goals WHERE id = ?').get(task.goal_id)?.process_ids : null) ?? null;
   const now = () => new Date().toISOString();
+  function transaction(write) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = write();
+      db.exec('COMMIT');
+      return result;
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+  }
   const get = id => db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   const update = (id, fields) => {
     const keys = Object.keys(fields);
@@ -104,8 +142,102 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   const setEnabled = value => db.prepare("INSERT INTO settings (key, value) VALUES ('worker_enabled', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(value));
   const view = task => task && { ...task, recurrence: task.recurrence ? JSON.parse(task.recurrence) : null, constraints: task.constraints ? JSON.parse(task.constraints) : [], process_ids: JSON.parse(taskProcessIds(task) || '[]'), trigger_input: task.trigger_input ? JSON.parse(task.trigger_input) : null };
   const watchers = new Map();
-  let timer = null;
+  let timer = null, closed = false;
   let pilotPendingWatcher = null, pilotContinuationWatcher = null, pilotReadError = null, pilotInputVersion = null, pilotRejectedVersion = null;
+
+  const registrationFor = taskId => db.prepare('SELECT * FROM task_continuations WHERE task_id = ?').get(taskId);
+  const eventFor = (continuationId, eventId) => db.prepare('SELECT * FROM task_continuation_events WHERE continuation_id = ? AND event_id = ?').get(continuationId, eventId);
+  const eventContext = (taskId, event) => ({
+    task_id: taskId, continuation_id: event.continuation_id, event_id: event.event_id,
+    owner: event.owner, checkpoint: event.checkpoint, return_route: CONTINUATION_RETURN,
+    event_input: JSON.parse(event.event_input),
+  });
+  const eventSummary = event => ({ event_id: event.event_id, state: event.state, job_id: event.job_id, error: event.error });
+  const eventReceipt = (taskId, event, duplicate) => ({
+    saved: true, duplicate, ...eventContext(taskId, event), ...eventSummary(event),
+    received_at: event.received_at, settled_at: event.settled_at,
+  });
+
+  function recordContinuation(input) {
+    const task = get(input.task_id);
+    if (!task) throw new Error('Task not found.');
+    // USER-AUTHORIZED — Marcus, November 20, 2026: the Agency pilot keeps its
+    // original source route and authority, with one wake path for that record.
+    if (task.id === AGENCY_PILOT_TASK) throw new Error('The Agency pilot continuation is managed by its existing source adapter. Read it with get_task.');
+    if (['done', 'clearing'].includes(task.status)) throw new Error('This task is done or being cleared.');
+    const current = registrationFor(task.id);
+    if (input.continuation_id !== undefined && input.continuation_id !== current?.id) throw new Error('Continuation does not belong to this task.');
+    const owner = input.owner === undefined ? current?.owner : input.owner;
+    const checkpoint = input.checkpoint === undefined ? current?.checkpoint : input.checkpoint;
+    const state = input.state === undefined ? (current?.state ?? 'waiting') : input.state;
+    const evidence = state === 'waiting' ? null : input.evidence ?? current?.evidence ?? null;
+    if (!nonemptyText(owner) || !nonemptyText(checkpoint)) throw new Error('Give the continuation an accountable owner and a durable checkpoint reference.');
+    if (!CONTINUATION_STATES.includes(state)) throw new Error('Continuation state is waiting, failed or lost.');
+    if (state !== 'waiting' && !nonemptyText(evidence)) throw new Error('Give observed evidence for a failed or lost continuation.');
+    const newWait = current && input.state === 'waiting' && db.prepare(`
+      SELECT 1 FROM task_continuation_events WHERE continuation_id = ? AND revision = ?
+      AND state IN ('claimed', 'completed', 'failed') LIMIT 1`).get(current.id, current.revision);
+    const changed = !current || newWait || current.owner !== owner || current.checkpoint !== checkpoint || current.state !== state || current.evidence !== evidence;
+    const id = current?.id ?? randomUUID();
+    db.prepare(`INSERT INTO task_continuations (id, task_id, revision, owner, checkpoint, state, evidence, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(task_id) DO UPDATE SET revision = excluded.revision, owner = excluded.owner, checkpoint = excluded.checkpoint,
+      state = excluded.state, evidence = excluded.evidence, updated_at = excluded.updated_at`)
+      .run(id, task.id, (current?.revision ?? 0) + (changed ? 1 : 0), owner, checkpoint, state, evidence, now());
+    if (changed) schedule();
+    return { saved: true, continuation: taskContinuations(get(task.id))[0] };
+  }
+
+  function receiveContinuationEvent(input) {
+    const task = get(input.task_id);
+    const registration = task && registrationFor(task.id);
+    if (!registration || input.continuation_id !== registration.id) throw new Error('Continuation does not belong to this task.');
+    if (!nonemptyText(input.event_id)) throw new Error('Give the stable original event_id.');
+    const prior = eventFor(registration.id, input.event_id);
+    if (prior) return eventReceipt(task.id, prior, true);
+    if (['done', 'clearing'].includes(task.status)) throw new Error('This task is done or being cleared.');
+    if (registration.state === 'closed') throw new Error('Record a new wait before delivering events to a closed continuation.');
+    if (!input.event_input || typeof input.event_input !== 'object' || Array.isArray(input.event_input)) throw new Error('event_input must contain the original event as an object.');
+    const inserted = db.prepare(`INSERT INTO task_continuation_events
+      (continuation_id, event_id, revision, owner, checkpoint, event_input, state, received_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+      ON CONFLICT(continuation_id, event_id) DO NOTHING`)
+      .run(registration.id, input.event_id, registration.revision, registration.owner, registration.checkpoint, JSON.stringify(input.event_input), now());
+    if (inserted.changes) schedule();
+    return eventReceipt(task.id, eventFor(registration.id, input.event_id), !inserted.changes);
+  }
+
+  function queueContinuationEvent(at) {
+    let event;
+    try {
+      transaction(() => {
+        event = db.prepare(`SELECT e.continuation_id, e.event_id, t.id AS task_id
+          FROM task_continuation_events e JOIN task_continuations c ON c.id = e.continuation_id
+          JOIN tasks t ON t.id = c.task_id
+          WHERE e.state = 'pending' AND c.state != 'closed' AND t.job_id IS NULL
+            AND (t.status IN ('completed', 'failed')
+              OR (t.status = 'queued' AND t.recurrence IS NOT NULL AND t.last_run_at IS NOT NULL AND t.next_run_at > ?))
+            AND NOT EXISTS (SELECT 1 FROM task_continuation_events q WHERE q.continuation_id = c.id AND q.state = 'queued')
+            AND NOT EXISTS (SELECT 1 FROM goals g WHERE g.id = t.goal_id AND g.status = 'stopped')
+          ORDER BY e.received_at, e.rowid LIMIT 1`).get(at);
+        if (!event) return;
+        update(event.task_id, { status: 'queued', next_run_at: at, set_at: at });
+        db.prepare("UPDATE task_continuation_events SET state = 'queued' WHERE continuation_id = ? AND event_id = ?").run(event.continuation_id, event.event_id);
+      });
+    } catch (error) {
+      if (!event) throw error;
+      db.prepare("UPDATE task_continuation_events SET state = 'failed', settled_at = ?, error = ? WHERE continuation_id = ? AND event_id = ? AND state = 'pending'")
+        .run(now(), `Could not queue continuation event: ${error.message}`, event.continuation_id, event.event_id);
+    }
+  }
+
+  function closeTaskContinuation(taskId) {
+    const registration = registrationFor(taskId);
+    if (!registration) return;
+    db.prepare("UPDATE task_continuations SET state = 'closed', updated_at = ? WHERE id = ?").run(now(), registration.id);
+    db.prepare("UPDATE task_continuation_events SET state = 'cancelled', settled_at = ? WHERE continuation_id = ? AND state IN ('pending', 'queued')")
+      .run(now(), registration.id);
+  }
 
   // USER-AUTHORIZED — Marcus, November 20, 2026: this one-case pilot reuses
   // its SAME local inov8 task. Preserve the running task, CASE/cursor, contract,
@@ -173,7 +305,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   }
 
   // Record a finished job once, then requeue a recurring task or close a one-off.
-  function settle(taskId, job) {
+  function settleTask(taskId, job) {
     const ok = job.status === 'complete' && reportedDone(job.output);
     const finished = now();
     const error = ok ? null : job.status === 'complete' ? `The task reported it was not done: ${statusLine(job.output) || 'no STATUS line'}` : (job.error || job.status);
@@ -181,6 +313,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       .run(ok ? 'completed' : 'failed', finished, ok ? job.output : null, error, taskId, job.job_id);
     const task = get(taskId);
     if (!task || task.job_id !== job.job_id) return;
+    db.prepare("UPDATE task_continuation_events SET state = ?, settled_at = ?, error = ? WHERE job_id = ? AND state = 'claimed'")
+      .run(ok ? 'completed' : 'failed', finished, error, job.job_id);
     db.prepare("UPDATE agency_pilot_sources SET state = ?, settled_at = ? WHERE task_id = ? AND job_id = ? AND state = 'executing'")
       .run(ok ? 'completed' : 'failed', finished, taskId, job.job_id);
     if (!['delivered', 'executing'].includes(task.status)) {
@@ -219,8 +353,11 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     if (task?.status !== 'finalizing') return;
     try {
       await journalOnce(cwd, `task-implemented-${task.id}-${task.job_id}`, { date: businessDate(new Date(task.last_run_at)), kind: 'activity', source: 'action_queue', content: `Implemented: ${task.title}\n\n${task.last_result}`, metadata: { task_id: task.id, job_id: task.job_id } });
-      db.prepare("DELETE FROM runs WHERE task_id = ? AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status = 'finalizing' AND job_id = ?)").run(task.id, task.id, task.job_id);
-      db.prepare("DELETE FROM tasks WHERE id = ? AND status = 'finalizing' AND job_id = ?").run(task.id, task.job_id);
+      transaction(() => {
+        db.prepare("DELETE FROM runs WHERE task_id = ? AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status = 'finalizing' AND job_id = ?)").run(task.id, task.id, task.job_id);
+        db.prepare("DELETE FROM tasks WHERE id = ? AND status = 'finalizing' AND job_id = ?").run(task.id, task.job_id);
+      });
+      schedule();
     } catch (error) {
       update(taskId, { last_error: `Journal before removal failed; retried at the next start: ${error.message}` });
     }
@@ -230,7 +367,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   // A killed job writes nothing, so its state is also rechecked once a minute while it
   // runs (getM3ntorResult detects a dead worker).
   function follow(taskId, jobId) {
-    if (watchers.has(jobId)) return;
+    if (closed || watchers.has(jobId)) return;
     let busy = false, again = false, fsWatcher = null, liveness = null;
     watchers.set(jobId, { close() { fsWatcher?.close(); clearInterval(liveness); } });
     const stop = () => { watchers.get(jobId)?.close(); watchers.delete(jobId); };
@@ -244,7 +381,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
           try { job = await getM3ntorResult(jobId); }
           catch (error) { job = { job_id: jobId, status: 'failed', error: error.message }; }
         } while (!terminal.has(job.status) && again);
-        if (terminal.has(job.status)) { settle(taskId, job); stop(); schedule(); }
+        if (!watchers.has(jobId)) return;
+        if (terminal.has(job.status)) { transaction(() => settleTask(taskId, job)); stop(); schedule(); }
       } finally { busy = false; }
     };
     try { fsWatcher = watch(jobDirectory(jobId), () => { check(); }); }
@@ -256,19 +394,28 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   async function run(task) {
     // Claim with a job id saved before launch: a restart reconciles that same job.
     const jobId = randomUUID();
-    const claimed = db.prepare("UPDATE tasks SET status = 'delivered', job_id = ?, updated_at = ? WHERE id = ? AND status = 'queued'").run(jobId, now(), task.id);
-    if (!claimed.changes) return;
-    db.prepare('INSERT INTO runs (id, task_id, job_id, status, started_at) VALUES (?, ?, ?, ?, ?)').run(randomUUID(), task.id, jobId, 'executing', now());
-    db.prepare("UPDATE agency_pilot_sources SET state = 'executing', job_id = ? WHERE task_id = ? AND state = 'queued'").run(jobId, task.id);
-    try { await startTaskJob({ ...task, process_ids: taskProcessIds(task), job_id: jobId }, { cwd, harness, mcpUrl, ...agentRun() }); }
+    const delivery = transaction(() => {
+      const claimed = db.prepare("UPDATE tasks SET status = 'delivered', job_id = ?, updated_at = ? WHERE id = ? AND status = 'queued'").run(jobId, now(), task.id);
+      if (!claimed.changes) return null;
+      db.prepare('INSERT INTO runs (id, task_id, job_id, status, started_at) VALUES (?, ?, ?, ?, ?)').run(randomUUID(), task.id, jobId, 'executing', now());
+      const event = db.prepare(`UPDATE task_continuation_events SET state = 'claimed', job_id = ?
+        WHERE continuation_id = (SELECT id FROM task_continuations WHERE task_id = ?) AND state = 'queued' RETURNING *`).get(jobId, task.id);
+      const source = db.prepare("UPDATE agency_pilot_sources SET state = 'executing', job_id = ? WHERE task_id = ? AND state = 'queued'").run(jobId, task.id);
+      return { event, pilotSource: Boolean(source.changes) };
+    });
+    if (!delivery) return;
+    try {
+      const continuationEvent = delivery.event ? eventContext(task.id, delivery.event) : null;
+      await startTaskJob({ ...task, process_ids: taskProcessIds(task), job_id: jobId, continuation_event: continuationEvent }, { cwd, harness, mcpUrl, ...agentRun() });
+    }
     catch (error) {
-      if (db.prepare('SELECT source_event_id FROM agency_pilot_sources WHERE task_id = ? AND job_id = ?').get(task.id, jobId)) {
-        // No unchanged launch retry for a source event. Keep its correlation and
-        // the existing task's failed result for coordinator-owned diagnosis.
-        settle(task.id, { job_id: jobId, status: 'failed', error: `Could not start source-triggered task: ${error.message}` });
+      if (delivery.event || delivery.pilotSource || error.code === 'PROCESS_NOT_FOUND') {
+        // Keep the event binding and failure on this run for affected recovery.
+        const reason = delivery.event ? 'Could not start continuation-triggered task: '
+          : delivery.pilotSource ? 'Could not start source-triggered task: ' : '';
+        transaction(() => settleTask(task.id, { job_id: jobId, status: 'failed', error: reason + error.message }));
         schedule(); return;
       }
-      if (error.code === 'PROCESS_NOT_FOUND') { settle(task.id, { job_id: jobId, status: 'failed', error: error.message }); schedule(); return; }
       db.prepare("UPDATE runs SET status = 'failed', finished_at = ?, error = ? WHERE job_id = ?").run(now(), `Could not start: ${error.message}`, jobId);
       db.prepare("UPDATE tasks SET status = 'queued', job_id = NULL, last_error = ?, updated_at = ? WHERE id = ? AND status = 'delivered' AND job_id = ?").run(`Could not start: ${error.message}`, now(), task.id, jobId);
       return;
@@ -279,7 +426,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
 
   function schedule() {
     clearTimeout(timer);
-    if (!enabled()) return;
+    if (closed || !enabled()) return;
     try { queuePilotSource(); if (pilotInputVersion !== pilotRejectedVersion) pilotReadError = null; }
     catch (error) {
       // Retain pending data and report the changed error once; no retry timer.
@@ -287,6 +434,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       pilotReadError = error.message; pilotRejectedVersion = pilotInputVersion;
     }
     const at = now();
+    queueContinuationEvent(at);
     // One task at a time: the next due task starts only when nothing is running.
     // One-off work the owner directs (no goal) goes ahead of goal tasks.
     const busy = db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status IN ('delivered', 'executing', 'finalizing')").get().n;
@@ -309,6 +457,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     if (task.job_id && launched(task.job_id)) {
       if (task.status === 'delivered') update(task.id, { status: 'executing' });
       follow(task.id, task.job_id);
+    } else if (task.job_id && db.prepare("SELECT 1 FROM task_continuation_events WHERE job_id = ? AND state = 'claimed'").get(task.job_id)) {
+      transaction(() => settleTask(task.id, { job_id: task.job_id, status: 'interrupted', error: 'Service stopped before the continuation job launch could be confirmed.' }));
     } else if (['delivered', 'executing'].includes(task.status)) {
       // The job's worker never started: nothing ran, so the task is queued again.
       db.prepare("UPDATE runs SET status = 'failed', finished_at = ?, error = 'Service stopped before the job started.' WHERE job_id = ? AND status = 'executing'").run(now(), task.job_id);
@@ -500,10 +650,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const marks = ['improve', ...reopened].map(() => '?').join(', ');
     // The Improve check and set-aside tasks stop recurring. A running one stays in flight, so the queue still
     // runs one task at a time, and settles once without a next run; the rest are marked done.
-    db.prepare(`UPDATE tasks SET recurrence = NULL, next_run_at = NULL, updated_at = ? WHERE goal_id = ? AND stage IN (${marks}) AND status IN ('delivered', 'executing')`).run(now(), goal.id, 'improve', ...reopened);
-    db.prepare(`UPDATE tasks SET status = 'done', next_run_at = NULL, updated_at = ? WHERE goal_id = ? AND stage IN (${marks}) AND status NOT IN ('completed', 'done', 'delivered', 'executing', 'finalizing', 'clearing')`).run(now(), goal.id, 'improve', ...reopened);
     const setAside = reopened.map(() => '?').join(', ');
-    db.prepare(`UPDATE tasks SET stage = stage || '-before-reopen', updated_at = ? WHERE goal_id = ? AND stage IN (${setAside})`).run(now(), goal.id, ...reopened);
+    transaction(() => {
+      for (const task of db.prepare(`SELECT id FROM tasks WHERE goal_id = ? AND stage IN (${marks})`).all(goal.id, 'improve', ...reopened)) closeTaskContinuation(task.id);
+      db.prepare(`UPDATE tasks SET recurrence = NULL, next_run_at = NULL, updated_at = ? WHERE goal_id = ? AND stage IN (${marks}) AND status IN ('delivered', 'executing')`).run(now(), goal.id, 'improve', ...reopened);
+      db.prepare(`UPDATE tasks SET status = 'done', next_run_at = NULL, updated_at = ? WHERE goal_id = ? AND stage IN (${marks}) AND status NOT IN ('completed', 'done', 'delivered', 'executing', 'finalizing', 'clearing')`).run(now(), goal.id, 'improve', ...reopened);
+      db.prepare(`UPDATE tasks SET stage = stage || '-before-reopen', updated_at = ? WHERE goal_id = ? AND stage IN (${setAside})`).run(now(), goal.id, ...reopened);
+    });
     await journalOnce(cwd, `goal-reopen-${goal.id}-${Date.now()}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": Process stage reopened.\n${evidence}`, metadata: { goal_id: goal.id } });
     schedule();
     return goalView(getGoal(goal.id));
@@ -515,9 +668,12 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     if (!reason?.trim()) throw new Error('Give the reason.');
     if (goal.kind === 'environment') throw new Error('The working environment goal cannot be stopped; it comes before every other goal.');
     await journalOnce(cwd, `goal-stopped-${goal.id}`, { kind: 'user_request', source: 'owner_decision', content: `The owner stopped the goal: ${goal.title}\nReason: ${reason.trim()}`, metadata: { goal_id: goal.id } });
-    const queued = db.prepare("SELECT id FROM tasks WHERE goal_id = ? AND status IN ('queued', 'paused', 'failed')").all(goal.id);
-    for (const { id } of queued) { db.prepare('DELETE FROM runs WHERE task_id = ?').run(id); db.prepare('DELETE FROM tasks WHERE id = ?').run(id); }
-    updateGoal(goal.id, { status: 'stopped', stop_reason: reason.trim() });
+    transaction(() => {
+      const queued = db.prepare("SELECT id FROM tasks WHERE goal_id = ? AND status IN ('queued', 'paused', 'failed')").all(goal.id);
+      for (const { id } of queued) { db.prepare('DELETE FROM runs WHERE task_id = ?').run(id); db.prepare('DELETE FROM tasks WHERE id = ?').run(id); }
+      for (const task of db.prepare('SELECT id FROM tasks WHERE goal_id = ?').all(goal.id)) closeTaskContinuation(task.id);
+      updateGoal(goal.id, { status: 'stopped', stop_reason: reason.trim() });
+    });
     activeGoal(); schedule();
     return goalView(getGoal(goal.id));
   }
@@ -560,56 +716,67 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     } catch {}
     return notes.sort((a, b) => String(b.at).localeCompare(String(a.at)));
   }
-  // USER-AUTHORIZED — Marcus, November 20, 2026, AGENCY-WAIT-BOOKKEEPING-01:
-  // recognize the retained source-owned continuation without changing task/run
-  // status or using set_task to represent waiting. Recovery concerns only an
-  // evidenced failed/lost dependency; elapsed waiting is not failure evidence.
-  function stageContinuations(goal) {
-    const task = get(AGENCY_PILOT_TASK);
-    const stage = stagesFor(goal.kind)[goal.stage];
-    if (!task || task.goal_id !== goal.id || task.stage !== stage.key) return [];
-    const checkpoint = path.join(pilotDirectory(cwd), 'CASE.json');
-    const registration = path.join(pilotDirectory(cwd), 'RECOVERY-04', 'CASE-CONTINUATION.json');
-    const artifact = file => {
-      try { return { value: JSON.parse(readFileSync(file, 'utf8')) }; }
-      catch (error) { return { error: { file, code: error.code || error.name } }; }
-    };
-    const registered = artifact(registration), savedCase = artifact(checkpoint), pending = artifact(pilotPendingFile(cwd));
-    const record = registered.value;
-    const source = pending.value;
-    const ledger = db.prepare('SELECT source_event_id, intake_id, message_id, state, job_id FROM agency_pilot_sources WHERE task_id = ? ORDER BY source_event_id').all(task.id);
+  function taskContinuations(task, { includeEvents = false } = {}) {
+    const taskFields = { task_id: task.id, task_status: task.status, last_run_status: task.last_status };
+    const canResume = !['paused', 'done', 'clearing', 'finalizing'].includes(task.status);
+    if (task.id === AGENCY_PILOT_TASK) {
+      const ledger = db.prepare('SELECT source_event_id, intake_id, message_id, state, job_id FROM agency_pilot_sources WHERE task_id = ? ORDER BY source_event_id').all(task.id);
+      const { state, recovery, ...legacy } = agencyPilotContinuation(cwd, task.id, ledger, pilotReadError);
+      return [{
+        ...taskFields, ...legacy, work_underway: canResume && state === 'waiting', recovery: recovery || null,
+        continuation_id: task.id + ':agency-pilot-source', return_route: PILOT_RETURN, state,
+      }];
+    }
+
+    const registration = registrationFor(task.id);
+    if (!registration) return [];
+    const event = db.prepare(`SELECT * FROM task_continuation_events WHERE continuation_id = ? AND revision = ? AND state != 'cancelled'
+      ORDER BY rowid DESC LIMIT 1`).get(registration.id, registration.revision);
+    let state = registration.state;
+    let recovery = null;
+    if (state === 'failed' || state === 'lost') {
+      recovery = {
+        dependency: state === 'lost' ? 'continuation_registration' : 'continuation_return',
+        task_id: task.id, checkpoint: registration.checkpoint,
+        evidence: registration.evidence, continuation_id: registration.id, customer_trigger: false,
+      };
+    } else if (state === 'waiting' && event) {
+      if (event.state === 'failed') {
+        state = 'failed';
+        recovery = {
+          dependency: 'continuation_event', task_id: task.id, checkpoint: event.checkpoint,
+          evidence: eventSummary(event), continuation_id: registration.id, customer_trigger: false,
+        };
+      } else {
+        state = event.state === 'completed' ? 'resumed' : 'resuming';
+      }
+    }
     const continuation = {
-      task_id: task.id, task_status: task.status, last_run_status: task.last_status,
-      draft_status: record?.draft_status || 'unknown', execution_owner: record?.execution_owner || null,
-      delivery_owner: record?.delivery_owner || null, owner: record?.continuation?.owner || null,
-      implementation_coordinator: record?.implementation_coordinator || null,
-      implementation_executor: record?.implementation_executor || null,
-      registration, checkpoint, case_binding: { pilot: savedCase.value?.pilot ?? null, task_id: savedCase.value?.task_id ?? null }, selected_case: savedCase.value?.case ?? null,
-      source_wake: {
-        route: record?.continuation?.incoming_route || null, observer_state: source?.state || null,
-        last_error: source?.last_error || null,
-        notifications: Object.entries(source?.notifications || {}).map(([id, value]) => ({ message_id: id, state: value.state })).sort((a, b) => a.message_id.localeCompare(b.message_id)),
-        pending_source_ids: Object.keys(source?.events || {}).sort(), ledger,
-      },
-      work_underway: false, recovery: null,
+      ...taskFields, continuation_id: registration.id, draft_status: 'unknown', owner: registration.owner,
+      checkpoint: registration.checkpoint, return_route: CONTINUATION_RETURN, state,
+      source_wake: { route: CONTINUATION_RETURN, event: event ? eventSummary(event) : null },
+      work_underway: canResume && (state === 'waiting' || state === 'resuming'), recovery,
     };
-    const affected = (dependency, evidence) => ({ ...continuation, recovery: { dependency, task_id: task.id, checkpoint, evidence, customer_trigger: false } });
-    if (registered.error || savedCase.error) return [affected('continuation_registration', registered.error || savedCase.error)];
-    if (savedCase.value?.pilot !== 'AGENCY-PILOT-01' || savedCase.value?.task_id !== task.id) {
-      return [affected('continuation_binding', { file: checkpoint, ...continuation.case_binding, expected_pilot: 'AGENCY-PILOT-01', expected_task_id: task.id })];
+    if (includeEvents) {
+      continuation.updated_at = registration.updated_at;
+      continuation.events = db.prepare('SELECT * FROM task_continuation_events WHERE continuation_id = ? ORDER BY rowid').all(registration.id)
+        .map(row => eventReceipt(task.id, row, false));
     }
-    if (record.task_id !== task.id || record.case_checkpoint !== checkpoint || !continuation.owner || !continuation.execution_owner || !continuation.source_wake.route) {
-      return [affected('continuation_binding', { registration, task_id: record.task_id, case_checkpoint: record.case_checkpoint })];
-    }
-    if (pending.error) return [affected('source_observer', pending.error)];
-    if (source.task_id !== task.id || source.pilot !== 'AGENCY-PILOT-01') return [affected('source_wake_binding', { file: pilotPendingFile(cwd), task_id: source.task_id, pilot: source.pilot })];
-    // An intentionally selected case leaves the original wait; its native task
-    // and case evidence govern the remaining customer outcome, not this wait.
-    if (savedCase.value.case) return [continuation];
-    if (source.last_error || !['connecting', 'waiting_for_original_source'].includes(source.state)) {
-      return [affected('source_observer', { file: pilotPendingFile(cwd), state: source.state, last_error: source.last_error || null })];
-    }
-    return [{ ...continuation, work_underway: true }];
+    return [continuation];
+  }
+
+  function stageContinuations(goal) {
+    const stage = stagesFor(goal.kind)[goal.stage];
+    return stageTasks(goal.id, stage.key).flatMap(task => taskContinuations(task));
+  }
+  function continuationFingerprint(goal) {
+    return stageContinuations(goal).map(item => {
+      if (item.return_route !== PILOT_RETURN) return item;
+      // Keep the already-saved pilot fingerprint compatible when the source and
+      // registration evidence stays the same across an upgrade.
+      const { continuation_id, return_route, state, ...legacy } = item;
+      return legacy;
+    });
   }
   function reviewState(goal) {
     const stage = stagesFor(goal.kind)[goal.stage];
@@ -617,12 +784,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     let answered = 0;
     try { answered = JSON.parse(readFileSync(path.join(directory, 'user_questions.json'), 'utf8')).questions.filter(q => q.status !== 'pending').length; } catch {}
     const goals = db.prepare('SELECT id, status, stage, position FROM goals ORDER BY id').all();
-    return JSON.stringify({ goal: goal.id, stage: goal.stage, ...(reviewPass(goal)?.id ? { review_pass_id: reviewPass(goal).id } : {}), tasks, answered, notes: ownerNotes().length, goals, assessment: newestMtime(path.join(directory, 'assessment')), continuations: stageContinuations(goal) });
+    return JSON.stringify({ goal: goal.id, stage: goal.stage, ...(reviewPass(goal)?.id ? { review_pass_id: reviewPass(goal).id } : {}), tasks, answered, notes: ownerNotes().length, goals, assessment: newestMtime(path.join(directory, 'assessment')), continuations: continuationFingerprint(goal) });
   }
   // Adding/restoring the same healthy continuation can settle an old stuck
   // handoff. Do not consume other new work or owner direction in that shortcut.
   function settleContinuationWait(goal) {
-    if (!stageContinuations(goal).some(item => item.work_underway)) return false;
+    const continuations = stageContinuations(goal);
+    if (continuations.some(item => item.recovery) || !continuations.some(item => item.work_underway)) return false;
     setSetting('goal_stuck', null); setSetting('goal_review_mode', 'normal');
     const current = reviewState(goal);
     let previous;
@@ -641,14 +809,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   }
   const BLOCKED_OR_DONE = new Set(['completed', 'done', 'failed', 'paused']);
   let reviewTimer = null, reviewStarting = false;
-  const consultWatchers = new Set();
   // A question inov8 asked that the owner has not answered pauses reviews until it is answered
   // (the owner's Run still starts one).
   function waitingOnOwner() {
     try { return JSON.parse(readFileSync(path.join(directory, 'user_questions.json'), 'utf8')).questions.some(q => q.status === 'pending' && q.source === 'inov8'); } catch { return false; }
   }
   function considerReview() {
-    if (!enabled() || reviewStarting || setting('goal_review_job') || waitingOnOwner()) return;
+    if (closed || !enabled() || reviewStarting || setting('goal_review_job') || waitingOnOwner()) return;
     const goal = activeGoal();
     if (!goal) return;
     const state = reviewState(goal);
@@ -672,7 +839,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   }
   function armClock() {
     clearTimeout(reviewTimer);
-    if (pace().pace === 'yolo') return;
+    if (closed || pace().pace === 'yolo') return;
     let due = setting('goal_next_review_at');
     if (!due) { due = nextClock().toISOString(); setSetting('goal_next_review_at', due); }
     reviewTimer = setTimeout(() => {
@@ -694,6 +861,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   }
   const STUCK_REASON = 'the last review left nothing under way toward the done-check: no stage task queued or running, no registered healthy continuation and no question waiting on the owner.';
   async function startReview(goal, state) {
+    if (closed) return;
     reviewStarting = true;
     const jobId = randomUUID();
     setSetting('goal_review_job', jobId);
@@ -784,22 +952,22 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   // Start the stuck-mode review now, unless one is running or the worker is stopped.
   function startStuckReview() {
     const goal = activeGoal();
-    if (!goal || !enabled() || reviewStarting || setting('goal_review_job') || setting('goal_stuck') !== '1') return;
+    if (!goal || closed || !enabled() || reviewStarting || setting('goal_review_job') || setting('goal_stuck') !== '1') return;
     if (settleContinuationWait(goal)) return;
     startReview(goal, reviewState(goal));
   }
   // The stuck-mode review waits for the M3NT0R answer the last review asked for.
   function followConsult(jobId) {
-    if (consultWatchers.has(jobId)) return;
-    consultWatchers.add(jobId);
-    let fsWatcher = null, liveness = null, busy = false, settled = false;
+    if (closed || watchers.has(jobId)) return;
+    let fsWatcher = null, liveness = null, busy = false;
+    watchers.set(jobId, { close() { fsWatcher?.close(); clearInterval(liveness); } });
     const check = async () => {
-      if (busy || settled) return;
+      if (busy || !watchers.has(jobId)) return;
       busy = true;
       try {
         let job; try { job = await getM3ntorResult(jobId); } catch { job = { status: 'failed' }; }
-        if (!terminal.has(job.status)) return;
-        settled = true; fsWatcher?.close(); clearInterval(liveness); consultWatchers.delete(jobId);
+        if (!watchers.has(jobId) || !terminal.has(job.status)) return;
+        watchers.get(jobId).close(); watchers.delete(jobId);
         if (setting('goal_m3ntor_job') === jobId) setSetting('goal_m3ntor_job', null);
         const goal = activeGoal();
         if (!goal) return;
@@ -814,22 +982,35 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     check();
   }
   function followReview(jobId) {
+    if (closed || watchers.has(jobId)) return;
     let fsWatcher = null, liveness = null, busy = false;
+    watchers.set(jobId, { close() { fsWatcher?.close(); clearInterval(liveness); } });
     const check = async () => {
-      if (busy) return; busy = true;
+      if (busy || !watchers.has(jobId)) return; busy = true;
       try {
         let job; try { job = await getM3ntorResult(jobId); } catch (error) { job = { status: 'failed', error: error.message }; }
-        if (!terminal.has(job.status)) return;
-        fsWatcher?.close(); clearInterval(liveness);
+        if (!watchers.has(jobId) || !terminal.has(job.status)) return;
+        watchers.get(jobId).close(); watchers.delete(jobId);
         // The review's own changes are part of the state it leaves; only later changes start another.
         const goal = activeGoal();
         // A review that moved the goal to a new stage without queuing work for it leaves that
         // stage unplanned: the next review starts now, whatever the pace.
         const moved = goal && !sameReviewStage(goal, setting('goal_review_stage'));
         const unplanned = moved && !stageTasks(goal.id, stagesFor(goal.kind)[goal.stage].key).length;
+        // The review can settle its own work, but can only act on recovery
+        // evidence present in its input. Carry later failures to the next review.
+        let previous;
+        try { previous = JSON.parse(setting('goal_review_state')); } catch {}
+        const current = goal && !moved ? JSON.parse(reviewState(goal)) : null;
+        const reviewedRecoveries = new Set((previous?.continuations || []).map(item => JSON.stringify(item.recovery)));
+        const newRecovery = current?.continuations.some(item => item.recovery && !reviewedRecoveries.has(JSON.stringify(item.recovery)));
         let settled = {};
-        try { settled = await settleReview(goal, job, moved); } catch (error) { console.error('Goal review settle failed:', error.message); }
-        if (goal && !unplanned) setSetting('goal_review_state', reviewState(goal));
+        try { settled = await settleReview(goal, job, moved || newRecovery); } catch (error) { console.error('Goal review settle failed:', error.message); }
+        if (goal && !unplanned) {
+          const next = JSON.parse(reviewState(goal));
+          if (newRecovery) next.continuations = previous?.continuations || [];
+          setSetting('goal_review_state', JSON.stringify(next));
+        }
         if (unplanned) setSetting('goal_next_review_at', new Date().toISOString());
         setSetting('goal_review_job', null);
         setSetting('goal_review_error', job.status === 'complete' && reportedDone(job.output) ? null : `The last goal review did not finish: ${job.error || statusLine(job.output) || 'no STATUS line'}`);
@@ -879,7 +1060,15 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
 
   return {
     agencyPilotSources: () => ({ task_id: AGENCY_PILOT_TASK, error: pilotReadError, sources: db.prepare('SELECT source_event_id, task_id, intake_id, message_id, state, received_at, queued_at, job_id, settled_at FROM agency_pilot_sources ORDER BY received_at').all() }),
-    closePilotWatcher() { pilotPendingWatcher?.close(); pilotContinuationWatcher?.close(); },
+    close() {
+      closed = true;
+      clearTimeout(timer);
+      clearTimeout(reviewTimer);
+      pilotPendingWatcher?.close();
+      pilotContinuationWatcher?.close();
+      for (const watcher of watchers.values()) watcher.close();
+      watchers.clear();
+    },
     // Something outside the queue changed (an owner answer, a saved assessment).
     poke() { schedule(); },
     noteAction,
@@ -905,10 +1094,11 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     // Task with its runs, for the owner UI.
     detail(taskId) {
       const task = view(get(taskId));
-      const goal = task?.goal_id ? getGoal(task.goal_id) : null;
-      return task && { task, runs: db.prepare('SELECT * FROM runs WHERE task_id = ? ORDER BY started_at DESC').all(taskId), ...(goal ? { continuations: stageContinuations(goal).filter(item => item.task_id === taskId) } : {}), worker: workerState() };
+      return task && { task, runs: db.prepare('SELECT * FROM runs WHERE task_id = ? ORDER BY started_at DESC').all(taskId), continuations: taskContinuations(task, { includeEvents: true }), worker: workerState() };
     },
     call(name, input) {
+      if (name === 'record_task_continuation') return recordContinuation(input);
+      if (name === CONTINUATION_RETURN) return receiveContinuationEvent(input);
       if (name === 'set_task') {
         if (input.recurrence && !input.recurrence.weekly === !input.recurrence.interval_minutes) throw new Error('Give recurrence either weekly or interval_minutes.');
         const id = input.task_id || randomUUID();
@@ -955,10 +1145,18 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
           ? journalOnce(cwd, `task-declined-${task.id}`, { kind: 'user_request', source: 'owner_decision', content: `The owner decided against: ${task.title}\nReason: ${input.reason.trim()}\nTask: ${task.instruction}`, metadata: { task_id: task.id, action: input.action } })
           : Promise.resolve(null)).catch(error => {
             db.prepare("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = 'clearing'").run(previous, now(), task.id);
+            schedule();
             throw error;
           }).then(entry => {
-            if (input.action === 'delete') { db.prepare('DELETE FROM runs WHERE task_id = ?').run(task.id); db.prepare('DELETE FROM tasks WHERE id = ?').run(task.id); }
-            else update(task.id, { status: 'done', next_run_at: null });
+            transaction(() => {
+              if (input.action === 'delete') {
+                db.prepare('DELETE FROM runs WHERE task_id = ?').run(task.id);
+                db.prepare('DELETE FROM tasks WHERE id = ?').run(task.id);
+              } else {
+                update(task.id, { status: 'done', next_run_at: null });
+                closeTaskContinuation(task.id);
+              }
+            });
             if (input.action === 'delete' && task.job_id) { watchers.get(task.job_id)?.close(); watchers.delete(task.job_id); }
             schedule();
             return { task_id: task.id, action: input.action, reason_journaled: Boolean(entry), worker: workerState() };
