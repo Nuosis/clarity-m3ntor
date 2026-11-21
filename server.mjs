@@ -275,6 +275,10 @@ async function mcp(req, res, coach = false) {
         result = { content: [{ type: 'text', text: JSON.stringify({ ...record, internal_processes: taskQueue.internalProcesses(), missing: { infrastructure: await environmentCheck(cwd, 'infrastructure'), observability: await environmentCheck(cwd, 'observability'), process: await environmentCheck(cwd, 'process') } }) }] };
       } else if (['record_source', 'set_plate', 'record_process', 'delete_process'].includes(name)) {
         const saved = await ({ record_source: recordSource, set_plate: setPlate, record_process: recordProcess, delete_process: deleteProcess })[name](cwd, input);
+        if (name === 'record_process') {
+          const env = await readEnvironment(cwd).catch(() => null);
+          taskQueue.syncBusinessTriggers(env?.processes?.processes || []);
+        }
         taskQueue.poke();
         result = { content: [{ type: 'text', text: JSON.stringify(saved) }] };
       } else if (name === 'get_task') {
@@ -535,6 +539,7 @@ const a2aReceiver = startA2AReceiver({ cwd, harness, mcpUrl });
 // The owner's action queue runs due tasks for as long as this service runs.
 await seedSources(cwd).catch(error => console.error('Seeding the source list failed:', error.message));
 const taskQueue = startTaskQueue({ cwd, harness, mcpUrl, latestAssessment: async () => (await assessments())[0] || null });
+readEnvironment(cwd).then(env => taskQueue.syncBusinessTriggers(env?.processes?.processes || [])).catch(error => console.error('Syncing business triggers failed:', error.message));
 // The existing pilot CASE opts this installation into its bounded source observer.
 // No separate receiver identity, inbox claim, auth configuration or execution engine.
 const agencyPilotObserver = await startAgencyPilotObserver({ cwd }).catch(error => {

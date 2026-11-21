@@ -120,7 +120,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   let api;
   const triggerFlow = createTriggerFlow(db, {
     enqueueTask: input => api.call('set_task', input),
-    resolveFlow: id => (id === reviewDefinition.id ? reviewDefinition : null),
+    resolveFlow: id => {
+      if (id === reviewDefinition.id) return reviewDefinition;
+      try {
+        const raw = JSON.parse(readFileSync(path.join(directory, 'environment', 'processes.json'), 'utf8'));
+        return (raw.processes || []).find(item => item.id === id) || null;
+      } catch { return null; }
+    },
   });
   const columns = new Set(db.prepare('PRAGMA table_info(tasks)').all().map(column => column.name));
   for (const [name, type] of [['remove_on_completion', 'INTEGER NOT NULL DEFAULT 0'], ['success', 'TEXT'], ['constraints', 'TEXT'], ['category', 'TEXT'], ['goal_id', 'TEXT'], ['stage', 'TEXT'], ['set_at', 'TEXT'], ['process_ids', 'TEXT'], ['trigger_input', 'TEXT']]) if (!columns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
@@ -1256,6 +1262,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     },
     reviewRun: id => reviewRunDetail(id, reviewLedger.detail(id)),
     listTriggers: flowId => triggerFlow.listTriggers(flowId),
+    syncBusinessTriggers: processes => triggerFlow.syncBusinessTriggers(processes),
     registerTrigger: input => triggerFlow.registerTrigger(input),
     receiveTrigger: input => triggerFlow.receiveTrigger(input),
     listFlowRuns: (flowId, limit) => triggerFlow.listFlowRuns(flowId, limit),

@@ -36,36 +36,75 @@ function loadProcessViewer() {
     document.head.appendChild(script);
   });
 }
-function processDiagramXml(flow) {
+function businessStepType(step) {
+  if (/^Decision:/i.test(step)) return 'decision';
+  if (/\b(D5|inov8|M3NT0R|M-CODEX|agent)\b/i.test(step)) return 'agent';
+  if (/\b(handoff|sub-?process)\b/i.test(step)) return 'process';
+  return 'operation';
+}
+function shortNodeLabel(text, fallback, max = 72) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return fallback;
+  return clean.length > max ? clean.slice(0, max - 1).trimEnd() + '…' : clean;
+}
+function processDiagramXml(flow, run = null) {
   const dark = document.documentElement.dataset.theme === 'dark';
-  const fill = dark ? '#222222' : '#f5f5f5', stroke = dark ? '#888888' : '#777777', font = dark ? '#cccccc' : '#333333';
+  const neutral = dark ? '#8a8a8a' : '#777777', font = dark ? '#e0e0e0' : '#333333';
+  const palette = dark
+    ? { started: '#8db3ff', completed: '#60c482', failed: '#f28891', waiting: '#e5b966', skipped: '#aab3c1' }
+    : { started: '#385eaa', completed: '#268046', failed: '#ad3f48', waiting: '#8d5b16', skipped: '#667080' };
+  const typeFills = dark
+    ? { trigger: '#222222', decision: '#222222', operation: '#222222', agent: '#1b2738', process: '#252035', terminal: '#28241e' }
+    : { trigger: '#f5f5f5', decision: '#f5f5f5', operation: '#f5f5f5', agent: '#e8f1ff', process: '#f1ecff', terminal: '#f6f1e7' };
+  const typeShapes = {
+    trigger: 'shape=parallelogram;perimeter=parallelogramPerimeter;fixedSize=1;size=14;spacingLeft=18;spacingRight=18;',
+    decision: 'shape=rhombus;spacingLeft=36;spacingRight=36;',
+    operation: 'rounded=0;',
+    agent: 'shape=hexagon;perimeter=hexagonPerimeter2;fixedSize=1;size=18;spacingLeft=22;spacingRight=22;',
+    process: 'shape=process;backgroundOutline=1;size=0.08;spacingLeft=18;spacingRight=18;',
+    terminal: 'rounded=1;arcSize=50;spacingLeft=18;spacingRight=18;',
+  };
   const steps = flow.steps || [];
   const cells = [], positions = [];
   let y = 24;
-  const base = `whiteSpace=wrap;html=0;fontSize=16;fontFamily=Arial;spacing=16;fillColor=${fill};strokeColor=${stroke};fontColor=${font};`;
-  const vertex = (id, label, x, top, width, height, decision = false) => {
-    cells.push(`<mxCell id="${id}" value="${processText(label)}" style="${decision ? 'rhombus;spacingLeft=36;spacingRight=36;' : 'rounded=0;'}${base}" vertex="1" parent="1"><mxGeometry x="${x}" y="${top}" width="${width}" height="${height}" as="geometry"/></mxCell>`);
+  const vertex = (id, label, x, top, width, height, kind = 'operation') => {
+    const runStatus = run?.nodes?.[id]?.status;
+    const stroke = palette[runStatus] || neutral;
+    const strokeWidth = runStatus ? 3 : kind === 'agent' || kind === 'terminal' ? 2 : 1;
+    const fill = typeFills[kind] || typeFills.operation;
+    const statusText = runStateLabels[runStatus];
+    const value = processText(label) + (statusText ? '&#xa;' + processText(statusText) : '');
+    const style = `${typeShapes[kind] || typeShapes.operation}whiteSpace=wrap;html=0;fontSize=15;fontFamily=Arial;spacing=12;fillColor=${fill};strokeColor=${stroke};strokeWidth=${strokeWidth};fontColor=${font};`;
+    cells.push(`<mxCell id="${id}" value="${value}" style="${style}" vertex="1" parent="1"><mxGeometry x="${x}" y="${top}" width="${width}" height="${height}" as="geometry"/></mxCell>`);
   };
   const edge = (id, from, to, label = '', extra = '', points = '') => {
     cells.push(`<mxCell id="${id}" value="${processText(label)}" style="edgeStyle=orthogonalEdgeStyle;rounded=1;endArrow=block;endFill=1;fontSize=14;labelBackgroundColor=${dark ? '#222222' : '#ffffff'};strokeColor=${font};fontColor=${font};${extra}" edge="1" parent="1" source="${from}" target="${to}"><mxGeometry relative="1" as="geometry">${points}</mxGeometry></mxCell>`);
   };
+  // Explicit Trigger entry node
+  const triggerLabel = shortNodeLabel(flow.trigger, 'Trigger', 68);
+  const triggerHeight = Math.max(72, Math.ceil(triggerLabel.length / 24) * 20 + 28);
+  vertex('trigger-0', triggerLabel, 285, y, 220, triggerHeight, 'trigger');
+  y += triggerHeight + 52;
   let followup = false;
   steps.forEach((step, index) => {
-    const decision = /^Decision:/i.test(step);
+    const kind = businessStepType(step);
+    const decision = kind === 'decision';
     const label = decision ? step.replace(/^Decision:\s*/i, '').split('?')[0] + '?' : step;
     const height = decision ? 210 : Math.max(82, Math.ceil(label.length / 22) * 22 + 32);
-    const width = decision ? 220 : 190;
-    const x = (followup ? 520 : 300) + (decision ? -15 : 0);
+    const width = decision ? 220 : kind === 'agent' ? 216 : 196;
+    const x = (followup ? 520 : 300) + (decision ? -15 : kind === 'agent' ? -10 : 0);
     positions.push({ x, y, height, decision });
-    vertex(`step-${index}`, label, x, y, width, height, decision);
-    if (index) {
+    vertex(`step-${index}`, label, x, y, width, height, kind);
+    if (index === 0) {
+      edge('edge-trigger', 'trigger-0', 'step-0', '', 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;');
+    } else {
       const previous = steps[index - 1];
       const previousDecision = /^Decision:/i.test(previous);
       const response = previousDecision && /response.*received/i.test(previous);
       edge(`edge-${index}`, `step-${index - 1}`, `step-${index}`, previousDecision ? (response ? 'No' : 'Yes') : '', response ? 'exitX=0.75;exitY=0.75;entryX=0.5;entryY=0;' : 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;');
     }
     if (decision && /response.*received/i.test(step)) {
-      vertex('response', 'Response received', 80, y + height + 60, 190, 82);
+      vertex('response', 'Response received', 80, y + height + 60, 190, 82, 'terminal');
       edge('response-yes', `step-${index}`, 'response', 'Yes', 'exitX=0.25;exitY=0.75;entryX=0.5;entryY=0;');
       followup = true;
     }
@@ -79,6 +118,13 @@ function processDiagramXml(flow) {
     }
     y += height + 60;
   });
+  // Explicit Terminal completion node
+  const termLabel = shortNodeLabel(flow.completion, 'Completed', 68);
+  const termHeight = Math.max(72, Math.ceil(termLabel.length / 24) * 20 + 28);
+  const termX = followup ? 505 : 285;
+  vertex('terminal-0', termLabel, termX, y, 220, termHeight, 'terminal');
+  if (steps.length) edge('edge-terminal', `step-${steps.length - 1}`, 'terminal-0', '', 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;');
+  else edge('edge-terminal', 'trigger-0', 'terminal-0', '', 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;');
   return `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>${cells.join('')}</root></mxGraphModel>`;
 }
 const reviewTime = value => value ? new Intl.DateTimeFormat(undefined, {
@@ -173,7 +219,7 @@ function fitProcessGraph() {
   if (bounds.width > 0 && bounds.height > 0) activeProcessGraph.zoomTo(Math.min(1, (host.clientWidth - 48) / (bounds.width / scale), (host.clientHeight - 48) / (bounds.height / scale)));
   host.scrollLeft = 0; host.scrollTop = 0;
 }
-async function mountProcessDiagram(flow, run = null) {
+async function mountProcessDiagram(flow, run = null, triggers = []) {
   const version = ++processRenderVersion;
   activeProcessGraph?.destroy(); activeProcessGraph = null;
   const host = document.querySelector('.process-canvas');
@@ -181,18 +227,18 @@ async function mountProcessDiagram(flow, run = null) {
   const internal = flow.kind === 'internal';
   const diagram = run?.definition || flow;
   const internalNodes = new Map((diagram.nodes || []).map(node => [node.id, node]));
-  const stepFromCell = id => internal ? internalNodes.get(id) : /^step-\d+$/.test(id) && flow.steps[Number(id.slice(5))];
+  const stepFromCell = id => internal ? internalNodes.get(id) : (id === 'trigger-0' || id === 'terminal-0' || id === 'response' || (/^step-\d+$/.test(id) && flow.steps?.[Number(id.slice(5))]));
   const openCell = id => {
     if (internal) openInternalNode(flow, internalNodes.get(id), run);
-    else openProcessStep(flow, Number(id.slice(5)));
+    else openBusinessCell(flow, id, run, triggers);
   };
-  if (!internal && !flow.steps?.length) { host.textContent = 'No steps recorded yet.'; return; }
+  if (!internal && !flow.steps?.length && !flow.trigger) { host.textContent = 'No steps recorded yet.'; return; }
   try {
     await loadProcessViewer();
     if (version !== processRenderVersion || !host.isConnected) return;
     host.replaceChildren();
     const div = document.createElement('div'); host.appendChild(div);
-    const doc = window.mxUtils.parseXml(internal ? internalDiagramXml(diagram, run) : processDiagramXml(flow));
+    const doc = window.mxUtils.parseXml(internal ? internalDiagramXml(diagram, run) : processDiagramXml(flow, run));
     const viewer = new window.GraphViewer(div, doc.documentElement, { nav: true, resize: true, lightbox: false, center: true });
     const graph = viewer.graph; activeProcessGraph = graph;
     graph.setEnabled(false); graph.setTooltips(false);
@@ -215,7 +261,7 @@ async function mountProcessDiagram(flow, run = null) {
         if (!node || !stepFromCell(cell.id)) return;
         node.setAttribute('tabindex', '0'); node.setAttribute('role', 'button');
         node.setAttribute('aria-label', cell.value.replace('\n', ' · '));
-        node.dataset.step = internal ? cell.id : cell.id.slice(5);
+        node.dataset.step = cell.id;
       });
     };
     graph.view.addListener(window.mxEvent.SCALE, makeAccessible);
@@ -243,16 +289,52 @@ function processStepModal() {
   }
   return modal;
 }
-function openProcessStep(flow, index) {
+function openBusinessCell(flow, cellId, run = null, triggers = []) {
+  const modal = processStepModal();
+  if (cellId === 'trigger-0') {
+    const info = nodeTypeInfo(flow, 'trigger');
+    const bound = (triggers || []).filter(item => item.flow_id === flow.id);
+    modal.dataset.step = cellId;
+    modal.innerHTML = `<div class="process-modal-header"><div><p class="meta">${processNameWithBadge(flow)} · <span class="process-node-type type-trigger">${processText(info.label)}</span></p><h2 id="process-step-title">Trigger</h2></div><button type="button" class="ghost" data-close-step autofocus>Close</button></div>
+      <div class="process-modal-body prose">
+        <p class="meta">${processText(info.definition)}</p>
+        <h3>Defined trigger</h3>${renderMarkdown(flow.trigger || 'No trigger recorded yet.')}
+        ${bound.length ? `<h3>Registered receivers</h3><ul>${bound.map(item => `<li><strong>${processText(item.name)}</strong> (${processText(item.kind)}) · <code>POST ${processText(item.receiver_path)}</code>${item.last_event ? ` · last ${processText(item.last_event.disposition)}` : ''}</li>`).join('')}</ul>` : ''}
+        ${selectedProcessRun ? `<h3>Run evidence</h3>${evidenceFields(run?.nodes?.['trigger-0'])}` : ''}
+      </div>`;
+    if (!modal.open) modal.showModal();
+    return;
+  }
+  if (cellId === 'terminal-0' || cellId === 'response') {
+    const info = nodeTypeInfo(flow, 'terminal');
+    modal.dataset.step = cellId;
+    modal.innerHTML = `<div class="process-modal-header"><div><p class="meta">${processNameWithBadge(flow)} · <span class="process-node-type type-terminal">${processText(info.label)}</span></p><h2 id="process-step-title">${cellId === 'response' ? 'Response received' : 'Completion'}</h2></div><button type="button" class="ghost" data-close-step autofocus>Close</button></div>
+      <div class="process-modal-body prose">
+        <p class="meta">${processText(info.definition)}</p>
+        <h3>Terminal definition</h3>${renderMarkdown(cellId === 'response' ? 'Customer responded to the offer; follow-up branch ends and flow proceeds to resolution.' : (flow.completion || 'No completion definition recorded yet.'))}
+        ${selectedProcessRun ? `<h3>Run evidence</h3>${evidenceFields(run?.nodes?.[cellId] || run?.nodes?.['terminal-received'])}` : ''}
+      </div>`;
+    if (!modal.open) modal.showModal();
+    return;
+  }
+  const index = Number(String(cellId).replace(/^step-/, ''));
+  openProcessStep(flow, index, run);
+}
+function openProcessStep(flow, index, run = null) {
   if (!Number.isInteger(index) || !flow.steps?.[index]) return;
   const modal = processStepModal();
   const step = flow.steps[index];
+  const typeKey = businessStepType(step);
+  const typeInfo = nodeTypeInfo(flow, typeKey);
   const signals = (flow.signals || []).filter(item => item.step === step);
   const failures = (flow.failure_conditions || []).filter(item => item.step === step);
-  modal.dataset.step = index;
-  modal.innerHTML = `<div class="process-modal-header"><div><p class="meta">${processStatus(flow) === 'validated' ? '' : `${processText(processStatusLabel(flow))} · `}${processNameWithBadge(flow)}</p><h2 id="process-step-title">${processText(step)}</h2></div><button type="button" class="ghost" data-close-step autofocus>Close</button></div>
-    <div class="process-modal-body prose">${signals.length ? signals.map(item => `<h3>Expected signal</h3>${renderMarkdown(item.signal)}${item.source ? `<h3>Source</h3><p class="meta">${processText(item.source)}</p>` : ''}`).join('') : '<p class="empty">No supporting details recorded for this step yet.</p>'}
+  modal.dataset.step = `step-${index}`;
+  modal.innerHTML = `<div class="process-modal-header"><div><p class="meta">${processStatus(flow) === 'validated' ? '' : `${processText(processStatusLabel(flow))} · `}${processNameWithBadge(flow)} · <span class="process-node-type type-${typeKey}">${processText(typeInfo.label)}</span></p><h2 id="process-step-title">${processText(step)}</h2></div><button type="button" class="ghost" data-close-step autofocus>Close</button></div>
+    <div class="process-modal-body prose">
+      ${typeInfo.definition ? `<p class="meta">${processText(typeInfo.definition)}</p>` : ''}
+      ${signals.length ? signals.map(item => `<h3>Expected signal</h3>${renderMarkdown(item.signal)}${item.source ? `<h3>Source</h3><p class="meta">${processText(item.source)}</p>` : ''}`).join('') : '<p class="empty">No supporting details recorded for this step yet.</p>'}
       ${failures.length ? `<h3>Failure conditions</h3>${failures.map(item => `${renderMarkdown(item.condition)}${item.after ? `<p><strong>When:</strong> ${processText(item.after)}</p>` : ''}`).join('')}` : ''}
+      ${selectedProcessRun ? `<h3>Run evidence</h3>${evidenceFields(run?.nodes?.[`step-${index}`])}` : ''}
     </div>`;
   if (!modal.open) modal.showModal();
 }
@@ -360,12 +442,14 @@ async function refreshProcessRuns(flow, render) {
 }
 function runPicker(flow, run) {
   const options = processRunList.map(row => {
-    const label = reviewTime(row.created_at) + ' · ' + (reviewSources[row.source] || 'Historical') + (row.decision === 'skipped' ? ' · Skipped' : '');
+    const src = reviewSources[row.source] || (row.source ? row.source.charAt(0).toUpperCase() + row.source.slice(1) : 'Historical');
+    const label = reviewTime(row.created_at) + ' · ' + src + (row.synthetic ? ' · Synthetic' : '') + (row.decision === 'skipped' ? ' · Skipped' : '');
     return `<option value="${processText(row.id)}"${row.id === selectedProcessRun ? ' selected' : ''}>${processText(label)}</option>`;
   }).join('');
   const status = processRunError || (selectedProcessRun && !run ? 'Loading run…' : run?.historical ? 'Historical · Trigger and version not recorded' : '');
-  return `<div class="process-run-controls"><label>View <select data-process-run><option value="">Current configuration</option>${options}</select></label>
-    <span class="meta">${flow.configuration.automatic_enabled ? 'Automatic reviews enabled' : 'Automatic reviews paused'}</span>
+  const autoMeta = flow.configuration ? `<span class="meta">${flow.configuration.automatic_enabled ? 'Automatic reviews enabled' : 'Automatic reviews paused'}</span>` : `<span class="meta">${processRunList.length ? `${processRunList.length} recorded run${processRunList.length === 1 ? '' : 's'}` : 'No runs recorded yet'}</span>`;
+  return `<div class="process-run-controls"><label>View <select data-process-run><option value="">Current definition</option>${options}</select></label>
+    ${autoMeta}
     ${status ? `<span class="meta" role="status">${processText(status)}</span>` : ''}</div>`;
 }
 
@@ -386,7 +470,7 @@ function renderProcesses(businessFlows, internalFlows = [], refreshHistory = tru
   const flow = flows.find(item => item.id === currentProcess);
   const open = box.querySelector('.process-notes')?.open || false;
   const internal = flow.kind === 'internal';
-  const run = internal && processRunDetail?.id === selectedProcessRun ? processRunDetail : null;
+  const run = processRunDetail?.id === selectedProcessRun ? processRunDetail : null;
   const render = () => {
     if (currentProcess === flow.id) renderProcesses(businessFlows, internalFlows, false, triggers);
   };
@@ -396,7 +480,7 @@ function renderProcesses(businessFlows, internalFlows = [], refreshHistory = tru
   box.innerHTML = `${businessFlows.length ? `<div class="process-metric">Confirmed agentic: ${agentic}/${businessFlows.length} (${Math.round(agentic / businessFlows.length * 100)}%)${unknown ? ` · ${unknown} not assessed` : ''}</div>` : ''}<div class="process-workspace">
     <aside class="process-picker" aria-label="Processes">${flows.map(item => `<button type="button" data-process="${processText(item.id)}" class="${item.id === flow.id ? 'selected' : ''}" aria-pressed="${item.id === flow.id}">${badge(item)}${processNameWithBadge(item)}</button>`).join('')}</aside>
     <article class="process-view"><div class="process-header"><div>${badge(flow)}<h2>${processNameWithBadge(flow)}</h2></div><div class="process-controls"><button type="button" data-zoom="out" aria-label="Zoom out">−</button><span data-process-zoom>100%</span><button type="button" data-zoom="in" aria-label="Zoom in">+</button><button type="button" data-zoom="actual">Actual size</button><button type="button" data-zoom="fit">Fit diagram</button></div></div>
-      ${internal ? runPicker(flow, run) + nodeLegend(run?.definition || flow) : ''}
+      ${runPicker(flow, run)}${nodeLegend(run?.definition || flow)}
       ${triggerStrip(flow, triggers)}
       <div class="process-canvas" role="region" aria-label="Process diagram" tabindex="0"><p class="meta">Loading diagram…</p></div>
       ${internal ? '' : `<details class="process-notes"${open ? ' open' : ''}><summary>Details</summary><div class="prose">
@@ -412,7 +496,18 @@ function renderProcesses(businessFlows, internalFlows = [], refreshHistory = tru
     </article></div>`;
   box.onclick = event => {
     const picker = event.target.closest('[data-process]');
-    if (picker) { currentProcess = picker.dataset.process; renderProcesses(businessFlows, internalFlows, true, triggers); return; }
+    if (picker) {
+      if (currentProcess !== picker.dataset.process) {
+        currentProcess = picker.dataset.process;
+        selectedProcessRun = '';
+        processRunList = [];
+        processRunDetail = null;
+        processRunError = null;
+        processRunDetailVersion += 1;
+      }
+      renderProcesses(businessFlows, internalFlows, true, triggers);
+      return;
+    }
     const zoom = event.target.closest('[data-zoom]');
     if (zoom) {
       if (zoom.dataset.zoom === 'fit') fitProcessGraph();
@@ -423,21 +518,19 @@ function renderProcesses(businessFlows, internalFlows = [], refreshHistory = tru
     const step = event.target.closest('[data-step]');
     if (step) {
       if (internal) openInternalNode(flow, (run?.definition || flow).nodes.find(node => node.id === step.dataset.step), run);
-      else openProcessStep(flow, Number(step.dataset.step));
+      else openBusinessCell(flow, step.dataset.step, run, triggers);
     }
   };
-  if (internal) {
-    box.querySelector('[data-process-run]').onchange = event => {
-      selectedProcessRun = event.target.value;
-      processRunDetail = null;
-      processRunError = null;
-      processRunDetailVersion += 1;
-      render();
-      box.querySelector('[data-process-run]')?.focus();
-      if (selectedProcessRun) fetchProcessRun(flow, selectedProcessRun, render);
-    };
-    if (refreshHistory && !box.hidden) refreshProcessRuns(flow, render);
-  }
-  mountProcessDiagram(flow, run);
+  box.querySelector('[data-process-run]').onchange = event => {
+    selectedProcessRun = event.target.value;
+    processRunDetail = null;
+    processRunError = null;
+    processRunDetailVersion += 1;
+    render();
+    box.querySelector('[data-process-run]')?.focus();
+    if (selectedProcessRun) fetchProcessRun(flow, selectedProcessRun, render);
+  };
+  if (refreshHistory && !box.hidden) refreshProcessRuns(flow, render);
+  mountProcessDiagram(flow, run, triggers);
   box.onkeydown = event => { if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('[data-step]')) { event.preventDefault(); event.target.dispatchEvent(new MouseEvent('click', { bubbles: true })); } };
 }

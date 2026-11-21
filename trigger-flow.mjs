@@ -219,6 +219,21 @@ export function createTriggerFlow(db, { enqueueTask = null, resolveFlow = null }
     return { trigger: formatTrigger(db.prepare('SELECT * FROM triggers WHERE id = ?').get(id)), created: !existing };
   }
 
+  function syncBusinessTriggers(processes = []) {
+    const at = now();
+    const stmt = db.prepare(`INSERT OR IGNORE INTO triggers (id, flow_id, node_id, kind, name, config_json, overlap_policy, enabled, created_at, updated_at)
+      VALUES (?, ?, 'trigger-0', 'event', ?, ?, 'allow', 1, ?, ?)`);
+    let added = 0;
+    for (const flow of processes || []) {
+      if (!flow?.id || !flow?.name) continue;
+      const id = `flow-${flow.id}`;
+      const config = JSON.stringify({ business_flow: true, trigger_description: flow.trigger || '' });
+      const res = stmt.run(id, flow.id, `${flow.name} trigger`, config, at, at);
+      added += res.changes;
+    }
+    return { synced: added };
+  }
+
   function listTriggers(flowId = null) {
     const rows = flowId
       ? db.prepare('SELECT * FROM triggers WHERE flow_id = ? ORDER BY created_at').all(flowId)
@@ -451,5 +466,5 @@ export function createTriggerFlow(db, { enqueueTask = null, resolveFlow = null }
     return null;
   }
 
-  return { registerTrigger, listTriggers, receiveTrigger, listFlowRuns, getFlowRun, clearSyntheticTraces, call };
+  return { registerTrigger, syncBusinessTriggers, listTriggers, receiveTrigger, listFlowRuns, getFlowRun, clearSyntheticTraces, call };
 }
