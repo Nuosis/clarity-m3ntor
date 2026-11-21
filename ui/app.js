@@ -42,7 +42,7 @@ function render() {
   const worker = data.worker;
   $('#worker').textContent = worker.enabled ? `Worker on${worker.next_run_at ? ` · next run ${when(worker.next_run_at)}` : ''}` : 'Worker off';
   $('#question-count').textContent = data.questions.pending.length ? `(${data.questions.pending.length})` : '';
-  renderRunning(); renderGoals(); renderProcesses(data.environment?.processes?.processes || []); renderSettings(); noticeReviewError(); renderTasks(); renderQuestions(); renderAssessment(); renderContext(); renderJournal();
+  renderRunning(); renderGoals(); renderProcesses(data.environment?.processes?.processes || [], data.internal_processes || []); renderSettings(); noticeReviewError(); renderTasks(); renderQuestions(); renderAssessment(); renderContext(); renderJournal();
   restoreDrafts();
 }
 
@@ -443,7 +443,7 @@ $('#journal').addEventListener('toggle', async event => {
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
-  if (data) renderProcesses(data.environment?.processes?.processes || []);
+  if (data) renderProcesses(data.environment?.processes?.processes || [], data.internal_processes || []);
   const button = $('#theme');
   button.textContent = theme === 'dark' ? 'Light mode' : 'Dark mode';
 }
@@ -459,7 +459,7 @@ document.querySelectorAll('nav button').forEach(button => button.addEventListene
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b === button));
   document.querySelectorAll('.view').forEach(section => { section.hidden = section.id !== view; });
   if (view === 'use-cases') loadUseCases();
-  if (view === 'processes' && data) renderProcesses(data.environment?.processes?.processes || []);
+  if (view === 'processes' && data) renderProcesses(data.environment?.processes?.processes || [], data.internal_processes || []);
 }));
 $('#task-list').addEventListener('click', event => {
   const item = event.target.closest('li[data-id]');

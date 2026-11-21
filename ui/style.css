@@ -226,3 +226,14 @@ main:has(#processes:not([hidden])) { max-width: none; }
 .process-header .status + h2 { margin-top: 8px; }
 
 .process-metric { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+.process-run-controls, .process-node-config { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.process-run-controls { margin-top: 16px; }
+.process-run-controls label, .process-node-config label { display: flex; align-items: center; gap: 8px; }
+.process-run-controls select { max-width: min(330px, 67vw); }
+.process-node-config label[hidden] { display: none; }
+.process-node-config .meta { margin: 4px 0; }
+.process-node-config [role="status"] { color: var(--muted); }
+.process-evidence-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; }
+.process-evidence-fields dt { color: var(--muted); }
+.process-evidence-fields dd { margin: 0; }
+.process-modal-body pre { white-space: pre-wrap; overflow-wrap: anywhere; }

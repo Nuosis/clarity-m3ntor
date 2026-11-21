@@ -125,8 +125,8 @@ export async function startTaskJob(task, environment) {
 }
 
 // The agent's review of its active goal, run in the owner's harness with the local tools.
-export async function startGoalReviewJob({ jobId, question, context }, environment) {
-  return createJob({ context, harness: environment.agentHarness }, environment, { identity: 'goal_review', question, promptId: null, jobId });
+export async function startGoalReviewJob({ jobId, question, context, reviewTrace }, environment) {
+  return createJob({ context, harness: environment.agentHarness }, environment, { identity: 'goal_review', question, promptId: null, jobId, reviewTrace });
 }
 
 // An incoming A2A message for this installation's agent, run in the owner's harness.
@@ -160,6 +160,7 @@ async function createJob(input, { cwd, harness, mcpUrl, fullAccess = false }, ta
     // Coaching jobs get the read-only endpoint of this same service.
     cwd: path.resolve(process.env.M3NTOR_WORKSPACE || cwd), mcp_url: task.identity === 'coaching' ? mcpUrl.replace(/\/mcp\/local$/, '/mcp/coach') : mcpUrl,
     prompt_source: task.promptId ? { prompt_id: task.promptId } : { local: task.identity },
+    ...(task.reviewTrace ? { review_trace: task.reviewTrace } : {}),
     // The owner's Full access setting applies only to the owner's own work: tasks and goal reviews.
     full_access: fullAccess === true && ['scheduled_task', 'goal_review'].includes(task.identity),
   };

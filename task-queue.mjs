@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { getM3ntorResult, jobDirectory, startTaskJob, startGoalReviewJob } from './m3ntor-jobs.mjs';
 import { stagesFor, STUCK_INSTRUCTION } from './goals.mjs';
+import { createReviewLedger, historicReviewList, reviewDefinition, reviewHash, reviewRunDetail } from './inov8-review-process.mjs';
 import { environmentCheck, readEnvironment, recordProcessStage } from './environment.mjs';
 import { appendJournalInWrite, businessDate, questionState, readJournal, serializeBusinessWrites, setUserQuestions } from './business-journal.mjs';
 import { AGENCY_PILOT_TASK, agencyPilotContinuation, pilotDirectory, pilotPendingFile } from './agency-pilot-observer.mjs';
@@ -114,6 +115,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       position INTEGER NOT NULL, stage INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL,
       completed TEXT NOT NULL DEFAULT '[]', stop_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   `);
+  const reviewLedger = createReviewLedger(db);
   const columns = new Set(db.prepare('PRAGMA table_info(tasks)').all().map(column => column.name));
   for (const [name, type] of [['remove_on_completion', 'INTEGER NOT NULL DEFAULT 0'], ['success', 'TEXT'], ['constraints', 'TEXT'], ['category', 'TEXT'], ['goal_id', 'TEXT'], ['stage', 'TEXT'], ['set_at', 'TEXT'], ['process_ids', 'TEXT'], ['trigger_input', 'TEXT']]) if (!columns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
   const goalColumns = new Set(db.prepare('PRAGMA table_info(goals)').all().map(column => column.name));
@@ -184,7 +186,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       ON CONFLICT(task_id) DO UPDATE SET revision = excluded.revision, owner = excluded.owner, checkpoint = excluded.checkpoint,
       state = excluded.state, evidence = excluded.evidence, updated_at = excluded.updated_at`)
       .run(id, task.id, (current?.revision ?? 0) + (changed ? 1 : 0), owner, checkpoint, state, evidence, now());
-    if (changed) schedule();
+    if (changed) schedule({ kind: 'continuation_changed', task_id: task.id, continuation_id: id });
     return { saved: true, continuation: taskContinuations(get(task.id))[0] };
   }
 
@@ -203,7 +205,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
       ON CONFLICT(continuation_id, event_id) DO NOTHING`)
       .run(registration.id, input.event_id, registration.revision, registration.owner, registration.checkpoint, JSON.stringify(input.event_input), now());
-    if (inserted.changes) schedule();
+    if (inserted.changes) schedule({ kind: 'continuation_event', task_id: task.id, continuation_id: registration.id, event_id: input.event_id });
     return eventReceipt(task.id, eventFor(registration.id, input.event_id), !inserted.changes);
   }
 
@@ -286,6 +288,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       db.prepare("UPDATE agency_pilot_sources SET state = 'queued', queued_at = ? WHERE source_event_id = ? AND state = 'pending'").run(now(), event.source_event_id);
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
+    return { kind: 'source_event', task_id: task.id, source_event_id: event.source_event_id };
   }
   if (existsSync(pilotDirectory(cwd))) {
     pilotPendingWatcher = watch(pilotDirectory(cwd), (_event, filename) => {
@@ -382,7 +385,11 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
           catch (error) { job = { job_id: jobId, status: 'failed', error: error.message }; }
         } while (!terminal.has(job.status) && again);
         if (!watchers.has(jobId)) return;
-        if (terminal.has(job.status)) { transaction(() => settleTask(taskId, job)); stop(); schedule(); }
+        if (terminal.has(job.status)) {
+          transaction(() => settleTask(taskId, job));
+          stop();
+          schedule({ kind: 'task_result', task_id: taskId, job_id: jobId });
+        }
       } finally { busy = false; }
     };
     try { fsWatcher = watch(jobDirectory(jobId), () => { check(); }); }
@@ -424,10 +431,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     follow(task.id, jobId);
   }
 
-  function schedule() {
+  function schedule(correlation = null) {
     clearTimeout(timer);
     if (closed || !enabled()) return;
-    try { queuePilotSource(); if (pilotInputVersion !== pilotRejectedVersion) pilotReadError = null; }
+    try {
+      correlation = queuePilotSource() || correlation;
+      if (pilotInputVersion !== pilotRejectedVersion) pilotReadError = null;
+    }
     catch (error) {
       // Retain pending data and report the changed error once; no retry timer.
       if (pilotReadError !== error.message) console.error('Agency pilot pending source retained:', error.message);
@@ -440,7 +450,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const busy = db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status IN ('delivered', 'executing', 'finalizing')").get().n;
     const due = busy ? null : db.prepare("SELECT * FROM tasks WHERE status = 'queued' AND (next_run_at IS NULL OR next_run_at <= ?) ORDER BY goal_id IS NOT NULL, COALESCE(next_run_at, created_at), created_at LIMIT 1").get(at);
     if (due) run(due);
-    considerReview();
+    considerReview(null, correlation);
     const next = db.prepare("SELECT MIN(next_run_at) AS at FROM tasks WHERE status = 'queued' AND next_run_at > ?").get(at)?.at;
     if (next) timer = setTimeout(schedule, Math.min(Math.max(new Date(next) - Date.now(), 0) + 50, 2 ** 31 - 1));
   }
@@ -769,22 +779,31 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const stage = stagesFor(goal.kind)[goal.stage];
     return stageTasks(goal.id, stage.key).flatMap(task => taskContinuations(task));
   }
-  function continuationFingerprint(goal) {
-    return stageContinuations(goal).map(item => {
-      if (item.return_route !== PILOT_RETURN) return item;
-      // Keep the already-saved pilot fingerprint compatible when the source and
-      // registration evidence stays the same across an upgrade.
+  function continuationFingerprint(items) {
+    return items?.map(item => {
+      if (item.task_id !== AGENCY_PILOT_TASK) return item;
+      // Transport notifications are evidence, but only actual source events,
+      // ledger and observer transitions change the review's actionable state.
       const { continuation_id, return_route, state, ...legacy } = item;
-      return legacy;
+      const { notifications, ...sourceWake } = legacy.source_wake || {};
+      return { ...legacy, source_wake: sourceWake };
     });
   }
+  function savedReviewState() {
+    try {
+      const saved = JSON.parse(setting('goal_review_state'));
+      if (saved?.continuations) saved.continuations = continuationFingerprint(saved.continuations);
+      return saved;
+    } catch { return null; }
+  }
+  const sameReviewState = state => state === JSON.stringify(savedReviewState());
   function reviewState(goal) {
     const stage = stagesFor(goal.kind)[goal.stage];
     const tasks = stageTasks(goal.id, stage.key).map(task => [task.id, task.status, task.last_run_at]);
     let answered = 0;
     try { answered = JSON.parse(readFileSync(path.join(directory, 'user_questions.json'), 'utf8')).questions.filter(q => q.status !== 'pending').length; } catch {}
     const goals = db.prepare('SELECT id, status, stage, position FROM goals ORDER BY id').all();
-    return JSON.stringify({ goal: goal.id, stage: goal.stage, ...(reviewPass(goal)?.id ? { review_pass_id: reviewPass(goal).id } : {}), tasks, answered, notes: ownerNotes().length, goals, assessment: newestMtime(path.join(directory, 'assessment')), continuations: continuationFingerprint(goal) });
+    return JSON.stringify({ goal: goal.id, stage: goal.stage, ...(reviewPass(goal)?.id ? { review_pass_id: reviewPass(goal).id } : {}), tasks, answered, notes: ownerNotes().length, goals, assessment: newestMtime(path.join(directory, 'assessment')), continuations: continuationFingerprint(stageContinuations(goal)) });
   }
   // Adding/restoring the same healthy continuation can settle an old stuck
   // handoff. Do not consume other new work or owner direction in that shortcut.
@@ -793,8 +812,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     if (continuations.some(item => item.recovery) || !continuations.some(item => item.work_underway)) return false;
     setSetting('goal_stuck', null); setSetting('goal_review_mode', 'normal');
     const current = reviewState(goal);
-    let previous;
-    try { previous = JSON.parse(setting('goal_review_state')); } catch {}
+    const previous = savedReviewState();
     if (previous) {
       const next = JSON.parse(current);
       const unchanged = previous.continuations === undefined || JSON.stringify(previous.continuations) === JSON.stringify(next.continuations);
@@ -814,21 +832,57 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   function waitingOnOwner() {
     try { return JSON.parse(readFileSync(path.join(directory, 'user_questions.json'), 'utf8')).questions.some(q => q.status === 'pending' && q.source === 'inov8'); } catch { return false; }
   }
-  function considerReview() {
-    if (closed || !enabled() || reviewStarting || setting('goal_review_job') || waitingOnOwner()) return;
+  function reviewConfig(run = agentRun()) {
+    const { pace: cadence, time } = pace();
+    return {
+      automatic_enabled: enabled(), pace: cadence, time, agent_harness: run.agentHarness,
+      model: 'Inherited from the selected CLI configuration', full_access: run.fullAccess,
+      permission_mode: run.agentHarness === 'claude'
+        ? (run.fullAccess ? 'bypassPermissions' : 'acceptEdits')
+        : (run.fullAccess ? 'dangerously-bypass-approvals-and-sandbox' : 'workspace-write'),
+    };
+  }
+  function traceDecision(origin, decision, reason, goal, { jobId, config = reviewConfig(), semantic } = {}) {
+    try {
+      return reviewLedger.record({ origin, decision, reason, goal, stage: goal ? stagesFor(goal.kind)[goal.stage]?.key : null, jobId, config, semantic });
+    } catch (error) { console.error('Saving goal review decision failed:', error.message); }
+  }
+  function traceNode(jobId, node, evidence, options) {
+    try { reviewLedger.node(jobId, node, evidence, options); }
+    catch (error) { console.error('Saving goal review evidence failed:', error.message); }
+  }
+  const clockOrigin = (due, change) => ({ source: 'clock', correlation: {
+    kind: due ? 'clock' : 'stage_change', ...(due ? { due_at: due } : {}), ...(change ? { change } : {}),
+  } });
+  function considerReview(timerOrigin = null, correlation = null) {
+    const { pace: mode, next_review_at: due } = pace();
+    const dueNow = due && new Date(due) <= new Date();
+    const attempt = timerOrigin || (mode === 'yolo' ? clockOrigin(null, correlation) : dueNow ? clockOrigin(due, correlation) : null);
+    const skip = (reason, goal, state) => {
+      if (attempt && !closed) traceDecision(attempt, 'skipped', reason, goal, { semantic: state || 'eligibility' });
+    };
+    if (closed) return;
+    if (!enabled()) return skip('Automatic reviews are paused');
+    if (reviewStarting || setting('goal_review_job')) return skip('A review is already running');
+    if (waitingOnOwner()) return skip('Waiting for the owner');
     const goal = activeGoal();
-    if (!goal) return;
+    if (!goal) return skip('No active goal');
     const state = reviewState(goal);
-    if (state === setting('goal_review_state')) { armClock(); return; } // nothing changed since the last review
-    const { pace: mode } = pace();
+    if (sameReviewState(state)) {
+      if (mode === 'yolo') skip('No meaningful change', goal, state);
+      armClock();
+      return;
+    }
     if (mode === 'yolo') {
       const stage = stagesFor(goal.kind)[goal.stage];
       // A recurring routine waiting for its next run, after a run, has settled (as in completeStage).
-      if (stageTasks(goal.id, stage.key).every(task => BLOCKED_OR_DONE.has(task.status) || (task.status === 'queued' && task.recurrence && task.last_run_at))) startReview(goal, state);
+      const settled = stageTasks(goal.id, stage.key).every(task => BLOCKED_OR_DONE.has(task.status) || (task.status === 'queued' && task.recurrence && task.last_run_at));
+      if (settled) startReview(goal, state, attempt, 'Meaningful change and settled stage tasks');
+      else skip('Stage tasks are still active', goal, state);
       return;
     }
-    const due = setting('goal_next_review_at');
-    if (due && new Date(due) <= new Date()) startReview(goal, state); else armClock();
+    if (dueNow) startReview(goal, state, attempt, 'Cadence is due and actionable state changed');
+    else armClock();
   }
   function nextClock(from = new Date()) {
     const { pace: mode, time } = pace();
@@ -845,25 +899,57 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     reviewTimer = setTimeout(() => {
       // The clock fired: if nothing changed, skip without a model call and wait for the next slot.
       const goal = activeGoal();
-      if (goal && (waitingOnOwner() || reviewState(goal) === setting('goal_review_state'))) { setSetting('goal_next_review_at', nextClock().toISOString()); armClock(); return; }
-      considerReview();
+      const state = goal ? reviewState(goal) : null;
+      const ownerWait = goal && waitingOnOwner();
+      const origin = clockOrigin(due);
+      if (goal && (ownerWait || sameReviewState(state))) {
+        if (enabled() && !closed) traceDecision(origin, 'skipped', ownerWait ? 'Waiting for the owner' : 'No meaningful change', goal, { semantic: state });
+        setSetting('goal_next_review_at', nextClock().toISOString()); armClock(); return;
+      }
+      considerReview(origin);
     }, Math.min(Math.max(new Date(due) - Date.now(), 0) + 50, 2 ** 31 - 1));
+  }
+  function setReviewPace(input, { scheduleNow = true } = {}) {
+    if (!['hourly', 'daily', 'yolo'].includes(input.pace)) throw new Error('Pace is hourly, daily or yolo.');
+    setSetting('goal_pace', input.pace);
+    if (input.time) setSetting('goal_pace_time', input.time);
+    setSetting('goal_next_review_at', input.pace === 'yolo' ? null : nextClock().toISOString());
+    clearTimeout(reviewTimer);
+    if (scheduleNow) schedule();
+    else if (enabled()) armClock();
+    return pace();
+  }
+  function setAgentHarness(runner) {
+    if (!['codex', 'claude'].includes(runner)) throw new Error('The agent runner is codex or claude.');
+    setSetting('agent_harness', runner);
+    return agentRun();
   }
   // ask_m3ntor during a review: the service waits for that job before deciding the stage is stuck.
   function noteAction(jobId) { if (jobId && setting('goal_review_job')) setSetting('goal_m3ntor_job', jobId); }
   // Native task work, an owner question or a registered healthy continuation
   // keeps the outcome owned. A request to M3NT0R only advises.
-  async function underWay(goal) {
+  async function reviewWork(goal) {
     const stage = stagesFor(goal.kind)[goal.stage];
-    if (stageTasks(goal.id, stage.key).some(task => ['queued', 'delivered', 'executing', 'finalizing'].includes(task.status))) return true;
-    if (stageContinuations(goal).some(item => item.work_underway)) return true;
-    return (await questionState(cwd)).pending.some(q => q.source === 'inov8');
+    const tasks = stageTasks(goal.id, stage.key).filter(task => ['queued', 'delivered', 'executing', 'finalizing'].includes(task.status));
+    if (tasks.length) return { disposition: 'work-underway', output: { task_ids: tasks.map(task => task.id) } };
+    const continuations = stageContinuations(goal).filter(item => item.work_underway);
+    if (continuations.length) return { disposition: 'healthy-wait', output: { continuations: continuations.map(item => ({
+      task_id: item.task_id, owner: item.owner, checkpoint: item.checkpoint, return_route: item.return_route,
+    })) } };
+    const questions = (await questionState(cwd)).pending.filter(q => q.source === 'inov8');
+    if (questions.length) return { disposition: 'owner-wait', output: { question_ids: questions.map(q => q.id) } };
+    return null;
   }
   const STUCK_REASON = 'the last review left nothing under way toward the done-check: no stage task queued or running, no registered healthy continuation and no question waiting on the owner.';
-  async function startReview(goal, state) {
+  async function startReview(goal, state, origin, reason) {
     if (closed) return;
     reviewStarting = true;
     const jobId = randomUUID();
+    const run = agentRun();
+    const config = reviewConfig(run);
+    const traceId = traceDecision(origin, 'proceeded', reason, goal, { jobId, config });
+    let contextReady = false;
+    traceNode(jobId, 'context', { status: 'started', started_at: now() }, { from: 'eligibility' });
     setSetting('goal_review_job', jobId);
     setSetting('goal_review_stage', reviewStageKey(goal));
     setSetting('goal_review_started_at', now());
@@ -899,12 +985,21 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       } : null;
       const lastReview = since ? { finished_at: since, conclusions: setting('goal_review_handoff') } : null;
       const stuckContext = stuck ? { reason: STUCK_REASON, score: latest && view.stage.score ? latest.ratings?.[view.stage.score]?.score ?? null : null, done_check_missing: stillMissing || null } : null;
-      await startGoalReviewJob({ jobId, question, context: { goal_id: goal.id, process_ids: view.process_ids, ...(view.review_pass ? { review_pass: view.review_pass, prior_stage_proof: priorStageProof(goal, view.stage.key), review_passes: view.review_passes } : {}), ...(lastReview ? { last_review: lastReview, changes_since_last_review: changes } : {}), ...(stuckContext ? { stuck: stuckContext } : {}), owner_answers: ownerAnswers, owner_notes: notes, ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, stage_continuations: continuations, continuation_recovery: continuations.flatMap(item => item.recovery ? [item.recovery] : []), completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl, ...agentRun() });
+      contextReady = true;
+      traceNode(jobId, 'context', { status: 'completed', finished_at: now(), output: {
+        goal_id: goal.id, stage: view.stage.key, process_ids: view.process_ids, previous_review_finished_at: since,
+        task_count: tasks.length, owner_answer_count: ownerAnswers.length, owner_note_count: notes.length, continuation_count: continuations.length,
+      } });
+      await startGoalReviewJob({ jobId, question, reviewTrace: traceId ? {
+        process_id: reviewDefinition.id, version: reviewDefinition.version, configuration_version: reviewHash(config), run_id: traceId, node_id: 'agent',
+      } : null, context: { goal_id: goal.id, process_ids: view.process_ids, ...(view.review_pass ? { review_pass: view.review_pass, prior_stage_proof: priorStageProof(goal, view.stage.key), review_passes: view.review_passes } : {}), ...(lastReview ? { last_review: lastReview, changes_since_last_review: changes } : {}), ...(stuckContext ? { stuck: stuckContext } : {}), owner_answers: ownerAnswers, owner_notes: notes, ...(stageRecord ? { stage_record: stageRecord, done_check_missing: stillMissing || 'nothing; the record meets the done-check' } : {}), stage_tasks: tasks, stage_continuations: continuations, continuation_recovery: continuations.flatMap(item => item.recovery ? [item.recovery] : []), completed_stages: view.completed, other_goals: others } }, { cwd, harness, mcpUrl, ...run });
       setSetting('goal_review_state', state);
       setSetting('goal_last_review_at', now());
       if (pace().pace !== 'yolo') setSetting('goal_next_review_at', nextClock().toISOString());
       followReview(jobId);
     } catch (error) {
+      traceNode(jobId, contextReady ? 'agent' : 'context', { status: 'failed', error: error.message, finished_at: now() },
+        { ...(contextReady ? { from: 'context' } : {}), finished: true });
       setSetting('goal_review_job', null);
       setSetting('goal_review_error', `Could not start the goal review: ${error.message}`);
     } finally { reviewStarting = false; }
@@ -918,6 +1013,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     await setUserQuestions(cwd, { action: 'set', questions: [{ id, question, source: 'inov8' }] });
     setSetting('goal_stuck_question', id);
     await journalOnce(cwd, `goal-stuck-${id}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": stuck at ${stage.name}; asked the owner. ${reason}`, metadata: { goal_id: goal.id, stage: stage.key, question_id: id } });
+    return id;
   }
   // After a review: keep its account for the next one, then judge the stage by what the review left.
   // Nothing under way toward the done-check means the stage is stuck: a stuck-mode review starts at
@@ -934,27 +1030,36 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     return judgeStuck(goal, stage, job.output, wasStuck, moved);
   }
   async function judgeStuck(goal, stage, output, wasStuck, moved = false) {
-    if (moved || await underWay(goal)) { setSetting('goal_stuck', null); setSetting('goal_review_mode', 'normal'); return {}; }
+    const underway = moved ? null : await reviewWork(goal);
+    if (moved || underway) {
+      setSetting('goal_stuck', null); setSetting('goal_review_mode', 'normal');
+      return underway || {};
+    }
     if (wasStuck) {
       setSetting('goal_stuck', null); setSetting('goal_review_mode', 'normal');
-      await askOwnerStuck(goal, `a review working on getting it unstuck again left nothing under way toward the done-check.`, output);
-      return {};
+      const id = await askOwnerStuck(goal, 'a review working on getting it unstuck again left nothing under way toward the done-check.', output);
+      return { disposition: 'owner-wait', output: { question_ids: [id] } };
     }
     setSetting('goal_stuck', '1');
     await journalOnce(cwd, `goal-stuck-${goal.id}-${stage.key}-${setting('goal_review_finished_at')}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": ${stage.name} is stuck; ${STUCK_REASON} A review working on getting it unstuck starts now.`, metadata: { goal_id: goal.id, stage: stage.key } });
     const consult = setting('goal_m3ntor_job');
     if (consult) {
       let job; try { job = await getM3ntorResult(consult); } catch { job = null; }
-      if (job && !terminal.has(job.status)) return { waitFor: consult };
+      if (job && !terminal.has(job.status)) return { waitFor: consult, disposition: 'recovery', output: { consultation_job_id: consult } };
     }
-    return { startStuck: true };
+    return { startStuck: true, disposition: 'recovery', output: { reason: STUCK_REASON } };
   }
   // Start the stuck-mode review now, unless one is running or the worker is stopped.
-  function startStuckReview() {
+  const recoveryOrigin = correlation => ({ source: 'recovery', correlation });
+  function startStuckReview(origin) {
+    if (closed) return;
     const goal = activeGoal();
-    if (!goal || closed || !enabled() || reviewStarting || setting('goal_review_job') || setting('goal_stuck') !== '1') return;
-    if (settleContinuationWait(goal)) return;
-    startReview(goal, reviewState(goal));
+    const reason = !goal ? 'No active goal' : !enabled() ? 'Automatic reviews are paused'
+      : reviewStarting || setting('goal_review_job') ? 'A review is already running'
+      : setting('goal_stuck') !== '1' ? 'The stage no longer requires stuck-mode review'
+      : settleContinuationWait(goal) ? 'A healthy continuation keeps the task underway' : null;
+    if (reason) return traceDecision(origin, 'skipped', reason, goal, { semantic: 'recovery' });
+    startReview(goal, reviewState(goal), origin, 'The stage requires stuck-mode review');
   }
   // The stuck-mode review waits for the M3NT0R answer the last review asked for.
   function followConsult(jobId) {
@@ -970,10 +1075,16 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         watchers.get(jobId).close(); watchers.delete(jobId);
         if (setting('goal_m3ntor_job') === jobId) setSetting('goal_m3ntor_job', null);
         const goal = activeGoal();
-        if (!goal) return;
-        if (settleContinuationWait(goal)) { schedule(); return; }
+        const origin = recoveryOrigin({ kind: 'consultation_return', consultation_job_id: jobId, status: job.status });
+        if (!goal) { traceDecision(origin, 'skipped', 'No active goal', null, { semantic: 'consultation' }); return; }
+        if (settleContinuationWait(goal)) {
+          traceDecision(origin, 'skipped', 'A healthy continuation keeps the task underway', goal, { semantic: 'consultation' });
+          schedule(); return;
+        }
         const judged = await judgeStuck(goal, stagesFor(goal.kind)[goal.stage], setting('goal_review_handoff'), setting('goal_review_mode') === 'stuck');
-        if (judged.waitFor) followConsult(judged.waitFor); else if (judged.startStuck) startStuckReview();
+        if (judged.waitFor) followConsult(judged.waitFor);
+        if (judged.startStuck) startStuckReview(origin);
+        else traceDecision(origin, 'skipped', 'The consultation return did not require an immediate review', goal, { semantic: 'consultation' });
         schedule();
       } finally { busy = false; }
     };
@@ -991,6 +1102,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         let job; try { job = await getM3ntorResult(jobId); } catch (error) { job = { status: 'failed', error: error.message }; }
         if (!watchers.has(jobId) || !terminal.has(job.status)) return;
         watchers.get(jobId).close(); watchers.delete(jobId);
+        traceNode(jobId, 'settlement', { status: 'started', started_at: now(), input: { job_id: jobId, job_status: job.status } }, { from: 'agent' });
         // The review's own changes are part of the state it leaves; only later changes start another.
         const goal = activeGoal();
         // A review that moved the goal to a new stage without queuing work for it leaves that
@@ -999,13 +1111,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         const unplanned = moved && !stageTasks(goal.id, stagesFor(goal.kind)[goal.stage].key).length;
         // The review can settle its own work, but can only act on recovery
         // evidence present in its input. Carry later failures to the next review.
-        let previous;
-        try { previous = JSON.parse(setting('goal_review_state')); } catch {}
+        const previous = savedReviewState();
         const current = goal && !moved ? JSON.parse(reviewState(goal)) : null;
         const reviewedRecoveries = new Set((previous?.continuations || []).map(item => JSON.stringify(item.recovery)));
         const newRecovery = current?.continuations.some(item => item.recovery && !reviewedRecoveries.has(JSON.stringify(item.recovery)));
-        let settled = {};
-        try { settled = await settleReview(goal, job, moved || newRecovery); } catch (error) { console.error('Goal review settle failed:', error.message); }
+        let settled = {}, settlementError = null;
+        try { settled = await settleReview(goal, job, moved || newRecovery); }
+        catch (error) { settlementError = error.message; console.error('Goal review settle failed:', error.message); }
         if (goal && !unplanned) {
           const next = JSON.parse(reviewState(goal));
           if (newRecovery) next.continuations = previous?.continuations || [];
@@ -1013,9 +1125,29 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         }
         if (unplanned) setSetting('goal_next_review_at', new Date().toISOString());
         setSetting('goal_review_job', null);
-        setSetting('goal_review_error', job.status === 'complete' && reportedDone(job.output) ? null : `The last goal review did not finish: ${job.error || statusLine(job.output) || 'no STATUS line'}`);
+        const reviewed = job.status === 'complete' && reportedDone(job.output);
+        const reviewError = reviewed ? null : `The last goal review did not finish: ${job.error || statusLine(job.output) || 'no STATUS line'}`;
+        setSetting('goal_review_error', reviewError);
+        const failed = settlementError || reviewError;
+        let disposition = settled.disposition, output = settled.output;
+        if (moved || !goal) {
+          disposition = 'stage-changed';
+          output = { goal_id: goal?.id || null, stage: goal ? stagesFor(goal.kind)[goal.stage]?.key : null, next_review_due: Boolean(unplanned) };
+        } else if (newRecovery) {
+          disposition = 'recovery';
+          output = { recoveries: current.continuations.flatMap(item => item.recovery ? [item.recovery] : []) };
+        }
+        const dispositionObserved = disposition && (!failed || moved);
+        traceNode(jobId, 'settlement', {
+          status: failed ? 'failed' : 'completed', finished_at: now(), error: failed,
+          output: { handoff_saved: Boolean(reviewed && goal), ...(dispositionObserved ? { disposition } : {}) },
+        }, { finished: true });
+        if (dispositionObserved) {
+          const waiting = disposition === 'owner-wait' || disposition === 'healthy-wait' || (disposition === 'recovery' && settled.waitFor);
+          traceNode(jobId, disposition, { status: waiting ? 'waiting' : 'completed', finished_at: now(), output }, { from: 'settlement' });
+        }
         if (settled.waitFor) followConsult(settled.waitFor);
-        else if (settled.startStuck) startStuckReview();
+        else if (settled.startStuck) startStuckReview(recoveryOrigin({ kind: 'review_settled', review_job_id: jobId }));
         schedule();
       } finally { busy = false; }
     };
@@ -1035,10 +1167,11 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       if (consult) followConsult(consult);
       return;
     }
+    const origin = recoveryOrigin({ kind: 'resume_stuck_stage', previous_review_finished_at: setting('goal_review_finished_at') });
     if (setting('goal_stuck') === '1') {
       const consult = setting('goal_m3ntor_job');
       if (consult) return followConsult(consult);
-      return startStuckReview();
+      return startStuckReview(origin);
     }
     const since = setting('goal_review_finished_at');
     const stage = stagesFor(goal.kind)[goal.stage];
@@ -1047,7 +1180,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const answered = (await questionState(cwd)).questions.some(q => q.status !== 'pending' && String(q.updatedAt) > since);
     if (ran || answered || ownerNotes().some(note => String(note.at) > since)) return;
     const judged = await judgeStuck(goal, stage, setting('goal_review_handoff'), setting('goal_review_mode') === 'stuck');
-    if (judged.waitFor) followConsult(judged.waitFor); else if (judged.startStuck) startStuckReview();
+    if (judged.waitFor) followConsult(judged.waitFor); else if (judged.startStuck) startStuckReview(origin);
   }
   // Completed runs from before this was journaled (fixed entry ids, so repeats change nothing).
   for (const run of db.prepare("SELECT runs.job_id, runs.finished_at, runs.result, runs.task_id FROM runs JOIN tasks ON tasks.id = runs.task_id WHERE runs.status = 'completed' AND runs.finished_at IS NOT NULL AND tasks.remove_on_completion = 0").all()) {
@@ -1073,22 +1206,53 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     poke() { schedule(); },
     noteAction,
     // An answer or dismissal that leaves no question waiting on the owner starts a review now, whatever the pace.
-    questionsSettled() {
+    questionsSettled(correlation) {
+      if (closed) return;
+      const origin = { source: 'answer', correlation };
       let pending = true;
       try { pending = JSON.parse(readFileSync(path.join(directory, 'user_questions.json'), 'utf8')).questions.some(q => q.status === 'pending'); } catch {}
-      if (pending || !enabled() || reviewStarting || setting('goal_review_job')) return;
+      const reason = pending ? 'Owner questions are still pending or unavailable' : !enabled() ? 'Automatic reviews are paused'
+        : reviewStarting || setting('goal_review_job') ? 'A review is already running' : null;
+      if (reason) { traceDecision(origin, 'skipped', reason, null, { semantic: 'owner_answer' }); return; }
       const goal = activeGoal();
-      if (goal) startReview(goal, reviewState(goal));
+      if (goal) startReview(goal, reviewState(goal), origin, 'Owner questions settled');
+      else traceDecision(origin, 'skipped', 'No active goal', null, { semantic: 'owner_answer' });
     },
     reviewing: () => Boolean(setting('goal_review_job')),
     // The owner's Run: one goal review now, whatever the pace and even if nothing changed.
-    async runReview() {
-      if (setting('goal_review_job') || reviewStarting) throw new Error('A goal review is already running.');
+    async runReview(channel = 'local_tool') {
+      const origin = { source: 'manual', correlation: { channel } };
+      if (setting('goal_review_job') || reviewStarting) {
+        traceDecision(origin, 'skipped', 'A review is already running', null);
+        throw new Error('A goal review is already running.');
+      }
       const goal = activeGoal();
-      if (!goal) throw new Error('There is no active goal to review.');
-      await startReview(goal, reviewState(goal));
+      if (!goal) {
+        traceDecision(origin, 'skipped', 'No active goal', null);
+        throw new Error('There is no active goal to review.');
+      }
+      await startReview(goal, reviewState(goal), origin, 'Explicit Run bypasses automatic cadence and change checks');
       if (!setting('goal_review_job')) throw new Error(setting('goal_review_error') || 'The goal review did not start.');
       return pace();
+    },
+    internalProcesses() {
+      const configuration = reviewConfig();
+      return [{ ...reviewDefinition, configuration, configuration_version: reviewHash(configuration) }];
+    },
+    async reviewRuns() {
+      const recorded = reviewLedger.list();
+      const historical = await historicReviewList(new Set(recorded.map(row => row.job_id).filter(Boolean)));
+      return [...recorded, ...historical].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    },
+    reviewRun: id => reviewRunDetail(id, reviewLedger.detail(id)),
+    configureReview(input) {
+      const allowed = ['pace', 'time', 'agent_harness'];
+      if (!Object.keys(input).length || Object.keys(input).some(key => !allowed.includes(key))) throw new Error('Choose cadence, daily time or agent runner.');
+      if (input.pace !== undefined && !['hourly', 'daily', 'yolo'].includes(input.pace)) throw new Error('Pace is hourly, daily or yolo.');
+      if (input.time !== undefined && (typeof input.time !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(input.time))) throw new Error('Use a valid daily time (HH:MM).');
+      if (input.agent_harness !== undefined) setAgentHarness(input.agent_harness);
+      if (input.pace !== undefined || input.time !== undefined) setReviewPace({ pace: input.pace ?? pace().pace, time: input.time }, { scheduleNow: false });
+      return reviewConfig();
     },
     goals: () => ({ goals: listGoals(), pace: pace(), review_error: setting('goal_review_error'), full_access: setting('full_access') === 'true', agent_harness: setting('agent_harness') || 'codex' }),
     // Task with its runs, for the owner UI.
@@ -1169,18 +1333,11 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       if (name === 'restart_goal_review') return restartGoalReview(input.goal_id, input.evidence, input.failure_ref).then(goal => ({ goal }));
       if (name === 'reopen_stage') return reopenStage(input.goal_id, input.evidence).then(goal => ({ goal }));
       if (name === 'stop_goal') return stopGoal(input.goal_id, input.reason).then(goal => ({ goal, goals: listGoals() }));
-      if (name === 'set_pace') {
-        if (!['hourly', 'daily', 'yolo'].includes(input.pace)) throw new Error('Pace is hourly, daily or yolo.');
-        setSetting('goal_pace', input.pace);
-        if (input.time) setSetting('goal_pace_time', input.time);
-        setSetting('goal_next_review_at', input.pace === 'yolo' ? null : nextClock().toISOString());
-        clearTimeout(reviewTimer); schedule();
-        return pace();
-      }
-      if (name === 'set_agent_harness') { if (!['codex', 'claude'].includes(input.harness)) throw new Error('The agent runner is codex or claude.'); setSetting('agent_harness', input.harness); return agentRun(); }
+      if (name === 'set_pace') return setReviewPace(input);
+      if (name === 'set_agent_harness') return setAgentHarness(input.harness);
       if (name === 'set_full_access') { setSetting('full_access', input.enabled === true ? 'true' : 'false'); return { full_access: setting('full_access') === 'true' }; }
       if (name === 'start_task_worker') { setEnabled(true); schedule(); resumeStuck().catch(error => console.error('Stuck check failed:', error.message)); return workerState(); }
-      if (name === 'stop_task_worker') { setEnabled(false); clearTimeout(timer); return workerState(); }
+      if (name === 'stop_task_worker') { setEnabled(false); clearTimeout(timer); clearTimeout(reviewTimer); return workerState(); }
       throw new Error('Unknown task tool.');
     },
   };

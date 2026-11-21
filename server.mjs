@@ -13,6 +13,7 @@ import { utilityTools, reportUtility, searchUtility, revokeUtility, boostUtility
 import { clarityRequest } from './clarity-client.mjs';
 import { startA2AReceiver } from './a2a-receiver.mjs';
 import { taskTools, startTaskQueue } from './task-queue.mjs';
+import { REVIEW_PROCESS_ID } from './inov8-review-process.mjs';
 import { readPilotPending, startAgencyPilotObserver } from './agency-pilot-observer.mjs';
 import { goalTools } from './goals.mjs';
 import { environmentTools, readEnvironment, seedSources, recordSource, setPlate, recordProcess, deleteProcess, environmentCheck } from './environment.mjs';
@@ -264,13 +265,13 @@ async function mcp(req, res, coach = false) {
         const asking=(input.action || 'set')==='set';
         const updated=await setUserQuestions(cwd,asking && taskQueue.reviewing() ? { ...input, source: 'inov8', ...(input.questions ? { questions: input.questions.map(q => ({ ...q, source: 'inov8' })) } : {}) } : input);toolsChanged();taskQueue.poke();
         if (input.action === 'answer') await queueUseCaseResearch(input.question_id, input.answer).catch(error => console.error('Use case research task failed:', error.message));
-        if (['answer', 'dismiss'].includes(input.action)) taskQueue.questionsSettled();
+        if (['answer', 'dismiss'].includes(input.action)) taskQueue.questionsSettled({ channel: 'local_tool', action: input.action, question_id: input.question_id });
         result={content:[{type:'text',text:JSON.stringify(updated)}]};
       } else if (name === 'user_question_read' || /^user_questions_\d+$/.test(name)) {
         result={content:[{type:'text',text:JSON.stringify(await readUserQuestions(cwd,session,input))}]};
       } else if (name === 'read_environment') {
         const record = await readEnvironment(cwd);
-        result = { content: [{ type: 'text', text: JSON.stringify({ ...record, missing: { infrastructure: await environmentCheck(cwd, 'infrastructure'), observability: await environmentCheck(cwd, 'observability'), process: await environmentCheck(cwd, 'process') } }) }] };
+        result = { content: [{ type: 'text', text: JSON.stringify({ ...record, internal_processes: taskQueue.internalProcesses(), missing: { infrastructure: await environmentCheck(cwd, 'infrastructure'), observability: await environmentCheck(cwd, 'observability'), process: await environmentCheck(cwd, 'process') } }) }] };
       } else if (['record_source', 'set_plate', 'record_process', 'delete_process'].includes(name)) {
         const saved = await ({ record_source: recordSource, set_plate: setPlate, record_process: recordProcess, delete_process: deleteProcess })[name](cwd, input);
         taskQueue.poke();
@@ -385,6 +386,7 @@ async function overview() {
     questions: { pending: questions.pending, answered: questions.questions.filter(q => q.status !== 'pending').slice(-20).reverse(), deferred_until: questions.deferred ? questions.deferUntil : null },
     assessments: await assessments(),
     ...taskQueue.goals(),
+    internal_processes: taskQueue.internalProcesses(),
     environment: await readEnvironment(cwd),
     journal, activity: await activityHistory(),
   };
@@ -417,6 +419,18 @@ async function ownerApi(req, res, url) {
     return json(res, 200, { job_id: id, status: result.status, output: result.output || '', error: result.error || null, started_at: result.started_at, finished_at: result.finished_at });
   }
   if (req.method === 'GET' && url.pathname === '/api/overview') return json(res, 200, await overview());
+  if (parts[1] === 'processes' && parts[2] === REVIEW_PROCESS_ID) {
+    if (req.method === 'GET' && parts[3] === 'runs' && parts.length === 4) {
+      return json(res, 200, { runs: await taskQueue.reviewRuns() });
+    }
+    if (req.method === 'GET' && parts[3] === 'runs' && parts.length === 5) {
+      const run = await taskQueue.reviewRun(parts[4]);
+      return run ? json(res, 200, run) : json(res, 404, { error: 'Review run not found.' });
+    }
+    if (req.method === 'POST' && parts[3] === 'configuration' && parts.length === 4) {
+      return json(res, 200, { configuration: taskQueue.configureReview(await body(req)) });
+    }
+  }
   if (req.method === 'GET' && url.pathname === '/api/agency-pilot/source-status') {
     const pending = await readPilotPending(cwd);
     return json(res, 200, { observer: pending ? { state: pending.state, last_error: pending.last_error, connected_at: pending.connected_at, updated_at: pending.updated_at } : null, queue: taskQueue.agencyPilotSources() });
@@ -438,7 +452,7 @@ async function ownerApi(req, res, url) {
     await setUserQuestions(cwd, { action: input.action, question_id: parts[2], answer: input.answer, reason: input.reason });
     toolsChanged(); taskQueue.poke();
     if (input.action === 'answer') await queueUseCaseResearch(parts[2], input.answer).catch(error => console.error('Use case research task failed:', error.message));
-    if (['answer', 'dismiss'].includes(input.action)) taskQueue.questionsSettled();
+    if (['answer', 'dismiss'].includes(input.action)) taskQueue.questionsSettled({ channel: 'owner_view', action: input.action, question_id: parts[2] });
     return json(res, 200, await overview());
   }
   if (req.method === 'GET' && url.pathname === '/api/use-cases') {
@@ -468,7 +482,7 @@ async function ownerApi(req, res, url) {
     return json(res, 200, await overview());
   }
   if (req.method === 'POST' && url.pathname === '/api/goals/run') {
-    await taskQueue.runReview();
+    await taskQueue.runReview('owner_view');
     return json(res, 200, await overview());
   }
   if (req.method === 'POST' && url.pathname === '/api/settings') {
