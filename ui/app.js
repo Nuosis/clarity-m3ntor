@@ -124,8 +124,23 @@ function renderContext() {
     : '<p class="empty">No business context recorded yet.</p>';
 }
 
-const FINISHED = new Set(['completed', 'done']);
+const FINISHED = new Set(['completed', 'partial', 'done']);
 const openTasks = () => data.tasks.filter(task => !FINISHED.has(task.status));
+function flowNameFor(flowId) {
+  if (!flowId) return '';
+  const all = [...(data.internal_processes || []), ...(data.environment?.processes?.processes || [])];
+  const found = all.find(item => item.id === flowId);
+  return found ? (found.name || flowId) : flowId;
+}
+function taskTriggerMeta(task) {
+  if (task.trigger_mode === 'event' || task.wait_trigger_id) {
+    const base = `Waiting for event ${task.wait_trigger_id || 'trigger'}`;
+    return task.next_run_at ? `${base} (fallback ${when(task.next_run_at)})` : base;
+  }
+  if (task.next_run_at) return `Next ${when(task.next_run_at)}`;
+  if (task.last_run_at) return `Last run ${when(task.last_run_at)}`;
+  return '';
+}
 function renderTasks() {
   const list = $('#task-list');
   const tasks = openTasks();
@@ -133,7 +148,7 @@ function renderTasks() {
   list.innerHTML = tasks.map(task => `
     <li data-id="${esc(task.id)}" class="${task.id === selectedTask ? 'selected' : ''}">
       <div class="title"><span>${esc(task.title)}</span>${status(task.status)}</div>
-      <div class="meta">${goalLabel(task)}${task.next_run_at ? `Next ${when(task.next_run_at)}` : task.last_run_at ? `Last run ${when(task.last_run_at)}` : ''}</div>
+      <div class="meta">${goalLabel(task)}${task.flow_id ? `${esc(flowNameFor(task.flow_id))} · ` : ''}${esc(taskTriggerMeta(task))}</div>
     </li>`).join('');
 }
 function goalLabel(task) {
@@ -284,6 +299,12 @@ $('#goals').addEventListener('click', event => {
   document.querySelector('nav button[data-view="tasks"]').click();
   showTask(id);
 });
+$('#task-detail').addEventListener('click', event => {
+  const link = event.target.closest('[data-task]');
+  if (!link) return;
+  event.preventDefault();
+  showTask(link.dataset.task);
+});
 
 async function showTask(id) {
   selectedTask = id;
@@ -292,15 +313,22 @@ async function showTask(id) {
   let detail;
   try { detail = await api(`/api/tasks/${encodeURIComponent(id)}`); }
   catch { pane.innerHTML = '<p class="empty">This task is no longer in the list.</p>'; selectedTask = null; return; }
-  const { task, runs } = detail;
+  const { task, runs, prior_tasks: priorTasks = [], child_tasks: childTasks = [] } = detail;
   const recurrence = task.recurrence?.weekly ? `Weekly, ${task.recurrence.weekly.day} ${task.recurrence.weekly.time}` : task.recurrence?.interval_minutes ? `Every ${task.recurrence.interval_minutes} minutes` : 'Once';
+  const triggerText = task.trigger_mode === 'event' || task.wait_trigger_id
+    ? `Event trigger: ${task.wait_trigger_id || '(unset)'}${task.wait_correlation_id ? ` (correlation ${task.wait_correlation_id})` : ''}${task.next_run_at ? ` · timeout fallback ${when(task.next_run_at)}` : ''}`
+    : `${recurrence}${task.next_run_at ? `, next ${when(task.next_run_at)}` : ''}`;
   pane.innerHTML = `
     <h2>${esc(task.title)} ${status(task.status)}</h2>
     <dl>
+      <dt>Flow</dt><dd>${esc(flowNameFor(task.flow_id))} <code>${esc(task.flow_id || 'ad-hoc-task')}</code>${task.flow_run_id ? ` · run <code>${esc(task.flow_run_id)}</code>` : ''}${task.node_id ? ` · node <code>${esc(task.node_id)}</code>` : ''}</dd>
+      <dt>Trigger</dt><dd>${esc(triggerText)}</dd>
       <dt>Task</dt><dd>${esc(task.instruction)}</dd>
       <dt>Success</dt><dd>${esc(task.success || '')}</dd>
+      ${task.checkpoint ? `<dt>Checkpoint</dt><dd>${esc(task.checkpoint)}</dd>` : ''}
       ${task.constraints?.length ? `<dt>Constraints</dt><dd>${task.constraints.map(esc).join('\n')}</dd>` : ''}
-      <dt>Schedule</dt><dd>${esc(recurrence)}${task.next_run_at ? `, next ${when(task.next_run_at)}` : ''}</dd>
+      ${priorTasks.length ? `<dt>Prior tasks</dt><dd><ul class="goal-tasks">${priorTasks.map(item => `<li><a href="#" data-task="${esc(item.task_id)}">${esc(item.title)}</a> ${status(item.status)}${item.checkpoint ? ` — ${esc(item.checkpoint)}` : ''}</li>`).join('')}</ul></dd>` : ''}
+      ${childTasks.length ? `<dt>Follow-up tasks</dt><dd><ul class="goal-tasks">${childTasks.map(item => `<li><a href="#" data-task="${esc(item.id)}">${esc(item.title)}</a> ${status(item.status)}${item.wait_trigger_id ? ` · event ${esc(item.wait_trigger_id)}` : item.next_run_at ? ` · ${when(item.next_run_at)}` : ''}</li>`).join('')}</ul></dd>` : ''}
       ${task.pause_reason ? `<dt>Paused</dt><dd>${esc(task.pause_reason)}</dd>` : ''}
       ${task.last_error ? `<dt>Last error</dt><dd>${esc(task.last_error)}</dd>` : ''}
     </dl>

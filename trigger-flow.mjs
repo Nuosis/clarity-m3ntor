@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { REVIEW_PROCESS_ID } from './inov8-review-process.mjs';
-import { M3NTOR_PROCESS_ID, POMA_PROCESS_ID } from './internal-flows.mjs';
+import { ADHOC_PROCESS_ID, M3NTOR_PROCESS_ID, POMA_PROCESS_ID } from './internal-flows.mjs';
 
 const VALID_KINDS = new Set(['schedule', 'event', 'adapter', 'manual']);
 const VALID_OVERLAP = new Set(['allow', 'skip', 'queue']);
@@ -90,7 +90,7 @@ export const triggerFlowTools = [
   },
 ];
 
-export function createTriggerFlow(db, { enqueueTask = null, resolveFlow = null } = {}) {
+export function createTriggerFlow(db, { enqueueTask = null, resolveFlow = null, wakeWaitingTasks = null } = {}) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS triggers (
       id TEXT PRIMARY KEY,
@@ -173,13 +173,17 @@ export function createTriggerFlow(db, { enqueueTask = null, resolveFlow = null }
       { id: 'poma-event', flow_id: POMA_PROCESS_ID, node_id: 'trigger-event', kind: 'event', name: 'POMA trigger receiver', config: { builtin: true } },
       { id: 'm3ntor-ask', flow_id: M3NTOR_PROCESS_ID, node_id: 'trigger-ask', kind: 'event', name: 'MCP ask_m3ntor', config: { builtin: true } },
       { id: 'm3ntor-weekly', flow_id: M3NTOR_PROCESS_ID, node_id: 'trigger-weekly', kind: 'schedule', name: 'Weekly goal review consult', config: { builtin: true } },
+      { id: 'ad-hoc-manual', flow_id: ADHOC_PROCESS_ID, node_id: 'trigger-manual', kind: 'manual', name: 'Ad-hoc immediate task', overlap_policy: 'allow', config: { builtin: true } },
+      { id: 'ad-hoc-schedule', flow_id: ADHOC_PROCESS_ID, node_id: 'trigger-schedule', kind: 'schedule', name: 'Ad-hoc scheduled task', overlap_policy: 'allow', config: { builtin: true } },
+      { id: 'ad-hoc-event', flow_id: ADHOC_PROCESS_ID, node_id: 'trigger-event', kind: 'event', name: 'Ad-hoc event task', overlap_policy: 'allow', config: { builtin: true } },
     ];
     const at = now();
     const stmt = db.prepare(`INSERT OR IGNORE INTO triggers (id, flow_id, node_id, kind, name, config_json, overlap_policy, enabled, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'skip', 1, ?, ?)`);
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`);
     for (const item of builtins) {
-      stmt.run(item.id, item.flow_id, item.node_id, item.kind, item.name, JSON.stringify(item.config), at, at);
+      stmt.run(item.id, item.flow_id, item.node_id, item.kind, item.name, JSON.stringify(item.config), item.overlap_policy || 'skip', at, at);
     }
+    db.prepare("UPDATE triggers SET overlap_policy = 'allow', updated_at = ? WHERE id IN ('ad-hoc-manual', 'ad-hoc-schedule', 'ad-hoc-event') AND overlap_policy = 'skip'").run(at);
   }
   seedBuiltins();
 
@@ -265,6 +269,66 @@ export function createTriggerFlow(db, { enqueueTask = null, resolveFlow = null }
       );
   }
 
+  function getTrigger(id) {
+    if (!id) return null;
+    return formatTrigger(db.prepare('SELECT * FROM triggers WHERE id = ?').get(id));
+  }
+
+  function createTaskFlowRun({ flowId, triggerMode = 'immediate', triggerId = null, correlationId = null, taskId = null, nodeId = null, input = null }) {
+    const runId = randomUUID();
+    const at = now();
+    const resolved = resolveFlow ? resolveFlow(flowId) : null;
+    const flowVersion = resolved?.version || (resolved ? hash(resolved) : null);
+    const source = triggerMode === 'event' ? 'event' : triggerMode === 'datetime' ? 'schedule' : 'manual';
+    const triggerNodeId = triggerMode === 'event' ? 'trigger-event' : triggerMode === 'datetime' ? 'trigger-schedule' : 'trigger-manual';
+    const targetNodeId = nodeId || 'agent';
+    const status = triggerMode === 'event' ? 'waiting' : 'running';
+    const traversed = [`${triggerNodeId}--${targetNodeId}`];
+    db.prepare(`INSERT INTO flow_runs (id, flow_id, flow_version, trigger_event_id, trigger_id, source, correlation_id, synthetic, status, terminal_node_id, definition_json, traversed_json, started_at, finished_at)
+      VALUES (?, ?, ?, NULL, ?, ?, ?, 0, ?, NULL, ?, ?, ?, NULL)`)
+      .run(runId, flowId, flowVersion, triggerId, source, correlationId || runId, status, resolved ? JSON.stringify(resolved) : null, JSON.stringify(traversed), at);
+    recordNode(runId, {
+      node_id: triggerNodeId, node_type: 'trigger', status: triggerMode === 'event' ? 'waiting' : 'completed',
+      input: { trigger_mode: triggerMode, trigger_id: triggerId, correlation_id: correlationId, ...(input ? { trigger_input: input } : {}) },
+      started_at: at, finished_at: triggerMode === 'event' ? null : at,
+    });
+    recordNode(runId, {
+      node_id: targetNodeId, node_type: 'agent', status: triggerMode === 'event' ? 'waiting' : 'started',
+      task_id: taskId, input, started_at: at,
+    });
+    return runId;
+  }
+
+  function recordFlowNode(runId, node, { flowStatus = null, terminalNodeId = undefined, finishedAt = undefined, edge = null } = {}) {
+    if (!runId) return;
+    const run = db.prepare('SELECT id, traversed_json FROM flow_runs WHERE id = ?').get(runId);
+    if (!run) return;
+    if (node) recordNode(runId, node);
+    const updates = [];
+    const params = [];
+    if (edge) {
+      const traversed = parse(run.traversed_json, []);
+      if (!traversed.includes(edge)) traversed.push(edge);
+      updates.push('traversed_json = ?');
+      params.push(JSON.stringify(traversed));
+    }
+    if (flowStatus !== null) {
+      updates.push('status = ?');
+      params.push(flowStatus);
+    }
+    if (terminalNodeId !== undefined) {
+      updates.push('terminal_node_id = ?');
+      params.push(terminalNodeId);
+    }
+    if (finishedAt !== undefined) {
+      updates.push('finished_at = ?');
+      params.push(finishedAt);
+    }
+    if (updates.length) {
+      db.prepare(`UPDATE flow_runs SET ${updates.join(', ')} WHERE id = ?`).run(...params, runId);
+    }
+  }
+
   function receiveTrigger(input) {
     const triggerId = input?.trigger_id?.trim();
     if (!triggerId) throw new Error('trigger_id is required.');
@@ -298,6 +362,41 @@ export function createTriggerFlow(db, { enqueueTask = null, resolveFlow = null }
       return { accepted: false, disposition: 'skipped', reason: 'Trigger is disabled', event_id: eventId, trigger_id: trigger.id, flow_id: trigger.flow_id, flow_run_id: null };
     }
 
+    const dryRun = input.dry_run === true || (synthetic === 1 && input.dry_run !== false);
+    if (!dryRun && wakeWaitingTasks) {
+      const woken = wakeWaitingTasks({ trigger, eventId, correlationId, sourceRef, payload, receivedAt }) || [];
+      if (woken.length) {
+        const primaryRunId = woken[0].flow_run_id || null;
+        saveEvent('accepted', `Woke ${woken.length} waiting task(s)`, primaryRunId);
+        for (const task of woken) {
+          if (!task.flow_run_id) continue;
+          const resumeNodeId = `event-${eventId.slice(0, 8)}`;
+          recordFlowNode(task.flow_run_id, {
+            node_id: resumeNodeId, node_type: 'trigger', status: 'completed',
+            task_id: task.id, input: { trigger_id: trigger.id, event_id: eventId, correlation_id: correlationId, source_ref: sourceRef, payload },
+            started_at: receivedAt, finished_at: receivedAt,
+          }, { flowStatus: 'running', finishedAt: null, edge: `${resumeNodeId}--${task.node_id || 'agent'}` });
+          recordFlowNode(task.flow_run_id, {
+            node_id: task.node_id || 'agent', node_type: 'agent', status: 'started',
+            task_id: task.id, input: { event_id: eventId, payload }, started_at: receivedAt,
+          });
+        }
+        return {
+          accepted: true,
+          disposition: 'accepted',
+          event_id: eventId,
+          flow_run_id: primaryRunId,
+          trigger_id: trigger.id,
+          flow_id: trigger.flow_id,
+          correlation_id: correlationId,
+          synthetic: synthetic === 1,
+          status: 'running',
+          task_id: woken[0].id,
+          woken_task_ids: woken.map(task => task.id),
+        };
+      }
+    }
+
     if (trigger.overlap_policy === 'skip') {
       const active = db.prepare("SELECT id FROM flow_runs WHERE flow_id = ? AND status = 'running' LIMIT 1").get(trigger.flow_id);
       if (active) {
@@ -310,39 +409,38 @@ export function createTriggerFlow(db, { enqueueTask = null, resolveFlow = null }
     const resolved = resolveFlow ? resolveFlow(trigger.flow_id) : null;
     const flowVersion = resolved?.version || (resolved ? hash(resolved) : null);
     const triggerNodeId = trigger.node_id || `trigger-${trigger.kind}`;
-    const dryRun = input.dry_run === true || (synthetic === 1 && input.dry_run !== false);
     const traversed = [`${triggerNodeId}--eligibility`];
 
     saveEvent('accepted', dryRun ? 'Accepted (synthetic/dry-run trace)' : 'Accepted', runId);
 
-    let runStatus = 'completed';
-    let terminalNodeId = 'terminal-received';
-    let finishedAt = now();
+    const willEnqueue = !dryRun && trigger.config?.task_template && enqueueTask;
+    let runStatus = willEnqueue ? 'running' : 'completed';
+    let terminalNodeId = willEnqueue ? null : 'terminal-received';
+    let finishedAt = willEnqueue ? null : now();
     let enqueuedTask = null;
 
-    if (!dryRun && trigger.config?.task_template && enqueueTask) {
+    if (willEnqueue) traversed.push('eligibility--agent');
+    else traversed.push(`eligibility--${terminalNodeId}`);
+
+    db.prepare(`INSERT INTO flow_runs (id, flow_id, flow_version, trigger_event_id, trigger_id, source, correlation_id, synthetic, status, terminal_node_id, definition_json, traversed_json, started_at, finished_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(runId, trigger.flow_id, flowVersion, eventId, trigger.id, trigger.kind, correlationId, synthetic, runStatus, terminalNodeId, resolved ? JSON.stringify(resolved) : null, JSON.stringify(traversed), receivedAt, finishedAt);
+
+    if (willEnqueue) {
       const tpl = trigger.config.task_template;
       const result = enqueueTask({
         title: tpl.title || `Triggered: ${trigger.name}`,
         instruction: tpl.instruction || `Handle trigger "${trigger.name}" for flow ${trigger.flow_id}.`,
         success: tpl.success || 'Flow outcome completed and recorded.',
         constraints: tpl.constraints,
-        category: tpl.category || 'triggered_flow',
+        category: tpl.category || 'other',
+        flow_id: trigger.flow_id,
+        flow_run_id: runId,
         process_ids: [trigger.flow_id],
         trigger_input: { trigger_id: trigger.id, event_id: eventId, correlation_id: correlationId, source_ref: sourceRef, payload },
       });
       enqueuedTask = result?.task || null;
-      runStatus = 'running';
-      terminalNodeId = null;
-      finishedAt = null;
-      traversed.push('eligibility--agent');
-    } else {
-      traversed.push(`eligibility--${terminalNodeId}`);
     }
-
-    db.prepare(`INSERT INTO flow_runs (id, flow_id, flow_version, trigger_event_id, trigger_id, source, correlation_id, synthetic, status, terminal_node_id, definition_json, traversed_json, started_at, finished_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(runId, trigger.flow_id, flowVersion, eventId, trigger.id, trigger.kind, correlationId, synthetic, runStatus, terminalNodeId, resolved ? JSON.stringify(resolved) : null, JSON.stringify(traversed), receivedAt, finishedAt);
 
     recordNode(runId, {
       node_id: triggerNodeId, node_type: 'trigger', status: 'completed',
@@ -472,5 +570,5 @@ export function createTriggerFlow(db, { enqueueTask = null, resolveFlow = null }
     return null;
   }
 
-  return { registerTrigger, syncBusinessTriggers, listTriggers, receiveTrigger, listFlowRuns, getFlowRun, clearSyntheticTraces, call };
+  return { getTrigger, createTaskFlowRun, recordFlowNode, registerTrigger, syncBusinessTriggers, listTriggers, receiveTrigger, listFlowRuns, getFlowRun, clearSyntheticTraces, call };
 }

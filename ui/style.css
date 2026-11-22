@@ -51,7 +51,7 @@ h3 { font-size: 13px; font-weight: 600; margin: 20px 0 8px; color: var(--muted);
 .status.completed, .status.done, .status.final { color: var(--ok); }
 .status.failed, .status.paused { color: var(--bad); }
 .status.executing, .status.delivered, .status.finalizing, .status.running { color: var(--accent-strong); }
-.status.draft { color: var(--warn); }
+.status.draft, .status.waiting_event, .status.partial { color: var(--warn); }
 
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 20px; margin: 12px 0; }
 dt { color: var(--muted); }

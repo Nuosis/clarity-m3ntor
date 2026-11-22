@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
 import { readEnvironment } from './environment.mjs';
+import { reviewDefinition } from './inov8-review-process.mjs';
+import { extraInternalDefinitions } from './internal-flows.mjs';
 import { spawn } from 'node:child_process';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -90,18 +92,25 @@ export const reassessPoma = assessPoma;
 // A task from the owner's action queue, run in the owner's harness with this MCP.
 export async function startTaskJob(task, environment) {
   const constraints = task.constraints ? JSON.parse(task.constraints) : [];
-  const question = `Task: ${task.instruction}\n\nSuccess means: ${task.success || 'the task above is carried out.'}${constraints.length ? `\n\nConstraints for this task:\n${constraints.map(item => `- ${item}`).join('\n')}` : ''}`;
-  const processIds = typeof task.process_ids === 'string' ? JSON.parse(task.process_ids) : task.process_ids || [];
-  const { processes } = processIds.length ? await readEnvironment(environment.cwd) : { processes: { processes: [] } };
+  const priorTasks = Array.isArray(task.prior_tasks) ? task.prior_tasks : [];
+  const priorSummary = priorTasks.length
+    ? `\n\nPrior tasks in this flow run (oldest to newest — retain and build on this work):\n${priorTasks.map((item, idx) => `${idx + 1}. [${item.task_id}] ${item.title} (${item.status}${item.node_id ? ` · node ${item.node_id}` : ''})${item.checkpoint ? `\n   Checkpoint: ${item.checkpoint}` : ''}${item.last_result ? `\n   Outcome: ${String(item.last_result).trim().slice(0, 1200)}` : ''}`).join('\n')}`
+    : '';
+  const question = `Task: ${task.instruction}\n\nSuccess means: ${task.success || 'the task above is carried out.'}${constraints.length ? `\n\nConstraints for this task:\n${constraints.map(item => `- ${item}`).join('\n')}` : ''}${task.checkpoint ? `\n\nResumption checkpoint:\n${task.checkpoint}` : ''}${priorSummary}`;
+  const rawProcessIds = typeof task.process_ids === 'string' ? JSON.parse(task.process_ids) : task.process_ids || [];
+  const processIds = [...new Set([...(task.flow_id ? [task.flow_id] : []), ...rawProcessIds])];
+  const internalMap = new Map([reviewDefinition, ...extraInternalDefinitions].map(def => [def.id, def]));
+  const needsBusiness = processIds.some(id => !internalMap.has(id));
+  const { processes } = needsBusiness ? await readEnvironment(environment.cwd) : { processes: { processes: [] } };
   const snapshots = processIds.map(id => {
-    const definition = processes.processes.find(flow => flow.id === id);
+    const definition = internalMap.get(id) || processes.processes.find(flow => flow.id === id);
     if (!definition) {
-      const error = new Error(`Bound process ${id} was not found. Restore the record or correct this task's process_ids before retrying; no harness was started.`);
+      const error = new Error(`Bound process ${id} was not found. Restore the record or correct this task's flow_id/process_ids before retrying; no harness was started.`);
       error.code = 'PROCESS_NOT_FOUND';
       throw error;
     }
     const contentSha256 = createHash('sha256').update(JSON.stringify(definition)).digest('hex');
-    return { process_id: id, version: contentSha256, content_sha256: contentSha256, updated_at: definition.updated_at || null, definition };
+    return { process_id: id, kind: internalMap.has(id) ? 'internal' : 'business', version: definition.version || contentSha256, content_sha256: contentSha256, updated_at: definition.updated_at || null, definition };
   });
   const triggerInput = typeof task.trigger_input === 'string' ? JSON.parse(task.trigger_input) : task.trigger_input || null;
   const harness = environment.agentHarness || process.env.M3NTOR_HARNESS || environment.harness || 'codex';
@@ -116,8 +125,14 @@ export async function startTaskJob(task, environment) {
   };
   const context = {
     task_id: task.id, title: task.title, category: task.category, goal_id: task.goal_id || null, stage: task.stage || null,
+    flow_id: task.flow_id || null, flow_run_id: task.flow_run_id || null, node_id: task.node_id || null,
+    parent_task_id: task.parent_task_id || null, trigger_mode: task.trigger_mode || 'immediate',
+    wait_trigger_id: task.wait_trigger_id || null, wait_correlation_id: task.wait_correlation_id || null,
+    checkpoint: task.checkpoint || null,
     instruction: task.instruction, requested_outcome: task.success || 'the task above is carried out.',
     trigger_input: triggerInput,
+    ...(priorTasks.length ? { prior_tasks: priorTasks } : {}),
+    ...(task.flow_run ? { flow_run: { id: task.flow_run.id, flow_id: task.flow_run.flow_id, status: task.flow_run.status, traversed: task.flow_run.traversed, nodes: task.flow_run.nodes } } : {}),
     ...(task.continuation_event ? { continuation_event: task.continuation_event } : {}),
     process_ids: processIds, processes: snapshots, execution_environment: executionEnvironment,
   };

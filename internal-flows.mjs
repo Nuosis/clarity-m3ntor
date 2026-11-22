@@ -2,6 +2,7 @@ import { NODE_TYPES, reviewEdge, reviewHash } from './inov8-review-process.mjs';
 
 export const POMA_PROCESS_ID = 'poma-assessment';
 export const M3NTOR_PROCESS_ID = 'm3ntor-coaching';
+export const ADHOC_PROCESS_ID = 'ad-hoc-task';
 
 const buildDefinition = ({ id, name, nodes, edges }) => {
   const def = {
@@ -66,4 +67,28 @@ export const m3ntorCoachingDefinition = buildDefinition({
   ],
 });
 
-export const extraInternalDefinitions = [pomaAssessmentDefinition, m3ntorCoachingDefinition];
+export const adhocTaskDefinition = buildDefinition({
+  id: ADHOC_PROCESS_ID,
+  name: 'Ad-hoc owner task',
+  nodes: [
+    { id: 'trigger-manual', type: 'trigger', label: 'Immediate / manual', binding: 'set_task (immediate)', detail: 'One-off owner-directed task queued to run immediately.', column: 0.5, row: 0 },
+    { id: 'trigger-schedule', type: 'trigger', label: 'Datetime trigger', binding: 'set_task (run_at / recurrence)', detail: 'Task scheduled to start or resume at a specific date/time or recurrence.', column: 1.5, row: 0 },
+    { id: 'trigger-event', type: 'trigger', label: 'Event trigger', binding: 'POST /api/triggers/ad-hoc-event/fire', detail: 'Event-driven task waiting for a registered trigger event before running or resuming.', column: 2.5, row: 0 },
+    { id: 'agent', type: 'agent', label: 'Execute task', binding: 'startTaskJob · m3ntor-worker', detail: 'Local harness executes the task with its flow snapshot, triggering input, and any prior task chain from earlier segments of this flow run.', column: 1.5, row: 1 },
+    { id: 'outcome', type: 'decision', label: 'Flow completed?', binding: 'settleTask · handoff_task', detail: 'Checks whether the task completed the flow, handed off a partial flow to a new event/datetime-triggered follow-up task, or failed.', column: 1.5, row: 2 },
+    { id: 'terminal-completed', type: 'terminal', label: 'Completed', binding: 'STATUS: done', detail: 'Terminal outcome: task success criteria met and flow run completed.', column: 0.5, row: 3 },
+    { id: 'terminal-waiting', type: 'terminal', label: 'Waiting for resumption', binding: 'handoff_task · STATUS: partial', detail: 'Flow paused mid-run with a new follow-up task armed on an event or datetime trigger.', column: 1.5, row: 3 },
+    { id: 'terminal-failed', type: 'terminal', label: 'Failed', binding: 'STATUS: not done', detail: 'Terminal outcome: task failed or ended partial without creating a follow-up task.', column: 2.5, row: 3 },
+  ],
+  edges: [
+    ['trigger-manual', 'agent'],
+    ['trigger-schedule', 'agent'],
+    ['trigger-event', 'agent'],
+    ['agent', 'outcome'],
+    ['outcome', 'terminal-completed', 'Done'],
+    ['outcome', 'terminal-waiting', 'Partial handoff'],
+    ['outcome', 'terminal-failed', 'Failed'],
+  ],
+});
+
+export const extraInternalDefinitions = [pomaAssessmentDefinition, m3ntorCoachingDefinition, adhocTaskDefinition];

@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getM3ntorResult, jobDirectory, startTaskJob, startGoalReviewJob } from './m3ntor-jobs.mjs';
 import { stagesFor, STUCK_INSTRUCTION } from './goals.mjs';
 import { createReviewLedger, historicReviewList, reviewDefinition, reviewHash, reviewRunDetail } from './inov8-review-process.mjs';
-import { extraInternalDefinitions } from './internal-flows.mjs';
+import { extraInternalDefinitions, ADHOC_PROCESS_ID } from './internal-flows.mjs';
 import { createTriggerFlow, triggerFlowTools } from './trigger-flow.mjs';
 import { environmentCheck, readEnvironment, recordProcessStage } from './environment.mjs';
 import { appendJournalInWrite, businessDate, questionState, readJournal, serializeBusinessWrites, setUserQuestions } from './business-journal.mjs';
@@ -13,10 +13,11 @@ import { AGENCY_PILOT_TASK, agencyPilotContinuation, pilotDirectory, pilotPendin
 
 // Journal entries with fixed ids, so a retried write updates the same entry.
 const journalOnce = (cwd, entryId, input) => serializeBusinessWrites(cwd, () => appendJournalInWrite(cwd, input, new Date(), entryId));
-// A task's job ends with `STATUS: done` or `STATUS: not done — <reason>`.
+// A task's job ends with `STATUS: done`, `STATUS: partial — <reason>`, or `STATUS: not done — <reason>`.
 // The last STATUS line decides, even if the agent adds a closing summary after it.
 const statusLine = output => String(output || '').split('\n').map(line => line.replace(/[*`_]/g, '').trim()).reverse().find(line => /^status:/i.test(line)) || '';
 const reportedDone = output => /^status:\s*done\b/i.test(statusLine(output));
+const reportedPartial = output => /^status:\s*partial\b/i.test(statusLine(output));
 
 // The owner's action system: immediate, delayed and recurring tasks persisted in
 // .clarity_coach/action.sqlite3 and run by this service in the owner's harness.
@@ -41,14 +42,15 @@ const recurrenceSchema = {
   },
   additionalProperties: false,
 };
-const TASK_STATUSES = ['queued', 'delivered', 'executing', 'completed', 'failed', 'paused', 'done'];
+const TASK_STATUSES = ['queued', 'waiting_event', 'delivered', 'executing', 'partial', 'completed', 'failed', 'paused', 'done'];
 const CONTINUATION_STATES = ['waiting', 'failed', 'lost'];
 const CONTINUATION_RETURN = 'resume_task_continuation';
 const PILOT_RETURN = 'agency_pilot_source';
 const nonemptyText = value => typeof value === 'string' && Boolean(value.trim());
 
 export const taskTools = [
-  { name: 'set_task', description: 'Use when work should run in the owner\'s harness now, later or on a schedule: the next work for the active goal\'s stage, the weekly assessment, a recurring routine, or one-off work the owner directs. Creates or updates a task in the owner\'s action queue; the service runs it when due and records the result. Supplying an existing task_id updates that task instead of adding another; use this to reuse a matching recurring task.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'Existing task to update; omit to create.' }, title: { type: 'string', description: 'Short name the owner sees in the task list.' }, instruction: { type: 'string', description: 'The task: what the owner\'s agent should do when it runs.' }, success: { type: 'string', description: 'Definition of success: what must be true for the run to count as done.' }, constraints: { type: 'array', items: { type: 'string' }, description: 'Optional constraints unique to this task.' }, category: { type: 'string', enum: ['assessment', 'use_case', 'other'], description: 'assessment for the weekly reassessment, use_case for researching an owner-reported use case.' }, run_at: { type: 'string', format: 'date-time', description: 'First run time; omit to run now (one-off) or at the next recurrence.' }, recurrence: recurrenceSchema, remove_on_completion: { type: 'boolean', description: 'One-off tasks only: after a successful run, journal the result and remove the task from the list (used for one-off work whose record belongs in the journal).' }, process_ids: { type: 'array', items: { type: 'string' }, description: 'Applicable registered process IDs. Omit to inherit the associated goal binding; an explicit empty list means no process binding.' }, trigger_input: { type: 'object', additionalProperties: true, description: 'The triggering input or event for this run, supplied as structured data.' }, goal_id: { type: 'string', description: 'The active goal this task works on; omit for one-off work the owner directs.' }, stage: { type: 'string', description: 'With goal_id: the goal\'s current stage key (list_goals). Tasks for a stage the goal has not reached are refused.' } }, required: ['title', 'instruction', 'success'], additionalProperties: false } },
+  { name: 'set_task', description: 'Use when work should run in the owner\'s harness now, at a date/time, on a schedule, or when an event trigger fires. Every task is connected to a flow (flow_id); one-off owner tasks without an explicit flow default to the built-in ad-hoc-task flow. Supply trigger_id (+ optional correlation_id) to park a task in waiting_event until that registered trigger fires (optionally with run_at as a datetime fallback). Supplying an existing task_id updates that task instead of adding another.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'Existing task to update; omit to create.' }, title: { type: 'string', description: 'Short name the owner sees in the task list.' }, instruction: { type: 'string', description: 'The task: what the owner\'s agent should do when it runs.' }, success: { type: 'string', description: 'Definition of success: what must be true for the run to count as done.' }, constraints: { type: 'array', items: { type: 'string' }, description: 'Optional constraints unique to this task.' }, category: { type: 'string', enum: ['assessment', 'use_case', 'other'], description: 'assessment for the weekly reassessment, use_case for researching an owner-reported use case.' }, flow_id: { type: 'string', description: 'Registered business or internal flow ID this task belongs to. Defaults to parent task flow, goal process_ids[0], or built-in ad-hoc-task.' }, flow_run_id: { type: 'string', description: 'Optional existing flow_run_id to attach this task to; omit to inherit from parent_task_id or start a new flow run.' }, node_id: { type: 'string', description: 'Optional flow node ID where this task runs or resumes.' }, parent_task_id: { type: 'string', description: 'Optional prior task ID when this task resumes a partially completed flow; inherits flow_id and flow_run_id and automatically pulls prior task history on execution.' }, trigger_id: { type: 'string', description: 'Registered trigger ID for an event-driven task. Parks the task in waiting_event until fire_trigger or POST /api/triggers/:id/fire matches it.' }, correlation_id: { type: 'string', description: 'Optional correlation ID filter when waiting on trigger_id so only matching events wake this task.' }, checkpoint: { type: 'string', description: 'Optional durable progress note or handoff checkpoint carried into execution.' }, run_at: { type: 'string', format: 'date-time', description: 'First run time (datetime trigger), or timeout fallback when combined with trigger_id; omit to run now (one-off) or wait purely for trigger_id.' }, recurrence: recurrenceSchema, remove_on_completion: { type: 'boolean', description: 'One-off tasks only: after a successful run, journal the result and remove the task from the list (used for one-off work whose record belongs in the journal).' }, process_ids: { type: 'array', items: { type: 'string' }, description: 'Applicable registered process IDs. Omit to inherit flow_id / goal binding; an explicit empty list means no extra process snapshots beyond flow_id.' }, trigger_input: { type: 'object', additionalProperties: true, description: 'The triggering input or event for this run, supplied as structured data.' }, goal_id: { type: 'string', description: 'The active goal this task works on; omit for one-off work the owner directs.' }, stage: { type: 'string', description: 'With goal_id: the goal\'s current stage key (list_goals). Tasks for a stage the goal has not reached are refused.' } }, required: ['title', 'instruction', 'success'], additionalProperties: false } },
+  { name: 'handoff_task', description: 'Use when a task completes part of a flow and must pause for an external event or a future date/time before continuing. Creates a new follow-up task linked via parent_task_id on the same flow_id and flow_run_id, armed with an event trigger (trigger_id, optional correlation_id) and/or a datetime trigger (run_at), and records the checkpoint. When the follow-up task runs, the service automatically pulls the full prior task chain into its context. After calling handoff_task, end the current run with `STATUS: partial — <reason>`.', inputSchema: { type: 'object', properties: { task_id: { type: 'string', description: 'Current task ID that is handing off a partially completed flow.' }, checkpoint: { type: 'string', description: 'Durable summary of what was completed so far and where the flow paused.' }, next_instruction: { type: 'string', description: 'Instruction for the follow-up task when it resumes.' }, next_title: { type: 'string', description: 'Optional title for the follow-up task; defaults to "Resume: <current title>".' }, next_success: { type: 'string', description: 'Optional success definition for the follow-up task; defaults to the current task\'s success.' }, node_id: { type: 'string', description: 'Optional flow node ID where the flow paused / will resume.' }, trigger_id: { type: 'string', description: 'Registered event trigger ID that wakes the follow-up task. Required unless run_at is given.' }, correlation_id: { type: 'string', description: 'Optional correlation ID filter for trigger_id so only the matching event wakes the follow-up task.' }, run_at: { type: 'string', format: 'date-time', description: 'ISO date-time trigger for the follow-up task (or timeout fallback when combined with trigger_id). Required unless trigger_id is given.' }, constraints: { type: 'array', items: { type: 'string' }, description: 'Optional constraints for the follow-up task; defaults to current task constraints.' } }, required: ['task_id', 'checkpoint', 'next_instruction'], additionalProperties: false } },
   { name: 'list_tasks', description: 'Use before set_task, to reuse a matching task instead of adding a duplicate, and when checking what is queued, running or failed: lists tasks with status, next run time, last run and its result or error.', inputSchema: { type: 'object', properties: { status: { type: 'string', enum: TASK_STATUSES, description: 'Only tasks in this status; omit for all.' } }, additionalProperties: false }, annotations: { readOnlyHint: true } },
   { name: 'record_task_continuation', description: 'Register durable waiting on an existing task before ending a run with its outcome still open. Save the accountable owner and a checkpoint or saved result reference. Use the returned task and continuation IDs with resume_task_continuation from the established local completion route. Registration records the local return route; the caller arranges actual event delivery. Update the same registration with its continuation_id, and supply evidence when reporting a failed or lost return dependency. With just the two IDs, record a heartbeat. Use state waiting to register a fresh wait after a return has started or to record a repaired route.', inputSchema: { type: 'object', properties: {
     task_id: { type: 'string' },
@@ -119,20 +121,53 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   `);
   const reviewLedger = createReviewLedger(db);
   let api;
+  const resolveFlow = id => {
+    if (!id) return null;
+    if (id === reviewDefinition.id) return reviewDefinition;
+    const extra = extraInternalDefinitions.find(item => item.id === id);
+    if (extra) return extra;
+    try {
+      const raw = JSON.parse(readFileSync(path.join(directory, 'environment', 'processes.json'), 'utf8'));
+      return (raw.processes || []).find(item => item.id === id) || null;
+    } catch { return null; }
+  };
   const triggerFlow = createTriggerFlow(db, {
     enqueueTask: input => api.call('set_task', input),
-    resolveFlow: id => {
-      if (id === reviewDefinition.id) return reviewDefinition;
-      const extra = extraInternalDefinitions.find(item => item.id === id);
-      if (extra) return extra;
-      try {
-        const raw = JSON.parse(readFileSync(path.join(directory, 'environment', 'processes.json'), 'utf8'));
-        return (raw.processes || []).find(item => item.id === id) || null;
-      } catch { return null; }
+    resolveFlow,
+    wakeWaitingTasks: ({ trigger, eventId, correlationId, sourceRef, payload, receivedAt }) => {
+      const woken = transaction(() => {
+        const candidates = db.prepare(`SELECT * FROM tasks
+          WHERE status = 'waiting_event' AND wait_trigger_id = ?
+            AND (wait_correlation_id IS NULL OR wait_correlation_id = ?)
+          ORDER BY created_at, rowid`).all(trigger.id, correlationId);
+        if (!candidates.length) return [];
+        for (const task of candidates) {
+          const existingInput = task.trigger_input ? JSON.parse(task.trigger_input) : {};
+          const mergedInput = {
+            ...existingInput,
+            event: {
+              trigger_id: trigger.id, event_id: eventId, correlation_id: correlationId,
+              source_ref: sourceRef, payload, received_at: receivedAt,
+            },
+          };
+          update(task.id, { status: 'queued', next_run_at: receivedAt, set_at: receivedAt, trigger_input: JSON.stringify(mergedInput) });
+        }
+        return candidates.map(task => get(task.id));
+      });
+      if (woken.length) schedule({ kind: 'trigger_event', trigger_id: trigger.id, event_id: eventId, task_ids: woken.map(t => t.id) });
+      return woken;
     },
   });
   const columns = new Set(db.prepare('PRAGMA table_info(tasks)').all().map(column => column.name));
-  for (const [name, type] of [['remove_on_completion', 'INTEGER NOT NULL DEFAULT 0'], ['success', 'TEXT'], ['constraints', 'TEXT'], ['category', 'TEXT'], ['goal_id', 'TEXT'], ['stage', 'TEXT'], ['set_at', 'TEXT'], ['process_ids', 'TEXT'], ['trigger_input', 'TEXT']]) if (!columns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
+  for (const [name, type] of [
+    ['remove_on_completion', 'INTEGER NOT NULL DEFAULT 0'], ['success', 'TEXT'], ['constraints', 'TEXT'], ['category', 'TEXT'],
+    ['goal_id', 'TEXT'], ['stage', 'TEXT'], ['set_at', 'TEXT'], ['process_ids', 'TEXT'], ['trigger_input', 'TEXT'],
+    ['flow_id', 'TEXT'], ['flow_run_id', 'TEXT'], ['node_id', 'TEXT'], ['parent_task_id', 'TEXT'], ['parent_job_id', 'TEXT'],
+    ['trigger_mode', 'TEXT'], ['wait_trigger_id', 'TEXT'], ['wait_correlation_id', 'TEXT'], ['checkpoint', 'TEXT'],
+  ]) if (!columns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
+  db.exec('CREATE INDEX IF NOT EXISTS tasks_waiting_trigger ON tasks (status, wait_trigger_id, wait_correlation_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS tasks_parent ON tasks (parent_task_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS tasks_flow_run ON tasks (flow_run_id)');
   const goalColumns = new Set(db.prepare('PRAGMA table_info(goals)').all().map(column => column.name));
   if (!goalColumns.has('process_ids')) db.exec('ALTER TABLE goals ADD COLUMN process_ids TEXT');
   if (!goalColumns.has('review_passes')) db.exec("ALTER TABLE goals ADD COLUMN review_passes TEXT NOT NULL DEFAULT '[]'");
@@ -142,6 +177,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   };
   const taskProcessIds = task => task.process_ids ?? (task.goal_id ? db.prepare('SELECT process_ids FROM goals WHERE id = ?').get(task.goal_id)?.process_ids : null) ?? null;
   const now = () => new Date().toISOString();
+  // Backfill flow_id and trigger_mode on legacy task rows so every task is connected to a flow.
+  for (const row of db.prepare('SELECT id, process_ids, goal_id, recurrence, next_run_at, flow_id, trigger_mode FROM tasks WHERE flow_id IS NULL OR trigger_mode IS NULL').all()) {
+    const pids = JSON.parse(taskProcessIds(row) || '[]');
+    const flowId = row.flow_id || pids[0] || ADHOC_PROCESS_ID;
+    const triggerMode = row.trigger_mode || (row.recurrence || row.next_run_at ? 'datetime' : 'immediate');
+    db.prepare('UPDATE tasks SET flow_id = ?, trigger_mode = ? WHERE id = ?').run(flowId, triggerMode, row.id);
+  }
   function transaction(write) {
     db.exec('BEGIN IMMEDIATE');
     try {
@@ -157,7 +199,51 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   };
   const enabled = () => db.prepare("SELECT value FROM settings WHERE key = 'worker_enabled'").get()?.value === 'true';
   const setEnabled = value => db.prepare("INSERT INTO settings (key, value) VALUES ('worker_enabled', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(value));
-  const view = task => task && { ...task, recurrence: task.recurrence ? JSON.parse(task.recurrence) : null, constraints: task.constraints ? JSON.parse(task.constraints) : [], process_ids: JSON.parse(taskProcessIds(task) || '[]'), trigger_input: task.trigger_input ? JSON.parse(task.trigger_input) : null };
+  const view = task => task && {
+    ...task,
+    flow_id: task.flow_id || ADHOC_PROCESS_ID,
+    trigger_mode: task.trigger_mode || (task.wait_trigger_id ? 'event' : (task.recurrence || task.next_run_at ? 'datetime' : 'immediate')),
+    recurrence: task.recurrence ? JSON.parse(task.recurrence) : null,
+    constraints: task.constraints ? JSON.parse(task.constraints) : [],
+    process_ids: JSON.parse(taskProcessIds(task) || '[]'),
+    trigger_input: task.trigger_input ? JSON.parse(task.trigger_input) : null,
+  };
+  function priorTaskChain(taskId) {
+    const chain = [];
+    const seen = new Set([taskId]);
+    let current = get(taskId);
+    while (current?.parent_task_id && chain.length < 50) {
+      if (seen.has(current.parent_task_id)) break;
+      seen.add(current.parent_task_id);
+      const parent = get(current.parent_task_id);
+      if (!parent) break;
+      const originJobId = current.parent_job_id || null;
+      const originRun = originJobId
+        ? db.prepare('SELECT id, job_id, status, started_at, finished_at, result, error FROM runs WHERE task_id = ? AND job_id = ? LIMIT 1').get(parent.id, originJobId)
+        : null;
+      const runs = (originRun
+        ? [originRun]
+        : db.prepare('SELECT id, job_id, status, started_at, finished_at, result, error FROM runs WHERE task_id = ? ORDER BY started_at DESC LIMIT 5').all(parent.id)
+      ).map(r => ({ ...r, result: r.result ? String(r.result).slice(-2000) : null }));
+      const rawResult = originRun ? originRun.result : parent.last_result;
+      chain.unshift({
+        task_id: parent.id, title: parent.title, status: originRun ? originRun.status : parent.status,
+        flow_id: parent.flow_id || ADHOC_PROCESS_ID, flow_run_id: current.flow_run_id || parent.flow_run_id || null,
+        node_id: parent.node_id || null, checkpoint: parent.checkpoint || null,
+        origin_job_id: originJobId,
+        trigger_mode: parent.trigger_mode || null, wait_trigger_id: parent.wait_trigger_id || null,
+        wait_correlation_id: parent.wait_correlation_id || null,
+        instruction: parent.instruction, success: parent.success,
+        last_run_at: originRun ? (originRun.finished_at || originRun.started_at) : parent.last_run_at,
+        last_status: originRun ? originRun.status : parent.last_status,
+        last_result: rawResult ? String(rawResult).slice(-4000) : null,
+        last_error: originRun ? originRun.error : parent.last_error, runs,
+      });
+      current = parent;
+    }
+    return chain;
+  }
+  const childTasks = taskId => db.prepare('SELECT id, title, status, flow_id, flow_run_id, node_id, trigger_mode, wait_trigger_id, wait_correlation_id, next_run_at, checkpoint, created_at FROM tasks WHERE parent_task_id = ? ORDER BY created_at').all(taskId);
   const watchers = new Map();
   let timer = null, closed = false;
   let pilotPendingWatcher = null, pilotContinuationWatcher = null, pilotReadError = null, pilotInputVersion = null, pilotRejectedVersion = null;
@@ -322,27 +408,102 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     return new Date(from.getTime() + recurrence.interval_minutes * 60000).toISOString();
   }
 
+  function handoffTask(input) {
+    const parent = get(input.task_id);
+    if (!parent) throw new Error('Task not found.');
+    if (['done', 'clearing'].includes(parent.status)) throw new Error('This task is done or being cleared.');
+    if (!nonemptyText(input.checkpoint)) throw new Error('Give a durable checkpoint describing what completed so far and where the flow paused.');
+    if (!nonemptyText(input.next_instruction)) throw new Error('Give next_instruction for the follow-up task.');
+    const triggerId = input.trigger_id?.trim() || null;
+    const correlationId = input.correlation_id?.trim() || null;
+    const hasRunAt = Boolean(input.run_at);
+    if (!triggerId && !hasRunAt) throw new Error('A partial flow handoff requires an event trigger (trigger_id) and/or a datetime trigger (run_at).');
+    if (triggerId && !triggerFlow.getTrigger(triggerId)) throw new Error(`Trigger "${triggerId}" is not registered.`);
+    let nextRun = null;
+    if (hasRunAt) {
+      if (Number.isNaN(new Date(input.run_at).getTime())) throw new Error('run_at must be an ISO date-time.');
+      nextRun = new Date(input.run_at).toISOString();
+    }
+    if (input.constraints && (!Array.isArray(input.constraints) || input.constraints.some(item => typeof item !== 'string'))) throw new Error('constraints must be a list of strings.');
+    const flowId = parent.flow_id || ADHOC_PROCESS_ID;
+    const nodeId = input.node_id?.trim() || parent.node_id || null;
+    const triggerMode = triggerId ? 'event' : 'datetime';
+    const childStatus = triggerId ? 'waiting_event' : 'queued';
+    const childId = randomUUID();
+    const title = input.next_title?.trim() || (parent.title.startsWith('Resume: ') ? parent.title : `Resume: ${parent.title}`);
+    const success = input.next_success?.trim() || parent.success || 'Complete the remaining steps of this flow.';
+    const constraints = input.constraints ? (input.constraints.length ? JSON.stringify(input.constraints) : null) : parent.constraints;
+    const at = now();
+    let flowRunId = parent.flow_run_id;
+    if (!flowRunId) {
+      flowRunId = triggerFlow.createTaskFlowRun({ flowId, triggerMode: parent.trigger_mode || 'immediate', taskId: parent.id, nodeId: parent.node_id || 'agent' });
+      update(parent.id, { flow_run_id: flowRunId });
+    }
+    transaction(() => {
+      db.prepare(`INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, remove_on_completion, success, constraints, category, goal_id, stage, set_at, process_ids, trigger_input, flow_id, flow_run_id, node_id, parent_task_id, parent_job_id, trigger_mode, wait_trigger_id, wait_correlation_id, checkpoint)
+        VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(childId, title, input.next_instruction.trim(), nextRun, childStatus, at, at, parent.remove_on_completion || 0, success, constraints, parent.category, parent.goal_id, parent.stage, at, parent.process_ids, flowId, flowRunId, nodeId, parent.id, parent.job_id || null, triggerMode, triggerId, correlationId, input.checkpoint.trim());
+    });
+    const handoffNodeId = `handoff-${childId.slice(0, 8)}`;
+    triggerFlow.recordFlowNode(flowRunId, {
+      node_id: handoffNodeId, node_type: 'decision', status: 'waiting', task_id: childId,
+      output: { parent_task_id: parent.id, next_task_id: childId, checkpoint: input.checkpoint.trim(), trigger_mode: triggerMode, wait_trigger_id: triggerId, wait_correlation_id: correlationId, run_at: nextRun },
+      started_at: at,
+    }, { flowStatus: 'waiting', finishedAt: null, edge: `${parent.node_id || 'agent'}--${handoffNodeId}` });
+    schedule({ kind: 'task_handoff', parent_task_id: parent.id, child_task_id: childId });
+    return { handed_off: true, parent_task_id: parent.id, flow_id: flowId, flow_run_id: flowRunId, next_task: view(get(childId)), worker: workerState() };
+  }
+
   // Record a finished job once, then requeue a recurring task or close a one-off.
   function settleTask(taskId, job) {
-    const ok = job.status === 'complete' && reportedDone(job.output);
+    const child = db.prepare('SELECT id, status, trigger_mode, wait_trigger_id, next_run_at FROM tasks WHERE parent_task_id = ? AND parent_job_id = ? ORDER BY created_at DESC LIMIT 1').get(taskId, job.job_id);
+    const isPartial = job.status === 'complete' && reportedPartial(job.output);
+    const isDone = job.status === 'complete' && reportedDone(job.output);
+    const handedOff = Boolean(child) && (isPartial || isDone);
+    const ok = !handedOff && isDone;
     const finished = now();
-    const error = ok ? null : job.status === 'complete' ? `The task reported it was not done: ${statusLine(job.output) || 'no STATUS line'}` : (job.error || job.status);
+    const error = (ok || handedOff) ? null
+      : isPartial && !child ? 'Task reported partial flow completion without creating a follow-up task with an event or datetime trigger (use handoff_task).'
+      : job.status === 'complete' ? `The task reported it was not done: ${statusLine(job.output) || 'no STATUS line'}`
+      : (job.error || job.status);
     db.prepare("UPDATE runs SET status = ?, finished_at = ?, result = ?, error = ? WHERE task_id = ? AND job_id = ? AND status = 'executing'")
-      .run(ok ? 'completed' : 'failed', finished, ok ? job.output : null, error, taskId, job.job_id);
+      .run((ok || handedOff) ? 'completed' : 'failed', finished, (ok || handedOff) ? job.output : null, error, taskId, job.job_id);
     const task = get(taskId);
     if (!task || task.job_id !== job.job_id) return;
     db.prepare("UPDATE task_continuation_events SET state = ?, settled_at = ?, error = ? WHERE job_id = ? AND state = 'claimed'")
-      .run(ok ? 'completed' : 'failed', finished, error, job.job_id);
+      .run((ok || handedOff) ? 'completed' : 'failed', finished, error, job.job_id);
     db.prepare("UPDATE agency_pilot_sources SET state = ?, settled_at = ? WHERE task_id = ? AND job_id = ? AND state = 'executing'")
-      .run(ok ? 'completed' : 'failed', finished, taskId, job.job_id);
+      .run((ok || handedOff) ? 'completed' : 'failed', finished, taskId, job.job_id);
     if (!['delivered', 'executing'].includes(task.status)) {
       // Cleared while running: keep its done state and recurrence stopped, record the outcome.
-      update(taskId, { job_id: null, last_run_at: finished, last_status: ok ? 'completed' : 'failed', last_result: ok ? job.output : null, last_error: error });
+      update(taskId, { job_id: null, last_run_at: finished, last_status: (ok || handedOff) ? 'completed' : 'failed', last_result: (ok || handedOff) ? job.output : null, last_error: error });
+      return;
+    }
+    if (handedOff) {
+      journalCompleted(task, job.job_id, finished, `${String(job.output || '').trim()}\n\nHanded off partial flow to follow-up task ${child.id} (${child.trigger_mode}${child.wait_trigger_id ? ` trigger ${child.wait_trigger_id}` : ''}${child.next_run_at ? ` at ${child.next_run_at}` : ''}).`);
+      const nextRecurring = task.recurrence ? nextFor(task, new Date()) : null;
+      update(taskId, {
+        status: nextRecurring ? 'queued' : 'partial', job_id: null, consecutive_failures: 0,
+        next_run_at: nextRecurring, pause_reason: null,
+        last_run_at: finished, last_status: 'partial', last_result: job.output, last_error: null,
+      });
+      if (task.flow_run_id) {
+        triggerFlow.recordFlowNode(task.flow_run_id, {
+          node_id: task.node_id || 'agent', node_type: 'agent', status: 'completed',
+          task_id: taskId, job_id: job.job_id, output: { status: 'partial', next_task_id: child.id }, finished_at: finished,
+        }, { flowStatus: 'waiting', finishedAt: null });
+      }
       return;
     }
     if (ok && task.remove_on_completion && !task.recurrence) {
       // Implemented: hold the task in 'finalizing' (protected from updates, retried after
       // a restart) until its result is journaled, then remove it and its runs.
+      if (task.flow_run_id) {
+        triggerFlow.recordFlowNode(task.flow_run_id, {
+          node_id: task.node_id || 'agent', node_type: 'agent', status: 'completed',
+          task_id: taskId, job_id: job.job_id, output: { status: 'completed' }, finished_at: finished,
+        }, { flowStatus: 'completed', terminalNodeId: 'terminal-completed', finishedAt: finished, edge: `${task.node_id || 'agent'}--terminal-completed` });
+      }
       update(taskId, { status: 'finalizing', job_id: job.job_id, last_run_at: finished, last_status: 'completed', last_result: job.output, last_error: null });
       finalize(taskId);
       return;
@@ -356,6 +517,17 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       pause_reason: status === 'paused' ? `${failures} consecutive failed runs; state kept. Fix the cause, then set_task this task_id to resume.` : null,
       last_run_at: finished, last_status: ok ? 'completed' : 'failed', last_result: ok ? job.output : null, last_error: error,
     });
+    if (task.flow_run_id) {
+      const terminalNode = ok ? 'terminal-completed' : 'terminal-failed';
+      triggerFlow.recordFlowNode(task.flow_run_id, {
+        node_id: task.node_id || 'agent', node_type: 'agent', status: ok ? 'completed' : 'failed',
+        task_id: taskId, job_id: job.job_id, output: ok ? { status: 'completed' } : undefined, error: ok ? null : error, finished_at: finished,
+      }, { flowStatus: ok ? 'completed' : 'failed', terminalNodeId: terminalNode, finishedAt: finished, edge: `${task.node_id || 'agent'}--${terminalNode}` });
+      triggerFlow.recordFlowNode(task.flow_run_id, {
+        node_id: terminalNode, node_type: 'terminal', status: ok ? 'completed' : 'failed',
+        task_id: taskId, output: ok ? { status: 'completed' } : undefined, error: ok ? null : error, started_at: finished, finished_at: finished,
+      });
+    }
   }
 
   // Every completed run goes into the journal: the task, its success definition and the result.
@@ -419,16 +591,34 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const delivery = transaction(() => {
       const claimed = db.prepare("UPDATE tasks SET status = 'delivered', job_id = ?, updated_at = ? WHERE id = ? AND status = 'queued'").run(jobId, now(), task.id);
       if (!claimed.changes) return null;
+      // Allocate a fresh flow run when a recurring task starts a new occurrence or when the prior flow run already terminated.
+      let activeFlowRunId = task.flow_run_id;
+      const existingRun = activeFlowRunId ? db.prepare('SELECT status FROM flow_runs WHERE id = ?').get(activeFlowRunId) : null;
+      const needsFreshRun = !activeFlowRunId || !existingRun || (task.recurrence && task.last_run_at) || ['completed', 'failed'].includes(existingRun.status);
+      if (needsFreshRun) {
+        activeFlowRunId = triggerFlow.createTaskFlowRun({
+          flowId: task.flow_id || ADHOC_PROCESS_ID,
+          triggerMode: task.trigger_mode || (task.recurrence ? 'datetime' : 'immediate'),
+          triggerId: task.wait_trigger_id || null,
+          correlationId: task.wait_correlation_id || null,
+          taskId: task.id,
+          nodeId: task.node_id || 'agent',
+          input: task.trigger_input ? JSON.parse(task.trigger_input) : null,
+        });
+        update(task.id, { flow_run_id: activeFlowRunId });
+      }
       db.prepare('INSERT INTO runs (id, task_id, job_id, status, started_at) VALUES (?, ?, ?, ?, ?)').run(randomUUID(), task.id, jobId, 'executing', now());
       const event = db.prepare(`UPDATE task_continuation_events SET state = 'claimed', job_id = ?
         WHERE continuation_id = (SELECT id FROM task_continuations WHERE task_id = ?) AND state = 'queued' RETURNING *`).get(jobId, task.id);
       const source = db.prepare("UPDATE agency_pilot_sources SET state = 'executing', job_id = ? WHERE task_id = ? AND state = 'queued'").run(jobId, task.id);
-      return { event, pilotSource: Boolean(source.changes) };
+      return { event, pilotSource: Boolean(source.changes), flowRunId: activeFlowRunId };
     });
     if (!delivery) return;
     try {
       const continuationEvent = delivery.event ? eventContext(task.id, delivery.event) : null;
-      await startTaskJob({ ...task, process_ids: taskProcessIds(task), job_id: jobId, continuation_event: continuationEvent }, { cwd, harness, mcpUrl, ...agentRun() });
+      const priorTasks = priorTaskChain(task.id);
+      const flowRun = delivery.flowRunId ? triggerFlow.getFlowRun(delivery.flowRunId) : null;
+      await startTaskJob({ ...task, flow_id: task.flow_id || ADHOC_PROCESS_ID, flow_run_id: delivery.flowRunId, process_ids: taskProcessIds(task), job_id: jobId, continuation_event: continuationEvent, prior_tasks: priorTasks, flow_run: flowRun }, { cwd, harness, mcpUrl, ...agentRun() });
     }
     catch (error) {
       if (delivery.event || delivery.pilotSource || error.code === 'PROCESS_NOT_FOUND') {
@@ -460,13 +650,26 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     }
     const at = now();
     queueContinuationEvent(at);
+    // Wake any event-waiting tasks whose optional datetime fallback (next_run_at) has arrived.
+    const expiredWaits = db.prepare("SELECT * FROM tasks WHERE status = 'waiting_event' AND next_run_at IS NOT NULL AND next_run_at <= ?").all(at);
+    for (const waiting of expiredWaits) {
+      const existingInput = waiting.trigger_input ? JSON.parse(waiting.trigger_input) : {};
+      const mergedInput = { ...existingInput, timeout_fallback: { due_at: waiting.next_run_at, woke_at: at, wait_trigger_id: waiting.wait_trigger_id } };
+      update(waiting.id, { status: 'queued', trigger_input: JSON.stringify(mergedInput), set_at: at });
+      if (waiting.flow_run_id) {
+        triggerFlow.recordFlowNode(waiting.flow_run_id, {
+          node_id: `timeout-${waiting.id.slice(0, 8)}`, node_type: 'trigger', status: 'completed',
+          task_id: waiting.id, input: mergedInput.timeout_fallback, started_at: at, finished_at: at,
+        }, { flowStatus: 'running', finishedAt: null, edge: `timeout-${waiting.id.slice(0, 8)}--${waiting.node_id || 'agent'}` });
+      }
+    }
     // One task at a time: the next due task starts only when nothing is running.
     // One-off work the owner directs (no goal) goes ahead of goal tasks.
     const busy = db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status IN ('delivered', 'executing', 'finalizing')").get().n;
     const due = busy ? null : db.prepare("SELECT * FROM tasks WHERE status = 'queued' AND (next_run_at IS NULL OR next_run_at <= ?) ORDER BY goal_id IS NOT NULL, COALESCE(next_run_at, created_at), created_at LIMIT 1").get(at);
     if (due) run(due);
     considerReview(null, correlation);
-    const next = db.prepare("SELECT MIN(next_run_at) AS at FROM tasks WHERE status = 'queued' AND next_run_at > ?").get(at)?.at;
+    const next = db.prepare("SELECT MIN(next_run_at) AS at FROM tasks WHERE status IN ('queued', 'waiting_event') AND next_run_at > ?").get(at)?.at;
     if (next) timer = setTimeout(schedule, Math.min(Math.max(new Date(next) - Date.now(), 0) + 50, 2 ** 31 - 1));
   }
 
@@ -547,18 +750,20 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const done = JSON.parse(goal.completed);
     const measured = done.find(item => item.stage === 'measurement')?.evidence || 'the measured result recorded at Measurement';
     const recurrence = JSON.stringify({ weekly: { day: 'monday', time: setting('goal_pace_time') || '08:00' } });
+    const goalProcessIds = JSON.parse(goal.process_ids || '[]');
+    const improveFlowId = goalProcessIds[0] || ADHOC_PROCESS_ID;
     const fields = {
       title: `Improve: ${goal.title}`,
       instruction: `Weekly Improve check for the completed goal "${goal.title}" (goal_id ${goal.id}).\nOutcome it must keep delivering: ${goal.outcome}\nMeasured result at completion: ${measured}\n\n1. Read this goal's runs and records from the last week and compare the results with the outcome and the measured result.\n2. Read the journal for the last 21 days (read_journal from_date/to_date) and find this goal's previous Improve check.\n3. Record this week's comparison with add_journal: content starting "Improve check: ${goal.title}: met" or "Improve check: ${goal.title}: missed", then the evidence.\n4. If this week missed and the previous Improve check also missed, call reopen_stage with this goal_id and the evidence of both misses.`,
       success: 'This week\'s comparison is journaled as met or missed, and a second consecutive miss has reopened the goal\'s Process stage.',
-      recurrence, goal_id: goal.id, stage: 'improve', category: 'other',
+      recurrence, goal_id: goal.id, stage: 'improve', category: 'other', flow_id: improveFlowId, trigger_mode: 'datetime',
     };
     const existing = findImproveTask(goal);
     // A running task keeps its in-flight status; settling it schedules the next weekly run.
     if (existing && ['delivered', 'executing', 'finalizing', 'clearing'].includes(existing.status)) update(existing.id, fields);
     else if (existing) update(existing.id, { ...fields, status: 'queued', next_run_at: nextFor({ recurrence }, new Date()), consecutive_failures: 0, pause_reason: null });
-    else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, success, category, goal_id, stage) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(improveTaskId(goal), fields.title, fields.instruction, recurrence, nextFor({ recurrence }, new Date()), 'queued', now(), now(), fields.success, fields.category, goal.id, 'improve');
+    else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, success, category, goal_id, stage, flow_id, trigger_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(improveTaskId(goal), fields.title, fields.instruction, recurrence, nextFor({ recurrence }, new Date()), 'queued', now(), now(), fields.success, fields.category, goal.id, 'improve', improveFlowId, 'datetime');
   }
   db.prepare("UPDATE goals SET status = 'inactive', updated_at = ? WHERE status IN ('improving', 'maintaining')").run(now());
   // A completed function goal missing its weekly Improve check (completed before this, or interrupted) gets one.
@@ -594,7 +799,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     // another task or interrupting work that already has authority to continue.
     const acceptedProof = priorStageProof(goal, stage.key);
     // A recurring routine waiting for its next run is ongoing work, not unfinished work.
-    if (!acceptedProof.length && tasks.some(task => ['delivered', 'executing', 'finalizing', 'clearing'].includes(task.status) || (task.status === 'queued' && !task.recurrence))) throw new Error(`Tasks for the ${stage.name} stage are still queued or running.`);
+    if (!acceptedProof.length && tasks.some(task => ['delivered', 'executing', 'finalizing', 'clearing', 'waiting_event'].includes(task.status) || (task.status === 'queued' && !task.recurrence))) throw new Error(`Tasks for the ${stage.name} stage are still queued, waiting for an event, or running.`);
     if (goal.kind === 'environment') {
       // The working environment's stages are checked against its records, not the agent's claim.
       const missing = await environmentCheck(cwd, stage.key);
@@ -840,7 +1045,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     }
     return true;
   }
-  const BLOCKED_OR_DONE = new Set(['completed', 'done', 'failed', 'paused']);
+  const BLOCKED_OR_DONE = new Set(['completed', 'partial', 'done', 'failed', 'paused']);
   let reviewTimer = null, reviewStarting = false;
   // A question inov8 asked that the owner has not answered pauses reviews until it is answered
   // (the owner's Run still starts one).
@@ -945,7 +1150,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   // keeps the outcome owned. A request to M3NT0R only advises.
   async function reviewWork(goal) {
     const stage = stagesFor(goal.kind)[goal.stage];
-    const tasks = stageTasks(goal.id, stage.key).filter(task => ['queued', 'delivered', 'executing', 'finalizing'].includes(task.status));
+    const tasks = stageTasks(goal.id, stage.key).filter(task => ['queued', 'waiting_event', 'delivered', 'executing', 'finalizing'].includes(task.status));
     if (tasks.length) return { disposition: 'work-underway', output: { task_ids: tasks.map(task => task.id) } };
     const continuations = stageContinuations(goal).filter(item => item.work_underway);
     if (continuations.length) return { disposition: 'healthy-wait', output: { continuations: continuations.map(item => ({
@@ -1284,13 +1489,22 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       return reviewConfig();
     },
     goals: () => ({ goals: listGoals(), pace: pace(), review_error: setting('goal_review_error'), full_access: setting('full_access') === 'true', agent_harness: setting('agent_harness') || 'codex' }),
-    // Task with its runs, for the owner UI.
+    // Task with its runs, lineage, and flow run, for the owner UI and get_task.
     detail(taskId) {
       const task = view(get(taskId));
-      return task && { task, runs: db.prepare('SELECT * FROM runs WHERE task_id = ? ORDER BY started_at DESC').all(taskId), continuations: taskContinuations(task, { includeEvents: true }), worker: workerState() };
+      return task && {
+        task,
+        runs: db.prepare('SELECT * FROM runs WHERE task_id = ? ORDER BY started_at DESC').all(taskId),
+        prior_tasks: priorTaskChain(taskId),
+        child_tasks: childTasks(taskId),
+        flow_run: task.flow_run_id ? triggerFlow.getFlowRun(task.flow_run_id) : null,
+        continuations: taskContinuations(task, { includeEvents: true }),
+        worker: workerState(),
+      };
     },
     call(name, input) {
       if (triggerFlowTools.some(tool => tool.name === name)) return triggerFlow.call(name, input);
+      if (name === 'handoff_task') return handoffTask(input);
       if (name === 'record_task_continuation') return recordContinuation(input);
       if (name === CONTINUATION_RETURN) return receiveContinuationEvent(input);
       if (name === 'set_task') {
@@ -1299,13 +1513,24 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         const existing = input.task_id ? get(id) : null;
         if (input.task_id && !existing) throw new Error(`Task ${id} was not found.`);
         if (existing && ['delivered', 'executing', 'finalizing', 'clearing'].includes(existing.status)) throw new Error('This task is running, being finalized or being cleared; update it after it finishes.');
+        const parentTaskId = input.parent_task_id !== undefined ? (input.parent_task_id?.trim() || null) : (existing?.parent_task_id ?? null);
+        const parent = parentTaskId ? get(parentTaskId) : null;
+        if (parentTaskId && !parent) throw new Error(`Parent task ${parentTaskId} was not found.`);
+        if (parentTaskId === id) throw new Error('A task cannot be its own parent_task_id.');
         const recurrence = input.recurrence ? JSON.stringify(input.recurrence) : null;
-        const nextRun = input.run_at ? new Date(input.run_at).toISOString() : recurrence ? nextFor({ recurrence }, new Date()) : null;
         if (input.run_at && Number.isNaN(new Date(input.run_at).getTime())) throw new Error('run_at must be an ISO date-time.');
+        const waitTriggerId = input.trigger_id !== undefined ? (input.trigger_id?.trim() || null) : (existing?.wait_trigger_id ?? null);
+        const waitCorrelationId = input.correlation_id !== undefined ? (input.correlation_id?.trim() || null) : (existing?.wait_correlation_id ?? null);
+        if (waitTriggerId && !triggerFlow.getTrigger(waitTriggerId)) throw new Error(`Trigger "${waitTriggerId}" is not registered.`);
+        if (waitTriggerId && recurrence) throw new Error('Event-driven tasks (trigger_id) cannot also specify recurrence; use run_at for a timeout fallback.');
+        const nextRun = input.run_at ? new Date(input.run_at).toISOString() : recurrence ? nextFor({ recurrence }, new Date()) : null;
+        const triggerMode = waitTriggerId ? 'event' : (nextRun || recurrence) ? 'datetime' : 'immediate';
+        const initialStatus = waitTriggerId ? 'waiting_event' : 'queued';
         if (!input.success?.trim()) throw new Error('Give the definition of success for this task.');
         if (input.constraints && (!Array.isArray(input.constraints) || input.constraints.some(item => typeof item !== 'string'))) throw new Error('constraints must be a list of strings.');
         // A goal's tasks belong to its current stage; a task for a stage it hasn't reached is refused.
-        let goalFields = existing ? { goal_id: existing.goal_id, stage: existing.stage } : { goal_id: null, stage: null };
+        let goalFields = existing ? { goal_id: existing.goal_id, stage: existing.stage } : parent ? { goal_id: parent.goal_id, stage: parent.stage } : { goal_id: null, stage: null };
+        let goalProcessIds = [];
         if (input.goal_id) {
           const goal = getGoal(input.goal_id);
           if (!goal) throw new Error('Goal not found.');
@@ -1313,13 +1538,34 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
           if (goal.status !== 'active') throw new Error(`The goal "${goal.title}" is ${goal.status}; its tasks start when it becomes the active goal.`);
           if (input.stage && input.stage !== current.key) throw new Error(`The goal "${goal.title}" is in its ${current.name} stage ("${current.key}"); tasks for the "${input.stage}" stage wait until it gets there.`);
           goalFields = { goal_id: goal.id, stage: current.key };
+          goalProcessIds = JSON.parse(goal.process_ids || '[]');
         }
         if (input.trigger_input !== undefined && (!input.trigger_input || typeof input.trigger_input !== 'object' || Array.isArray(input.trigger_input))) throw new Error('trigger_input must be an object.');
-        const contract = { process_ids: input.process_ids !== undefined ? encodeProcessIds(input.process_ids) : existing?.process_ids ?? null, trigger_input: input.trigger_input !== undefined ? JSON.stringify(input.trigger_input) : existing?.trigger_input ?? null, success: input.success.trim(), constraints: input.constraints?.length ? JSON.stringify(input.constraints) : null, category: input.category || null, ...goalFields };
+        const encodedProcessIds = input.process_ids !== undefined ? encodeProcessIds(input.process_ids) : existing?.process_ids ?? parent?.process_ids ?? null;
+        const explicitProcessList = encodedProcessIds ? JSON.parse(encodedProcessIds) : [];
+        const flowId = input.flow_id?.trim() || parent?.flow_id || explicitProcessList[0] || goalProcessIds[0] || existing?.flow_id || ADHOC_PROCESS_ID;
+        if (!resolveFlow(flowId)) throw new Error(`Flow "${flowId}" is not registered.`);
+        const nodeId = input.node_id !== undefined ? (input.node_id?.trim() || null) : (existing?.node_id ?? parent?.node_id ?? null);
+        const checkpoint = input.checkpoint !== undefined ? (input.checkpoint?.trim() || null) : (existing?.checkpoint ?? null);
+        const triggerInputJson = input.trigger_input !== undefined ? JSON.stringify(input.trigger_input) : existing?.trigger_input ?? null;
+        let flowRunId = input.flow_run_id?.trim() || parent?.flow_run_id || existing?.flow_run_id || null;
+        if (!flowRunId) {
+          flowRunId = triggerFlow.createTaskFlowRun({
+            flowId, triggerMode, triggerId: waitTriggerId, correlationId: waitCorrelationId,
+            taskId: id, nodeId: nodeId || 'agent', input: input.trigger_input || null,
+          });
+        }
+        const contract = {
+          process_ids: encodedProcessIds, trigger_input: triggerInputJson,
+          success: input.success.trim(), constraints: input.constraints?.length ? JSON.stringify(input.constraints) : null,
+          category: input.category || null, ...goalFields,
+          flow_id: flowId, flow_run_id: flowRunId, node_id: nodeId, parent_task_id: parentTaskId,
+          trigger_mode: triggerMode, wait_trigger_id: waitTriggerId, wait_correlation_id: waitCorrelationId, checkpoint,
+        };
         const removeOnCompletion = input.remove_on_completion === true ? 1 : 0;
         if (removeOnCompletion && recurrence) throw new Error('remove_on_completion applies to one-off tasks only.');
-        if (existing) update(id, { title: input.title, instruction: input.instruction, recurrence, next_run_at: nextRun, status: 'queued', consecutive_failures: 0, pause_reason: null, remove_on_completion: removeOnCompletion, set_at: now(), ...contract });
-        else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, remove_on_completion, success, constraints, category, goal_id, stage, set_at, process_ids, trigger_input) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, input.title, input.instruction, recurrence, nextRun, 'queued', now(), now(), removeOnCompletion, contract.success, contract.constraints, contract.category, contract.goal_id, contract.stage, now(), contract.process_ids, contract.trigger_input);
+        if (existing) update(id, { title: input.title, instruction: input.instruction, recurrence, next_run_at: nextRun, status: initialStatus, consecutive_failures: 0, pause_reason: null, remove_on_completion: removeOnCompletion, set_at: now(), ...contract });
+        else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, remove_on_completion, success, constraints, category, goal_id, stage, set_at, process_ids, trigger_input, flow_id, flow_run_id, node_id, parent_task_id, trigger_mode, wait_trigger_id, wait_correlation_id, checkpoint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, input.title, input.instruction, recurrence, nextRun, initialStatus, now(), now(), removeOnCompletion, contract.success, contract.constraints, contract.category, contract.goal_id, contract.stage, now(), contract.process_ids, contract.trigger_input, contract.flow_id, contract.flow_run_id, contract.node_id, contract.parent_task_id, contract.trigger_mode, contract.wait_trigger_id, contract.wait_correlation_id, contract.checkpoint);
         schedule();
         return { task: view(get(id)), created: !existing, worker: workerState() };
       }
@@ -1346,9 +1592,23 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
               if (input.action === 'delete') {
                 db.prepare('DELETE FROM runs WHERE task_id = ?').run(task.id);
                 db.prepare('DELETE FROM tasks WHERE id = ?').run(task.id);
+                if (task.flow_run_id) {
+                  const remaining = db.prepare('SELECT COUNT(*) AS n FROM tasks WHERE flow_run_id = ?').get(task.flow_run_id).n;
+                  if (!remaining) {
+                    db.prepare('DELETE FROM flow_run_nodes WHERE run_id = ?').run(task.flow_run_id);
+                    db.prepare('DELETE FROM trigger_events WHERE flow_run_id = ?').run(task.flow_run_id);
+                    db.prepare('DELETE FROM flow_runs WHERE id = ?').run(task.flow_run_id);
+                  }
+                }
               } else {
                 update(task.id, { status: 'done', next_run_at: null });
                 closeTaskContinuation(task.id);
+                if (task.flow_run_id) {
+                  const openRemaining = db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE flow_run_id = ? AND status NOT IN ('completed', 'partial', 'done', 'failed')").get(task.flow_run_id).n;
+                  if (!openRemaining) {
+                    triggerFlow.recordFlowNode(task.flow_run_id, null, { flowStatus: 'completed', finishedAt: now() });
+                  }
+                }
               }
             });
             if (input.action === 'delete' && task.job_id) { watchers.get(task.job_id)?.close(); watchers.delete(task.job_id); }
