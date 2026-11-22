@@ -82,50 +82,116 @@ function processDiagramXml(flow, run = null) {
     cells.push(`<mxCell id="${id}" value="${processText(label)}" style="edgeStyle=orthogonalEdgeStyle;rounded=1;endArrow=block;endFill=1;fontSize=14;labelBackgroundColor=${dark ? '#222222' : '#ffffff'};strokeColor=${font};fontColor=${font};${extra}" edge="1" parent="1" source="${from}" target="${to}"><mxGeometry relative="1" as="geometry">${points}</mxGeometry></mxCell>`);
   };
   // Explicit Trigger entry node
+  const hasResponseSplit = steps.some(step => /^Decision:/i.test(step) && /response.*received/i.test(step));
+  const mainX = hasResponseSplit ? 380 : 300;
   const triggerLabel = shortNodeLabel(flow.trigger, 'Trigger', 68);
   const triggerHeight = Math.max(72, Math.ceil(triggerLabel.length / 24) * 20 + 28);
-  vertex('trigger-0', triggerLabel, 285, y, 220, triggerHeight, 'trigger');
+  vertex('trigger-0', triggerLabel, mainX - 15, y, 220, triggerHeight, 'trigger');
   y += triggerHeight + 52;
-  let followup = false;
+  let splitDecisionIndex = -1;
+  let splitDecisionBottomY = 0;
+  let followupY = 0;
+  let responseY = 0;
+  let lastFollowupId = null;
+  let lastResponseId = null;
+  let inResponseBranch = false;
   steps.forEach((step, index) => {
     const kind = businessStepType(step);
     const decision = kind === 'decision';
     const label = decision ? step.replace(/^Decision:\s*/i, '').split('?')[0] + '?' : step;
     const height = decision ? 210 : Math.max(82, Math.ceil(label.length / 22) * 22 + 32);
     const width = decision ? 220 : kind === 'agent' ? 216 : 196;
-    const x = (followup ? 520 : 300) + (decision ? -15 : kind === 'agent' ? -10 : 0);
-    positions.push({ x, y, height, decision });
-    vertex(`step-${index}`, label, x, y, width, height, kind);
+    const isUnanswered = splitDecisionIndex >= 0 && !inResponseBranch && /^Unanswered\b/i.test(step);
+    if (splitDecisionIndex >= 0 && !isUnanswered && !inResponseBranch) {
+      inResponseBranch = true;
+      responseY = splitDecisionBottomY + 60;
+    }
+    let x, top;
+    if (isUnanswered) {
+      x = 680 + (decision ? -15 : kind === 'agent' ? -10 : 0);
+      top = followupY;
+      followupY += height + 60;
+    } else if (inResponseBranch) {
+      x = 200 + (decision ? -15 : kind === 'agent' ? -10 : 0);
+      top = responseY;
+      responseY += height + 60;
+    } else {
+      x = mainX + (decision ? -15 : kind === 'agent' ? -10 : 0);
+      top = y;
+      y += height + 60;
+    }
+    positions.push({ x, y: top, height, width, decision });
+    vertex(`step-${index}`, label, x, top, width, height, kind);
     if (index === 0) {
       edge('edge-trigger', 'trigger-0', 'step-0', '', 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;');
+    } else if (isUnanswered) {
+      if (!lastFollowupId) {
+        edge(`edge-${index}`, `step-${splitDecisionIndex}`, `step-${index}`, 'No · unanswered', 'exitX=0.75;exitY=0.75;entryX=0.5;entryY=0;');
+      } else {
+        edge(`edge-${index}`, lastFollowupId, `step-${index}`, '', 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;');
+      }
+      lastFollowupId = `step-${index}`;
+    } else if (inResponseBranch) {
+      if (!lastResponseId) {
+        edge('response-yes', `step-${splitDecisionIndex}`, `step-${index}`, 'Yes · response received', 'exitX=0.25;exitY=0.75;entryX=0.5;entryY=0;');
+      } else {
+        const prevStep = steps[index - 1];
+        const prevIsOutcomeDecision = /^Decision:/i.test(prevStep) && /accepted/i.test(prevStep);
+        edge(`edge-${index}`, lastResponseId, `step-${index}`, prevIsOutcomeDecision ? 'Accepted' : '', 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;');
+      }
+      lastResponseId = `step-${index}`;
     } else {
       const previous = steps[index - 1];
       const previousDecision = /^Decision:/i.test(previous);
-      const response = previousDecision && /response.*received/i.test(previous);
-      edge(`edge-${index}`, `step-${index - 1}`, `step-${index}`, previousDecision ? (response ? 'No' : 'Yes') : '', response ? 'exitX=0.75;exitY=0.75;entryX=0.5;entryY=0;' : 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;');
+      edge(`edge-${index}`, `step-${index - 1}`, `step-${index}`, previousDecision ? 'Yes' : '', 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;');
     }
     if (decision && /response.*received/i.test(step)) {
-      vertex('response', 'Response received', 80, y + height + 60, 190, 82, 'terminal');
-      edge('response-yes', `step-${index}`, 'response', 'Yes', 'exitX=0.25;exitY=0.75;entryX=0.5;entryY=0;');
-      followup = true;
+      splitDecisionIndex = index;
+      splitDecisionBottomY = top + height;
+      followupY = splitDecisionBottomY + 60;
+    }
+    if (decision && /revision/i.test(step)) {
+      const target = steps.findIndex((text, n) => n < index && /prepare\s+scope|offer\s+version/i.test(text));
+      if (target >= 0) {
+        const targetPos = positions[target];
+        edge(`revision-${index}`, `step-${index}`, `step-${target}`, 'Revision requested', 'exitX=0;exitY=0.5;entryX=0;entryY=0.5;', `<Array as="points"><mxPoint x="70" y="${top + height / 2}"/><mxPoint x="70" y="${targetPos.y + targetPos.height / 2}"/></Array>`);
+      }
+    }
+    if (decision && /declined|deferred/i.test(step)) {
+      vertex('declined', 'Declined / deferred', 460, top + Math.round((height - 82) / 2), 170, 82, 'terminal');
+      edge(`declined-${index}`, `step-${index}`, 'declined', 'Declined / deferred', 'exitX=1;exitY=0.5;entryX=0;entryY=0.5;');
     }
     if (decision && /return to/i.test(step)) {
       const recipient = /return to\s+([^;,.]+)/i.exec(step)?.[1]?.trim();
       const target = recipient ? steps.findIndex((text, n) => n < index && text.toLowerCase().startsWith(recipient.toLowerCase())) : -1;
       if (target >= 0) {
-        const top = positions[target];
-        edge(`return-${index}`, `step-${index}`, `step-${target}`, 'No · amendments', 'exitX=0;exitY=0.5;entryX=0;entryY=0.5;', `<Array as="points"><mxPoint x="170" y="${y + height / 2}"/><mxPoint x="170" y="${top.y + top.height / 2}"/></Array>`);
+        const targetPos = positions[target];
+        edge(`return-${index}`, `step-${index}`, `step-${target}`, 'No · amendments', 'exitX=0;exitY=0.5;entryX=0;entryY=0.5;', `<Array as="points"><mxPoint x="170" y="${top + height / 2}"/><mxPoint x="170" y="${targetPos.y + targetPos.height / 2}"/></Array>`);
       }
     }
-    y += height + 60;
   });
-  // Explicit Terminal completion node
-  const termLabel = shortNodeLabel(flow.completion, 'Completed', 68);
-  const termHeight = Math.max(72, Math.ceil(termLabel.length / 24) * 20 + 28);
-  const termX = followup ? 505 : 285;
-  vertex('terminal-0', termLabel, termX, y, 220, termHeight, 'terminal');
-  if (steps.length) edge('edge-terminal', `step-${steps.length - 1}`, 'terminal-0', '', 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;');
-  else edge('edge-terminal', 'trigger-0', 'terminal-0', '', 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;');
+  // Explicit Terminal completion node(s)
+  if (splitDecisionIndex >= 0) {
+    if (lastFollowupId) {
+      vertex('terminal-followup', 'Pending · 1-month reminder', 668, followupY, 220, 82, 'terminal');
+      edge('edge-terminal-followup', lastFollowupId, 'terminal-followup', '', 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;');
+    }
+    if (lastResponseId) {
+      const termLabel = shortNodeLabel(flow.completion, 'Completed', 68);
+      const termHeight = Math.max(72, Math.ceil(termLabel.length / 24) * 20 + 28);
+      vertex('terminal-0', termLabel, 188, responseY, 220, termHeight, 'terminal');
+      edge('edge-terminal', lastResponseId, 'terminal-0', '', 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;');
+    } else {
+      vertex('response', 'Response received', 190, splitDecisionBottomY + 60, 210, 82, 'terminal');
+      edge('response-yes', `step-${splitDecisionIndex}`, 'response', 'Yes', 'exitX=0.25;exitY=0.75;entryX=0.5;entryY=0;');
+    }
+  } else {
+    const termLabel = shortNodeLabel(flow.completion, 'Completed', 68);
+    const termHeight = Math.max(72, Math.ceil(termLabel.length / 24) * 20 + 28);
+    vertex('terminal-0', termLabel, mainX - 15, y, 220, termHeight, 'terminal');
+    if (steps.length) edge('edge-terminal', `step-${steps.length - 1}`, 'terminal-0', '', 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;');
+    else edge('edge-terminal', 'trigger-0', 'terminal-0', '', 'exitX=0.5;exitY=1;entryX=0.5;entryY=0;');
+  }
   return `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>${cells.join('')}</root></mxGraphModel>`;
 }
 const reviewTime = value => value ? new Intl.DateTimeFormat(undefined, {
@@ -228,7 +294,7 @@ async function mountProcessDiagram(flow, run = null, triggers = []) {
   const internal = flow.kind === 'internal';
   const diagram = run?.definition || flow;
   const internalNodes = new Map((diagram.nodes || []).map(node => [node.id, node]));
-  const stepFromCell = id => internal ? internalNodes.get(id) : (id === 'trigger-0' || id === 'terminal-0' || id === 'response' || (/^step-\d+$/.test(id) && flow.steps?.[Number(id.slice(5))]));
+  const stepFromCell = id => internal ? internalNodes.get(id) : (id === 'trigger-0' || id === 'terminal-0' || id === 'terminal-followup' || id === 'response' || id === 'declined' || (/^step-\d+$/.test(id) && flow.steps?.[Number(id.slice(5))]));
   const openCell = id => {
     if (internal) openInternalNode(flow, internalNodes.get(id), run);
     else openBusinessCell(flow, id, run, triggers);
@@ -306,13 +372,21 @@ function openBusinessCell(flow, cellId, run = null, triggers = []) {
     if (!modal.open) modal.showModal();
     return;
   }
-  if (cellId === 'terminal-0' || cellId === 'response') {
+  if (cellId === 'terminal-0' || cellId === 'terminal-followup' || cellId === 'response' || cellId === 'declined') {
     const info = nodeTypeInfo(flow, 'terminal');
     modal.dataset.step = cellId;
-    modal.innerHTML = `<div class="process-modal-header"><div><p class="meta">${processNameWithBadge(flow)} · <span class="process-node-type type-terminal">${processText(info.label)}</span></p><h2 id="process-step-title">${cellId === 'response' ? 'Response received' : 'Completion'}</h2></div><button type="button" class="ghost" data-close-step autofocus>Close</button></div>
+    const title = cellId === 'response' ? 'Response received' : cellId === 'declined' ? 'Declined / deferred' : cellId === 'terminal-followup' ? 'Pending · 1-month reminder' : 'Completion';
+    const body = cellId === 'response'
+      ? 'Customer responded to the offer; follow-up branch ends and flow proceeds to resolution.'
+      : cellId === 'declined'
+        ? 'Customer declined or deferred the offer; retain the disposition and close without handing off to delivery.'
+        : cellId === 'terminal-followup'
+          ? 'No response after day 1/3/7/10 follow-ups; 1-month reminder saved to circle back.'
+          : (flow.completion || 'No completion definition recorded yet.');
+    modal.innerHTML = `<div class="process-modal-header"><div><p class="meta">${processNameWithBadge(flow)} · <span class="process-node-type type-terminal">${processText(info.label)}</span></p><h2 id="process-step-title">${title}</h2></div><button type="button" class="ghost" data-close-step autofocus>Close</button></div>
       <div class="process-modal-body prose">
         <p class="meta">${processText(info.definition)}</p>
-        <h3>Terminal definition</h3>${renderMarkdown(cellId === 'response' ? 'Customer responded to the offer; follow-up branch ends and flow proceeds to resolution.' : (flow.completion || 'No completion definition recorded yet.'))}
+        <h3>Terminal definition</h3>${renderMarkdown(body)}
         ${selectedProcessRun ? `<h3>Run evidence</h3>${evidenceFields(run?.nodes?.[cellId] || run?.nodes?.['terminal-received'])}` : ''}
       </div>`;
     if (!modal.open) modal.showModal();
