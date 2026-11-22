@@ -118,6 +118,15 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       id TEXT PRIMARY KEY, title TEXT NOT NULL, kind TEXT NOT NULL, outcome TEXT, source TEXT,
       position INTEGER NOT NULL, stage INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL,
       completed TEXT NOT NULL DEFAULT '[]', stop_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS clarify_delegations (
+      delegation_id TEXT PRIMARY KEY, clarify_task_id TEXT, source_event_id TEXT,
+      flow_id TEXT, local_task_id TEXT, flow_run_id TEXT, mode TEXT, status TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS clarify_delegations_local_task ON clarify_delegations (local_task_id);
+    CREATE TABLE IF NOT EXISTS clarify_status_outbox (
+      id TEXT PRIMARY KEY, delegation_id TEXT NOT NULL, payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS clarify_status_outbox_created ON clarify_status_outbox (created_at);
   `);
   const reviewLedger = createReviewLedger(db);
   let api;
@@ -244,6 +253,32 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     return chain;
   }
   const childTasks = taskId => db.prepare('SELECT id, title, status, flow_id, flow_run_id, node_id, trigger_mode, wait_trigger_id, wait_correlation_id, next_run_at, checkpoint, created_at FROM tasks WHERE parent_task_id = ? ORDER BY created_at').all(taskId);
+  const taskChangeListeners = new Set();
+  function delegationIdForTask(taskId) {
+    let cur = get(taskId);
+    const seen = new Set();
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      const row = db.prepare('SELECT delegation_id FROM clarify_delegations WHERE local_task_id = ? LIMIT 1').get(cur.id);
+      if (row?.delegation_id) return row.delegation_id;
+      try {
+        const ti = cur.trigger_input ? JSON.parse(cur.trigger_input) : null;
+        if (ti?.clarify_delegation_id) return ti.clarify_delegation_id;
+      } catch {}
+      cur = cur.parent_task_id ? get(cur.parent_task_id) : null;
+    }
+    return null;
+  }
+  function emitTaskChange(event) {
+    const delegationId = event.clarify_delegation_id ?? (event.task_id ? delegationIdForTask(event.task_id) : null);
+    const payload = { ...event, clarify_delegation_id: delegationId };
+    if (delegationId && event.status) {
+      try { db.prepare('UPDATE clarify_delegations SET status = ?, updated_at = ? WHERE delegation_id = ?').run(event.status, now(), delegationId); } catch {}
+    }
+    for (const listener of taskChangeListeners) {
+      try { listener(payload); } catch (error) { console.error('Task change listener failed:', error.message); }
+    }
+  }
   const watchers = new Map();
   let timer = null, closed = false;
   let pilotPendingWatcher = null, pilotContinuationWatcher = null, pilotReadError = null, pilotInputVersion = null, pilotRejectedVersion = null;
@@ -451,6 +486,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       started_at: at,
     }, { flowStatus: 'waiting', finishedAt: null, edge: `${parent.node_id || 'agent'}--${handoffNodeId}` });
     schedule({ kind: 'task_handoff', parent_task_id: parent.id, child_task_id: childId });
+    emitTaskChange({ task_id: parent.id, flow_id: flowId, flow_run_id: flowRunId, status: 'partial', checkpoint: input.checkpoint.trim(), child_task_id: childId, wait_trigger_id: triggerId, wait_correlation_id: correlationId });
     return { handed_off: true, parent_task_id: parent.id, flow_id: flowId, flow_run_id: flowRunId, next_task: view(get(childId)), worker: workerState() };
   }
 
@@ -493,6 +529,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
           task_id: taskId, job_id: job.job_id, output: { status: 'partial', next_task_id: child.id }, finished_at: finished,
         }, { flowStatus: 'waiting', finishedAt: null });
       }
+      emitTaskChange({ task_id: taskId, flow_id: task.flow_id, flow_run_id: task.flow_run_id, status: 'partial', result: job.output, child_task_id: child.id, wait_trigger_id: child.wait_trigger_id, wait_correlation_id: child.wait_correlation_id });
       return;
     }
     if (ok && task.remove_on_completion && !task.recurrence) {
@@ -528,6 +565,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         task_id: taskId, output: ok ? { status: 'completed' } : undefined, error: ok ? null : error, started_at: finished, finished_at: finished,
       });
     }
+    emitTaskChange({ task_id: taskId, flow_id: task.flow_id, flow_run_id: task.flow_run_id, status: ok ? 'completed' : 'failed', result: ok ? job.output : null, error });
   }
 
   // Every completed run goes into the journal: the task, its success definition and the result.
@@ -542,11 +580,13 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const task = get(taskId);
     if (task?.status !== 'finalizing') return;
     try {
+      const delegationId = delegationIdForTask(task.id);
       await journalOnce(cwd, `task-implemented-${task.id}-${task.job_id}`, { date: businessDate(new Date(task.last_run_at)), kind: 'activity', source: 'action_queue', content: `Implemented: ${task.title}\n\n${task.last_result}`, metadata: { task_id: task.id, job_id: task.job_id } });
       transaction(() => {
         db.prepare("DELETE FROM runs WHERE task_id = ? AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status = 'finalizing' AND job_id = ?)").run(task.id, task.id, task.job_id);
         db.prepare("DELETE FROM tasks WHERE id = ? AND status = 'finalizing' AND job_id = ?").run(task.id, task.job_id);
       });
+      emitTaskChange({ task_id: task.id, flow_id: task.flow_id, flow_run_id: task.flow_run_id, status: 'completed', result: task.last_result, clarify_delegation_id: delegationId });
       schedule();
     } catch (error) {
       update(taskId, { last_error: `Journal before removal failed; retried at the next start: ${error.message}` });
@@ -633,6 +673,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       return;
     }
     db.prepare("UPDATE tasks SET status = 'executing', updated_at = ? WHERE id = ? AND status = 'delivered' AND job_id = ?").run(now(), task.id, jobId);
+    emitTaskChange({ task_id: task.id, flow_id: task.flow_id || ADHOC_PROCESS_ID, flow_run_id: delivery.flowRunId, status: 'executing' });
     follow(task.id, jobId);
   }
 
@@ -1479,6 +1520,138 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     listFlowRuns: (flowId, limit) => triggerFlow.listFlowRuns(flowId, limit),
     getFlowRun: id => triggerFlow.getFlowRun(id),
     clearSyntheticTraces: runId => triggerFlow.clearSyntheticTraces(runId),
+    subscribeTaskChanges(listener) {
+      taskChangeListeners.add(listener);
+      return () => taskChangeListeners.delete(listener);
+    },
+    waitingEventTasks() {
+      const rows = db.prepare("SELECT id, flow_id, flow_run_id, wait_trigger_id, wait_correlation_id, created_at, parent_task_id, trigger_input FROM tasks WHERE status = 'waiting_event' AND wait_trigger_id IS NOT NULL ORDER BY created_at").all();
+      return rows.map(row => {
+        let originSourceEventId = null;
+        try {
+          const ti = row.trigger_input ? JSON.parse(row.trigger_input) : null;
+          originSourceEventId = ti?.source_event_id || ti?.source_event?.source_event_id || null;
+        } catch {}
+        if (!originSourceEventId && row.parent_task_id) {
+          const parent = get(row.parent_task_id);
+          try {
+            const pti = parent?.trigger_input ? JSON.parse(parent.trigger_input) : null;
+            originSourceEventId = pti?.source_event_id || pti?.source_event?.source_event_id || null;
+          } catch {}
+        }
+        return {
+          task_id: row.id,
+          flow_id: row.flow_id,
+          flow_run_id: row.flow_run_id,
+          wait_trigger_id: row.wait_trigger_id,
+          wait_correlation_id: row.wait_correlation_id,
+          created_at: row.created_at,
+          origin_source_event_id: originSourceEventId,
+        };
+      });
+    },
+    queueClarifyStatus(frame) {
+      const id = randomUUID();
+      db.prepare('INSERT INTO clarify_status_outbox (id, delegation_id, payload_json, created_at) VALUES (?, ?, ?, ?)')
+        .run(id, String(frame.delegation_id || ''), JSON.stringify(frame), now());
+      return id;
+    },
+    ackClarifyStatus(id) {
+      db.prepare('DELETE FROM clarify_status_outbox WHERE id = ?').run(id);
+    },
+    pendingClarifyStatuses(limit = 200) {
+      return db.prepare('SELECT id, payload_json FROM clarify_status_outbox ORDER BY created_at, rowid LIMIT ?').all(limit)
+        .map(row => ({ id: row.id, frame: JSON.parse(row.payload_json) }));
+    },
+    recordClarifyDelegation(frame) {
+      const delegationId = String(frame?.delegation_id || '').trim();
+      if (!delegationId) throw new Error('delegation_id is required.');
+      const existing = db.prepare('SELECT * FROM clarify_delegations WHERE delegation_id = ?').get(delegationId);
+      if (existing) {
+        const localTask = existing.local_task_id ? get(existing.local_task_id) : null;
+        return {
+          delegation_id: delegationId,
+          local_task_id: existing.local_task_id,
+          flow_id: existing.flow_id,
+          flow_run_id: existing.flow_run_id,
+          status: existing.status || localTask?.status || 'queued',
+          duplicate: true,
+        };
+      }
+      const mode = frame.mode === 'resume_event' ? 'resume_event' : 'new_task';
+      const at = now();
+      if (mode === 'resume_event' && frame.trigger_id) {
+        const wake = triggerFlow.receiveTrigger({
+          trigger_id: frame.trigger_id,
+          correlation_id: frame.correlation_id || undefined,
+          dedupe_key: delegationId,
+          source_ref: frame.source_event_id || frame.clarify_task_id || delegationId,
+          payload: {
+            clarify_delegation_id: delegationId,
+            clarify_task_id: frame.clarify_task_id || null,
+            source_event_id: frame.source_event_id || null,
+            ...(frame.payload && typeof frame.payload === 'object' ? frame.payload : {}),
+          },
+        });
+        let localTaskId = wake.task_id || null;
+        let flowRunId = wake.flow_run_id || null;
+        let flowId = wake.flow_id || frame.flow_id || ADHOC_PROCESS_ID;
+        let status = localTaskId ? 'queued' : wake.disposition;
+        if (wake.disposition === 'duplicate' && !localTaskId) {
+          // Recover the woken task binding if an earlier wake committed before receipt persistence.
+          const recovered = db.prepare("SELECT id, flow_id, flow_run_id, status FROM tasks WHERE json_extract(trigger_input, '$.event.payload.clarify_delegation_id') = ? LIMIT 1").get(delegationId)
+            || (flowRunId ? db.prepare('SELECT id, flow_id, flow_run_id, status FROM tasks WHERE flow_run_id = ? ORDER BY updated_at DESC LIMIT 1').get(flowRunId) : null);
+          if (recovered) {
+            localTaskId = recovered.id;
+            flowId = recovered.flow_id || flowId;
+            flowRunId = recovered.flow_run_id || flowRunId;
+            status = recovered.status || 'queued';
+          }
+        }
+        db.prepare(`INSERT OR IGNORE INTO clarify_delegations (delegation_id, clarify_task_id, source_event_id, flow_id, local_task_id, flow_run_id, mode, status, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(delegationId, frame.clarify_task_id || null, frame.source_event_id || null, flowId, localTaskId, flowRunId, mode, status, at, at);
+        return { delegation_id: delegationId, local_task_id: localTaskId, flow_id: flowId, flow_run_id: flowRunId, status, duplicate: wake.disposition === 'duplicate' };
+      }
+      const flowId = frame.flow_id?.trim() || ADHOC_PROCESS_ID;
+      const flow = resolveFlow(flowId);
+      if (!flow) throw new Error(`Flow "${flowId}" is not registered locally.`);
+      const title = String(frame.title || `Clarify: ${flow.name || flowId}`).trim();
+      const instruction = String(frame.instruction || `Handle delegated Clarify request for flow "${flow.name || flowId}". Inspect the supplied Clarify task and source event context, execute the mapped process steps within existing authority, and call handoff_task if awaiting a customer reply or future follow-up.`).trim();
+      const success = String(frame.success || flow.completion || 'Delegated Clarify request handled according to the mapped process and outcome recorded.').trim();
+      const triggerInputObj = {
+        clarify_delegation_id: delegationId,
+        clarify_task_id: frame.clarify_task_id || null,
+        source_event_id: frame.source_event_id || null,
+        ...(frame.payload && typeof frame.payload === 'object' ? frame.payload : {}),
+      };
+      // Atomically persist task + flow_run + clarify_delegations receipt so partial failure never duplicates work on replay.
+      const created = transaction(() => {
+        const recovered = db.prepare("SELECT * FROM tasks WHERE json_extract(trigger_input, '$.clarify_delegation_id') = ? LIMIT 1").get(delegationId);
+        if (recovered) {
+          db.prepare(`INSERT OR IGNORE INTO clarify_delegations (delegation_id, clarify_task_id, source_event_id, flow_id, local_task_id, flow_run_id, mode, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .run(delegationId, frame.clarify_task_id || null, frame.source_event_id || null, recovered.flow_id || flowId, recovered.id, recovered.flow_run_id, mode, recovered.status, at, at);
+          return { task: recovered, duplicate: true };
+        }
+        const taskId = randomUUID();
+        const flowRunId = triggerFlow.createTaskFlowRun({
+          flowId, triggerMode: 'immediate', taskId, nodeId: 'agent', input: triggerInputObj,
+        });
+        db.prepare(`INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, remove_on_completion, success, constraints, category, goal_id, stage, set_at, process_ids, trigger_input, flow_id, flow_run_id, node_id, parent_task_id, trigger_mode, wait_trigger_id, wait_correlation_id, checkpoint)
+          VALUES (?, ?, ?, NULL, NULL, 'queued', ?, ?, 0, ?, NULL, 'other', NULL, NULL, ?, ?, ?, ?, ?, NULL, NULL, 'immediate', NULL, NULL, NULL)`)
+          .run(taskId, title, instruction, at, at, success, at, JSON.stringify([flowId]), JSON.stringify(triggerInputObj), flowId, flowRunId);
+        db.prepare(`INSERT INTO clarify_delegations (delegation_id, clarify_task_id, source_event_id, flow_id, local_task_id, flow_run_id, mode, status, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`)
+          .run(delegationId, frame.clarify_task_id || null, frame.source_event_id || null, flowId, taskId, flowRunId, mode, at, at);
+        return { task: get(taskId), duplicate: false };
+      });
+      if (!created.duplicate) {
+        schedule();
+        emitTaskChange({ task_id: created.task.id, flow_id: flowId, flow_run_id: created.task.flow_run_id, status: created.task.status, clarify_delegation_id: delegationId });
+      }
+      return { delegation_id: delegationId, local_task_id: created.task.id, flow_id: flowId, flow_run_id: created.task.flow_run_id, status: created.task.status, duplicate: created.duplicate };
+    },
     configureReview(input) {
       const allowed = ['pace', 'time', 'agent_harness'];
       if (!Object.keys(input).length || Object.keys(input).some(key => !allowed.includes(key))) throw new Error('Choose cadence, daily time or agent runner.');
@@ -1567,6 +1740,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
         if (existing) update(id, { title: input.title, instruction: input.instruction, recurrence, next_run_at: nextRun, status: initialStatus, consecutive_failures: 0, pause_reason: null, remove_on_completion: removeOnCompletion, set_at: now(), ...contract });
         else db.prepare('INSERT INTO tasks (id, title, instruction, recurrence, next_run_at, status, created_at, updated_at, remove_on_completion, success, constraints, category, goal_id, stage, set_at, process_ids, trigger_input, flow_id, flow_run_id, node_id, parent_task_id, trigger_mode, wait_trigger_id, wait_correlation_id, checkpoint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, input.title, input.instruction, recurrence, nextRun, initialStatus, now(), now(), removeOnCompletion, contract.success, contract.constraints, contract.category, contract.goal_id, contract.stage, now(), contract.process_ids, contract.trigger_input, contract.flow_id, contract.flow_run_id, contract.node_id, contract.parent_task_id, contract.trigger_mode, contract.wait_trigger_id, contract.wait_correlation_id, contract.checkpoint);
         schedule();
+        emitTaskChange({ task_id: id, flow_id: flowId, flow_run_id: flowRunId, status: initialStatus, wait_trigger_id: waitTriggerId, wait_correlation_id: waitCorrelationId });
         return { task: view(get(id)), created: !existing, worker: workerState() };
       }
       if (name === 'list_tasks') {
@@ -1588,6 +1762,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
             schedule();
             throw error;
           }).then(entry => {
+            const delegationId = delegationIdForTask(task.id);
             transaction(() => {
               if (input.action === 'delete') {
                 db.prepare('DELETE FROM runs WHERE task_id = ?').run(task.id);
@@ -1612,6 +1787,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
               }
             });
             if (input.action === 'delete' && task.job_id) { watchers.get(task.job_id)?.close(); watchers.delete(task.job_id); }
+            emitTaskChange({ task_id: task.id, flow_id: task.flow_id, flow_run_id: task.flow_run_id, status: input.action === 'delete' ? 'deleted' : 'done', clarify_delegation_id: delegationId });
             schedule();
             return { task_id: task.id, action: input.action, reason_journaled: Boolean(entry), worker: workerState() };
           });

@@ -51,7 +51,7 @@ async function fetchPrompt(source) {
 
 // Background Codex jobs run with approval policy "never", so an MCP tool that would ask
 // for approval is refused. Jobs this service starts approve the service's own tools.
-const LOCAL_TOOLS = ['ask_m3ntor', 'assess_poma', 'reassess_poma', 'get_m3ntor_result', 'report_utility', 'search_utility', 'a2a_status',
+const LOCAL_TOOLS = ['ask_m3ntor', 'assess_poma', 'reassess_poma', 'get_m3ntor_result', 'report_utility', 'search_utility', 'a2a_status', 'clarify_bridge_status',
   'set_task', 'handoff_task', 'list_tasks', 'clear_task', 'start_task_worker', 'stop_task_worker', 'record_task_continuation', 'resume_task_continuation',
   'register_trigger', 'list_triggers', 'fire_trigger', 'list_flow_runs', 'get_flow_run', 'clear_synthetic_traces',
   'save_poma_reassessment', 'get_coaching_context',

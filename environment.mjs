@@ -97,7 +97,7 @@ async function recordProcessNow(cwd, input) {
   const creating = !input.process_id;
   if (input.process_id && !flow) throw new Error('Process not found.');
   if (!flow) { if (!input.name?.trim()) throw new Error('Give the process a name.'); flow = { id: randomUUID(), name: input.name.trim(), status: 'unverified', agentic: null }; record.processes.push(flow); }
-  for (const key of ['name', 'trigger', 'steps', 'handoffs', 'completion', 'signals', 'failure_conditions', 'documented_at', 'examples', 'agentic', 'agentic_evidence', 'validation_evidence', 'validated_at']) if (input[key] !== undefined) flow[key] = input[key];
+  for (const key of ['name', 'trigger', 'steps', 'handoffs', 'completion', 'signals', 'failure_conditions', 'documented_at', 'examples', 'agentic', 'agentic_evidence', 'validation_evidence', 'validated_at', 'delegate_from_clarify']) if (input[key] !== undefined) flow[key] = input[key];
   if (input.signal_access !== undefined) flow.signal_access = input.signal_access.map(item => ({ ...item, at: now() }));
   if (!creating && input.status !== undefined) flow.status = input.status;
   flow.status ??= 'unverified';
@@ -201,6 +201,7 @@ export const environmentTools = [
     validated_at: { type: 'string', format: 'date-time', description: 'When the definition validation occurred; preserve the original time when backfilling evidence.' },
     agentic: { type: ['boolean', 'null'], description: 'Whether triggered agent execution of this process is evidenced: true, false for known non-agentic execution, or null when unassessed. Independent of definition status and setup completion.' },
     agentic_evidence: str('Evidence supporting the agentic assessment; do not infer it from a written procedure or a model capability.'),
+    delegate_from_clarify: { type: 'boolean', description: 'When true, advertise this process over the Clarify WebSocket bridge so Clarify delegates matching inbound tasks to local M3NT0R.' },
     handoffs: strings('Where work passes between people, agents or systems.'),
     completion: str('What shows the process is finished.'),
     failure_conditions: { type: 'array', description: 'When a step counts as failed.', items: { type: 'object', properties: { step: str('The step.'), condition: str('The expected signal that has not appeared, e.g. "no customer reply".'), after: str('How long before it counts as failed, e.g. "5 business days".') }, required: ['step', 'condition', 'after'], additionalProperties: false } },

@@ -537,7 +537,7 @@ function triggerStrip(flow, triggers) {
   }).join('')}</div>`;
 }
 
-function renderProcesses(businessFlows, internalFlows = [], refreshHistory = true, triggers = []) {
+function renderProcesses(businessFlows, internalFlows = [], refreshHistory = true, triggers = [], clarifyBridge = null) {
   const flows = sortProcesses([...businessFlows, ...internalFlows]);
   const box = document.querySelector('#processes');
   if (!flows.length) { box.innerHTML = '<p class="empty">No processes recorded yet.</p>'; return; }
@@ -547,14 +547,16 @@ function renderProcesses(businessFlows, internalFlows = [], refreshHistory = tru
   const internal = flow.kind === 'internal';
   const run = processRunDetail?.id === selectedProcessRun ? processRunDetail : null;
   const render = () => {
-    if (currentProcess === flow.id) renderProcesses(businessFlows, internalFlows, false, triggers);
+    if (currentProcess === flow.id) renderProcesses(businessFlows, internalFlows, false, triggers, clarifyBridge);
   };
   const agentic = businessFlows.filter(item => item.agentic === true).length;
   const unknown = businessFlows.filter(item => typeof item.agentic !== 'boolean').length;
+  const bridgeSummary = clarifyBridge?.state ? ` · Clarify bridge: ${clarifyBridge.state}` : '';
+  const delegationControl = !internal ? `<label class="toggle" style="margin-left:auto"><input type="checkbox" data-clarify-delegate="${processText(flow.id)}"${flow.delegate_from_clarify ? ' checked' : ''}> Delegate from Clarify</label>` : '';
   const badge = item => item.kind === 'internal' ? '<span class="meta">Internal</span>' : processStatus(item) === 'validated' ? '' : `<span class="status ${processText(processStatus(item))}">${processText(processStatusLabel(item))}</span>`;
-  box.innerHTML = `${businessFlows.length ? `<div class="process-metric">Confirmed agentic: ${agentic}/${businessFlows.length} (${Math.round(agentic / businessFlows.length * 100)}%)${unknown ? ` · ${unknown} not assessed` : ''}</div>` : ''}<div class="process-workspace">
+  box.innerHTML = `${businessFlows.length ? `<div class="process-metric">Confirmed agentic: ${agentic}/${businessFlows.length} (${Math.round(agentic / businessFlows.length * 100)}%)${unknown ? ` · ${unknown} not assessed` : ''}${processText(bridgeSummary)}</div>` : ''}<div class="process-workspace">
     <aside class="process-picker" aria-label="Processes">${flows.map(item => `<button type="button" data-process="${processText(item.id)}" class="${item.id === flow.id ? 'selected' : ''}" aria-pressed="${item.id === flow.id}">${badge(item)}${processNameWithBadge(item)}</button>`).join('')}</aside>
-    <article class="process-view"><div class="process-header"><div>${badge(flow)}<h2>${processNameWithBadge(flow)}</h2></div><div class="process-controls"><button type="button" data-zoom="out" aria-label="Zoom out">−</button><span data-process-zoom>100%</span><button type="button" data-zoom="in" aria-label="Zoom in">+</button><button type="button" data-zoom="actual">Actual size</button><button type="button" data-zoom="fit">Fit diagram</button></div></div>
+    <article class="process-view"><div class="process-header"><div>${badge(flow)}<h2>${processNameWithBadge(flow)}</h2></div>${delegationControl}<div class="process-controls"><button type="button" data-zoom="out" aria-label="Zoom out">−</button><span data-process-zoom>100%</span><button type="button" data-zoom="in" aria-label="Zoom in">+</button><button type="button" data-zoom="actual">Actual size</button><button type="button" data-zoom="fit">Fit diagram</button></div></div>
       ${runPicker(flow, run)}${nodeLegend(run?.definition || flow)}
       ${triggerStrip(flow, triggers)}
       <div class="process-canvas" role="region" aria-label="Process diagram" tabindex="0"><p class="meta">Loading diagram…</p></div>
@@ -580,7 +582,7 @@ function renderProcesses(businessFlows, internalFlows = [], refreshHistory = tru
         processRunError = null;
         processRunDetailVersion += 1;
       }
-      renderProcesses(businessFlows, internalFlows, true, triggers);
+      renderProcesses(businessFlows, internalFlows, true, triggers, clarifyBridge);
       return;
     }
     const zoom = event.target.closest('[data-zoom]');
@@ -596,6 +598,21 @@ function renderProcesses(businessFlows, internalFlows = [], refreshHistory = tru
       else openBusinessCell(flow, step.dataset.step, run, triggers);
     }
   };
+  const delegateBox = box.querySelector('[data-clarify-delegate]');
+  if (delegateBox) {
+    delegateBox.onchange = async () => {
+      delegateBox.disabled = true;
+      try {
+        data = await api(`/api/processes/${encodeURIComponent(delegateBox.dataset.clarifyDelegate)}/delegation`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: delegateBox.checked }),
+        });
+        renderProcesses(data.environment?.processes?.processes || [], data.internal_processes || [], false, data.triggers || [], data.clarify_bridge || null);
+      } catch (error) {
+        delegateBox.checked = !delegateBox.checked;
+        showError(error);
+      } finally { delegateBox.disabled = false; }
+    };
+  }
   box.querySelector('[data-process-run]').onchange = event => {
     selectedProcessRun = event.target.value;
     processRunDetail = null;

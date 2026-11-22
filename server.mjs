@@ -12,6 +12,7 @@ import { m3ntorTools, askM3ntor, assessPoma, getM3ntorResult, jobDirectory, jobR
 import { utilityTools, reportUtility, searchUtility, revokeUtility, boostUtility, resolveUtility } from './clarity-utility.mjs';
 import { clarityRequest } from './clarity-client.mjs';
 import { startA2AReceiver } from './a2a-receiver.mjs';
+import { startClarifyBridge } from './clarify-bridge.mjs';
 import { taskTools, startTaskQueue } from './task-queue.mjs';
 import { REVIEW_PROCESS_ID } from './inov8-review-process.mjs';
 import { triggerFlowTools } from './trigger-flow.mjs';
@@ -33,6 +34,7 @@ const mcpStreams = new Set();
 const contextPath = path.join(cwd, '.clarity_coach', 'CONTEXT.md');
 
 const a2aStatusTool = { name: 'a2a_status', description: 'Use when checking whether other agents can reach the owner\'s agent, or when an expected agent-to-agent message has not arrived: returns this installation\'s Clarity A2A receiver state: stream connection (connecting, connected, ready, reconnecting, rejected, not_registered), agent handle, pending messages replayed on connect, last message and last error. Each received message is run in the owner\'s harness and answered with an A2A reply; per-message records are in .clarity_coach/a2a/messages.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } };
+const clarifyBridgeStatusTool = { name: 'clarify_bridge_status', description: 'Returns the live WebSocket delegation bridge status between local M3NT0R and Clarify (connection state, advertised local flows, waiting event tasks, and last delegated task).', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } };
 
 // Every saved assessment revision leaves one pending question in which the agent
 // asks the owner whether it has been useful for getting their work done, and if so
@@ -221,7 +223,7 @@ async function mcp(req, res, coach = false) {
   if (call.method !== 'ping' && !session) return json(res,404,{error:'MCP session is missing or expired; initialize again.'});
   if (call.method === 'ping') result = {};
   else if (call.method === 'tools/list') {
-    const all = [...m3ntorTools, ...utilityTools, a2aStatusTool, ...taskTools, ...goalTools, ...triggerFlowTools, ...environmentTools, ...tools, ...businessTools(await questionState(cwd))];
+    const all = [...m3ntorTools, ...utilityTools, a2aStatusTool, clarifyBridgeStatusTool, ...taskTools, ...goalTools, ...triggerFlowTools, ...environmentTools, ...tools, ...businessTools(await questionState(cwd))];
     result = { tools: all.filter(tool => coach ? COACH_TOOLS.has(tool.name) : !COACH_ONLY_TOOLS.has(tool.name)) };
   }
   else if (call.method === 'tools/call') {
@@ -247,9 +249,13 @@ async function mcp(req, res, coach = false) {
         if (receipt.saved) { await seedSources(cwd).catch(error => console.error('Seeding the source list failed:', error.message)); taskQueue.poke(); }
         result = { ...(!receipt.saved || !receipt.submitted ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(receipt) }] };
       } else if (taskTools.some(tool => tool.name === name) || goalTools.some(tool => tool.name === name) || triggerFlowTools.some(tool => tool.name === name)) {
-        result = { content: [{ type: 'text', text: JSON.stringify(await taskQueue.call(name, input)) }] };
+        const resValue = await taskQueue.call(name, input);
+        if (name === 'register_trigger') clarifyBridge.syncManifest().catch(() => {});
+        result = { content: [{ type: 'text', text: JSON.stringify(resValue) }] };
       } else if (name === 'a2a_status') {
         result = { content: [{ type: 'text', text: JSON.stringify(a2aReceiver.status()) }] };
+      } else if (name === 'clarify_bridge_status') {
+        result = { content: [{ type: 'text', text: JSON.stringify(clarifyBridge.status()) }] };
       } else if (['report_utility', 'search_utility', 'boost_utility', 'resolve_utility'].includes(name)) {
         const response = await ({ report_utility: reportUtility, search_utility: searchUtility, boost_utility: boostUtility, resolve_utility: resolveUtility })[name](input);
         result = { content: [{ type: 'text', text: JSON.stringify(response) }] };
@@ -279,6 +285,7 @@ async function mcp(req, res, coach = false) {
           const env = await readEnvironment(cwd).catch(() => null);
           taskQueue.syncBusinessTriggers(env?.processes?.processes || []);
         }
+        if (name === 'record_process' || name === 'delete_process') clarifyBridge.syncManifest().catch(() => {});
         taskQueue.poke();
         result = { content: [{ type: 'text', text: JSON.stringify(saved) }] };
       } else if (name === 'get_task') {
@@ -386,7 +393,7 @@ async function overview() {
   const questions = await questionState(cwd);
   const journal = await journalDays();
   return {
-    worker, tasks, a2a: a2aReceiver.status(), running: await runningJobs(),
+    worker, tasks, a2a: a2aReceiver.status(), clarify_bridge: clarifyBridge.status(), running: await runningJobs(),
     context: await readFile(contextPath, 'utf8').catch(() => ''),
     questions: { pending: questions.pending, answered: questions.questions.filter(q => q.status !== 'pending').slice(-20).reverse(), deferred_until: questions.deferred ? questions.deferUntil : null },
     assessments: await assessments(),
@@ -454,6 +461,13 @@ async function ownerApi(req, res, url) {
     }
     if (processId === REVIEW_PROCESS_ID && req.method === 'POST' && parts[3] === 'configuration' && parts.length === 4) {
       return json(res, 200, { configuration: taskQueue.configureReview(await body(req)) });
+    }
+    if (req.method === 'POST' && parts[3] === 'delegation' && parts.length === 4) {
+      const input = await body(req);
+      if (typeof input.enabled !== 'boolean') throw new Error('enabled must be a boolean.');
+      await recordProcess(cwd, { process_id: processId, delegate_from_clarify: input.enabled });
+      await clarifyBridge.syncManifest().catch(() => {});
+      return json(res, 200, await overview());
     }
   }
   if (req.method === 'GET' && url.pathname === '/api/agency-pilot/source-status') {
@@ -539,7 +553,11 @@ const a2aReceiver = startA2AReceiver({ cwd, harness, mcpUrl });
 // The owner's action queue runs due tasks for as long as this service runs.
 await seedSources(cwd).catch(error => console.error('Seeding the source list failed:', error.message));
 const taskQueue = startTaskQueue({ cwd, harness, mcpUrl, latestAssessment: async () => (await assessments())[0] || null });
-readEnvironment(cwd).then(env => taskQueue.syncBusinessTriggers(env?.processes?.processes || [])).catch(error => console.error('Syncing business triggers failed:', error.message));
+const clarifyBridge = startClarifyBridge({ cwd, taskQueue });
+readEnvironment(cwd).then(env => {
+  taskQueue.syncBusinessTriggers(env?.processes?.processes || []);
+  return clarifyBridge.syncManifest();
+}).catch(error => console.error('Syncing business triggers failed:', error.message));
 // The existing pilot CASE opts this installation into its bounded source observer.
 // No separate receiver identity, inbox claim, auth configuration or execution engine.
 const agencyPilotObserver = await startAgencyPilotObserver({ cwd }).catch(error => {
@@ -550,6 +568,7 @@ retryPendingSubmissions().then(left => { if (left) scheduleSubmissionRetry(); },
 server.listen(port, '127.0.0.1', () => console.log(`Clarity M3NT0R MCP → ${mcpUrl} · owner view → ${base}/`));
 for (const signal of ['SIGTERM','SIGINT']) process.on(signal, () => {
   const observerStopped = Promise.resolve(agencyPilotObserver.stop()).catch(error => console.error('Agency pilot observer shutdown failed:', error.message));
+  clarifyBridge.close();
   taskQueue.close();
   for (const stream of mcpStreams) stream.res.end();
   for (const res of uiListeners) res.end();
