@@ -1,5 +1,6 @@
 import { NODE_TYPES, reviewEdge, reviewHash } from './inov8-review-process.mjs';
 
+export const GOAL_IMPLEMENTATION_PROCESS_ID = 'poma-goal-implementation';
 export const POMA_PROCESS_ID = 'poma-assessment';
 export const M3NTOR_PROCESS_ID = 'm3ntor-coaching';
 export const ADHOC_PROCESS_ID = 'ad-hoc-task';
@@ -91,4 +92,42 @@ export const adhocTaskDefinition = buildDefinition({
   ],
 });
 
-export const extraInternalDefinitions = [pomaAssessmentDefinition, m3ntorCoachingDefinition, adhocTaskDefinition];
+export const goalImplementationDefinition = buildDefinition({
+  id: GOAL_IMPLEMENTATION_PROCESS_ID,
+  name: 'POMA goal implementation',
+  nodes: [
+    { id: 'trigger-goal-created', type: 'trigger', label: 'Goal created / approved', binding: 'set_goal · POST /api/goals/approve · POST /api/triggers/goal-created/fire', detail: 'Starts when a new function goal is created by M3NT0R or directly approved by the owner. Enters the POMA implementation lifecycle at Scope and plan.', column: 0.5, row: 0 },
+    { id: 'trigger-review-restarted', type: 'trigger', label: 'Readiness restarted', binding: 'restart_goal_review · POST /api/triggers/goal-review-restarted/fire', detail: 'New failure context or owner direction restarts readiness review at Scope and plan while retaining prior accepted proof.', column: 1.5, row: 0 },
+    { id: 'trigger-stage-reopened', type: 'trigger', label: 'Process reopened', binding: 'reopen_stage · POST /api/triggers/goal-reopened/fire', detail: 'Triggered from a completed goal’s weekly Improve check after two consecutive misses, reopening the Process stage.', column: 2.5, row: 0 },
+    { id: 'stage-scope', type: 'process', label: '1. Scope and plan', binding: 'inov8-goal-review · complete_stage(scope)', detail: 'Find past examples, sources, skills and tools from the working environment and write the visible plan.', column: 1.5, row: 1 },
+    { id: 'stage-infrastructure', type: 'process', label: '2. Infrastructure', binding: 'inov8-goal-review · complete_stage(infrastructure)', detail: 'Verify every tool and route the function needs works and read back working connections.', column: 1.5, row: 2 },
+    { id: 'stage-process', type: 'process', label: '3. Process', binding: 'inov8-goal-review · record_process · complete_stage(process)', detail: 'Define an actionable, implementable process (trigger, inputs, outputs, steps, decisions, handoffs, completion) and validate logic with representative dummy inputs.', column: 1.5, row: 3 },
+    { id: 'stage-observation', type: 'process', label: '4. Observation', binding: 'inov8-goal-review · complete_stage(observation)', detail: 'Verify observation plumbing with clearly labelled dummy data or synthetic flows through the journal and owner view.', column: 1.5, row: 4 },
+    { id: 'stage-agency', type: 'process', label: '5. Agency', binding: 'inov8-goal-review · complete_stage(agency)', detail: 'Set the defined trigger in motion through the background task harness and complete an actual live run with trigger and completion receipts.', column: 1.5, row: 5 },
+    { id: 'stage-measurement', type: 'process', label: '6. Measurement', binding: 'inov8-goal-review · complete_stage(measurement)', detail: 'Define the business measure and record the first real measured result.', column: 1.5, row: 6 },
+    { id: 'stage-improve', type: 'process', label: '7. Weekly Improve', binding: 'ensureImproveTask · reopen_stage', detail: 'Recurring weekly comparison against the measured result; two consecutive misses reopen Process.', column: 0.5, row: 7 },
+    { id: 'terminal-completed', type: 'terminal', label: 'Goal completed', binding: 'complete_stage(measurement)', detail: 'Terminal implementation outcome: goal marked inactive, completion journaled, weekly Improve scheduled, and next waiting goal promoted.', column: 1.5, row: 7 },
+    { id: 'terminal-stopped', type: 'terminal', label: 'Goal stopped', binding: 'stop_goal · POST /api/goals/:id/stop', detail: 'Terminal outcome: owner stopped the goal with their reason; queued tasks removed and next waiting goal promoted.', column: 2.5, row: 7 },
+  ],
+  edges: [
+    ['trigger-goal-created', 'stage-scope'],
+    ['trigger-review-restarted', 'stage-scope'],
+    ['trigger-stage-reopened', 'stage-process'],
+    ['stage-scope', 'stage-infrastructure'],
+    ['stage-infrastructure', 'stage-process'],
+    ['stage-process', 'stage-observation'],
+    ['stage-observation', 'stage-agency'],
+    ['stage-agency', 'stage-measurement'],
+    ['stage-measurement', 'terminal-completed', 'Completed'],
+    ['terminal-completed', 'stage-improve', 'Weekly check'],
+    ['stage-improve', 'trigger-stage-reopened', 'Repeated miss'],
+    ['stage-scope', 'terminal-stopped', 'Owner stopped'],
+    ['stage-infrastructure', 'terminal-stopped'],
+    ['stage-process', 'terminal-stopped'],
+    ['stage-observation', 'terminal-stopped'],
+    ['stage-agency', 'terminal-stopped'],
+    ['stage-measurement', 'terminal-stopped'],
+  ],
+});
+
+export const extraInternalDefinitions = [goalImplementationDefinition, pomaAssessmentDefinition, m3ntorCoachingDefinition, adhocTaskDefinition];

@@ -162,8 +162,34 @@ const GOAL_STATUS = { active: 'active', waiting: 'waiting', stopped: 'stopped' }
 function renderGoals() {
   const goals = (data.goals || []).filter(goal => goal.status !== 'inactive');
   const expanded = new Set([...$('#goals').querySelectorAll('details[data-detail][open]')].map(item => item.dataset.detail));
-  $('#goals').innerHTML = goals.length ? goals.map(renderGoal).join('') : '<p class="empty">No goals.</p>';
+  const approveCard = `<details class="card approve-goal" data-detail="approve-goal-form">
+    <summary>Approve improvement</summary>
+    <form class="approve-goal-form" data-id="approve-goal">
+      <input type="text" name="title" placeholder="Improvement title" aria-label="Improvement title" required>
+      <textarea name="outcome" placeholder="Expected outcome" aria-label="Expected outcome" required></textarea>
+      <div class="actions"><button class="primary" type="submit">Approve goal</button></div>
+    </form>
+  </details>`;
+  $('#goals').innerHTML = approveCard + (goals.length ? goals.map(renderGoal).join('') : '<p class="empty">No goals.</p>');
   $('#goals').querySelectorAll('details[data-detail]').forEach(item => { item.open = expanded.has(item.dataset.detail); });
+  $('#goals').querySelector('form.approve-goal-form')?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const form = event.target;
+    const title = form.title.value.trim();
+    const outcome = form.outcome.value.trim();
+    if (!title || !outcome) { showError(new Error('Give the goal a title and its outcome.')); return; }
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    try {
+      data = await api('/api/goals/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, outcome }) });
+      drafts.delete(draftKey(form.title));
+      drafts.delete(draftKey(form.outcome));
+      form.reset();
+      form.closest('details').open = false;
+      render();
+    } catch (error) { showError(error); }
+    finally { btn.disabled = false; }
+  });
   $('#goals').querySelectorAll('form.stop-goal').forEach(stop => stop.addEventListener('submit', async event => {
     event.preventDefault();
     try {
@@ -216,6 +242,7 @@ function renderGoalStages(goal) {
 function renderGoalFlowDetails(goal) {
   const tasks = openTasks().filter(task => task.goal_id === goal.id && (!goal.stage || task.stage === goal.stage.key));
   return `${renderGoalStages(goal)}
+    ${goal.flow_run_id ? `<div class="actions"><button type="button" class="secondary" data-goal-trace="${esc(goal.flow_run_id)}">View lifecycle trace</button></div>` : ''}
     ${goal.stage ? `<h3>Stage ${goal.stage.index} of ${goal.stages.length}: ${esc(goal.stage.name)}</h3>
       <div class="prose">${renderMarkdown(goal.stage.work)}</div>
       <dl><dt>Done when</dt><dd class="prose">${renderMarkdown(goal.stage.done_check)}</dd></dl>
@@ -231,6 +258,13 @@ function openGoalFlow(goal) {
     document.body.appendChild(modal);
     modal.addEventListener('click', event => {
       if (event.target.closest('[data-close-goal-flow]')) modal.close();
+      const trace = event.target.closest('[data-goal-trace]');
+      if (trace) {
+        event.preventDefault(); modal.close();
+        selectProcessRun('poma-goal-implementation', trace.dataset.goalTrace);
+        document.querySelector('nav button[data-view="processes"]').click();
+        return;
+      }
       const task = event.target.closest('[data-task]');
       if (task) {
         event.preventDefault(); modal.close();
@@ -498,16 +532,17 @@ $('#task-list').addEventListener('click', event => {
 // a refresh that arrives while the owner is typing waits until the field loses focus.
 const drafts = new Map();
 const draftKey = field => `${field.form?.className}:${field.form?.dataset.id}:${field.name}`;
-document.addEventListener('input', event => { if (event.target.tagName === 'TEXTAREA') drafts.set(draftKey(event.target), event.target.value); });
+const isDraftField = el => el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text' && el.form?.classList.contains('approve-goal-form')));
+document.addEventListener('input', event => { if (isDraftField(event.target)) drafts.set(draftKey(event.target), event.target.value); });
 function restoreDrafts() {
-  document.querySelectorAll('form textarea').forEach(field => { const value = drafts.get(draftKey(field)); if (value) field.value = value; });
+  document.querySelectorAll('form textarea, form.approve-goal-form input[type="text"]').forEach(field => { const value = drafts.get(draftKey(field)); if (value) field.value = value; });
 }
 let pending = false;
 const events = new EventSource('/api/events');
 events.addEventListener('reload', () => location.reload());
 events.addEventListener('changed', () => {
-  if (document.activeElement?.tagName === 'TEXTAREA') { pending = true; return; }
+  if (isDraftField(document.activeElement)) { pending = true; return; }
   load();
 });
-document.addEventListener('focusout', () => { if (pending) { pending = false; setTimeout(() => { if (document.activeElement?.tagName !== 'TEXTAREA') load(); else pending = true; }, 0); } });
+document.addEventListener('focusout', () => { if (pending) { pending = false; setTimeout(() => { if (!isDraftField(document.activeElement)) load(); else pending = true; }, 0); } });
 load();

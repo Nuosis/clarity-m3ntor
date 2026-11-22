@@ -200,7 +200,7 @@ const reviewTime = value => value ? new Intl.DateTimeFormat(undefined, {
 const evidenceJson = value => JSON.stringify(value, (_key, field) => (
   typeof field === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(field) ? reviewTime(field) : field
 ), 2);
-const reviewSources = { clock: 'Automatic cadence', manual: 'Manual Run', answer: 'Owner answer', recovery: 'Recovery return' };
+const reviewSources = { clock: 'Automatic cadence', manual: 'Manual Run', answer: 'Owner answer', recovery: 'Recovery return', owner_approval: 'Owner approval', owner_request: 'Owner request', m3ntor: 'M3NT0R', use_case: 'Use case', event: 'Trigger event' };
 const runStateLabels = { started: 'Running', completed: 'Completed', failed: 'Failed', waiting: 'Waiting', skipped: 'Skipped' };
 const processRunPath = flow => '/api/processes/' + encodeURIComponent(flow.id) + '/runs';
 const defaultNodeTypes = {
@@ -535,6 +535,15 @@ function triggerStrip(flow, triggers) {
     const last = item.last_event ? ` · last ${item.last_event.disposition}` : '';
     return `<span class="process-trigger-chip" title="${processText(item.receiver_path)}">${processText(item.name)} <span class="meta">(${processText(item.kind)}${processText(last)})</span></span>`;
   }).join('')}</div>`;
+}
+
+function selectProcessRun(flowId, runId) {
+  currentProcess = flowId;
+  selectedProcessRun = runId || '';
+  processRunList = [];
+  processRunDetail = null;
+  processRunError = null;
+  processRunDetailVersion += 1;
 }
 
 function renderProcesses(businessFlows, internalFlows = [], refreshHistory = true, triggers = [], clarifyBridge = null) {

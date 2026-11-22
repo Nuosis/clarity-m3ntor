@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getM3ntorResult, jobDirectory, startTaskJob, startGoalReviewJob } from './m3ntor-jobs.mjs';
 import { stagesFor, STUCK_INSTRUCTION } from './goals.mjs';
 import { createReviewLedger, historicReviewList, reviewDefinition, reviewHash, reviewRunDetail } from './inov8-review-process.mjs';
-import { extraInternalDefinitions, ADHOC_PROCESS_ID } from './internal-flows.mjs';
+import { extraInternalDefinitions, ADHOC_PROCESS_ID, GOAL_IMPLEMENTATION_PROCESS_ID } from './internal-flows.mjs';
 import { createTriggerFlow, triggerFlowTools } from './trigger-flow.mjs';
 import { environmentCheck, readEnvironment, recordProcessStage } from './environment.mjs';
 import { appendJournalInWrite, businessDate, questionState, readJournal, serializeBusinessWrites, setUserQuestions } from './business-journal.mjs';
@@ -143,6 +143,37 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   const triggerFlow = createTriggerFlow(db, {
     enqueueTask: input => api.call('set_task', input),
     resolveFlow,
+    onTriggerEvent: ({ trigger, correlationId, dedupeKey, sourceRef, synthetic, payload }) => {
+      if (trigger.id !== 'goal-created') return null;
+      const created = createFunctionGoalSync({
+        title: payload?.title,
+        outcome: payload?.outcome,
+        position: payload?.position,
+        process_ids: payload?.process_ids,
+        source: payload?.source || 'owner_approval',
+        source_ref: sourceRef || payload?.source_ref || null,
+        dedupe_key: dedupeKey || null,
+        correlation_id: correlationId || null,
+        synthetic: synthetic === true,
+        notes: payload?.notes || null,
+        triggerSource: 'event',
+      });
+      created.journalPromise.catch(error => console.error('Journaling approved goal failed:', error.message));
+      return {
+        accepted: true,
+        disposition: 'accepted',
+        event_id: created.event_id,
+        flow_run_id: created.flow_run_id,
+        trigger_id: trigger.id,
+        flow_id: GOAL_IMPLEMENTATION_PROCESS_ID,
+        correlation_id: correlationId,
+        synthetic: synthetic === true,
+        status: created.goal.status === 'active' ? 'running' : 'waiting',
+        task_id: null,
+        goal_id: created.goal.id,
+        goal: created.goal,
+      };
+    },
     wakeWaitingTasks: ({ trigger, eventId, correlationId, sourceRef, payload, receivedAt }) => {
       const woken = transaction(() => {
         const candidates = db.prepare(`SELECT * FROM tasks
@@ -180,6 +211,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
   const goalColumns = new Set(db.prepare('PRAGMA table_info(goals)').all().map(column => column.name));
   if (!goalColumns.has('process_ids')) db.exec('ALTER TABLE goals ADD COLUMN process_ids TEXT');
   if (!goalColumns.has('review_passes')) db.exec("ALTER TABLE goals ADD COLUMN review_passes TEXT NOT NULL DEFAULT '[]'");
+  if (!goalColumns.has('flow_run_id')) db.exec('ALTER TABLE goals ADD COLUMN flow_run_id TEXT');
   const encodeProcessIds = ids => {
     if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !id.trim())) throw new Error('process_ids must be a list of registered process IDs.');
     return JSON.stringify([...new Set(ids)]);
@@ -759,10 +791,30 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const stages = stagesFor(goal.kind);
     const current = stages[goal.stage];
     return { id: goal.id, title: goal.title, kind: goal.kind, outcome: goal.outcome, source: goal.source, position: goal.position, status: goal.status, process_ids: JSON.parse(goal.process_ids || '[]'),
+      flow_run_id: goal.flow_run_id || null,
       stage: current ? { index: goal.stage + 1, key: current.key, name: current.name, work: current.work, done_check: current.done } : null,
       stages: stages.map((stage, index) => ({ index: index + 1, key: stage.key, name: stage.name, state: index < goal.stage ? 'done' : index === goal.stage ? 'current' : 'later' })),
       completed: JSON.parse(goal.completed), review_pass: reviewPass(goal), review_passes: reviewPasses(goal), stop_reason: goal.stop_reason, created_at: goal.created_at, updated_at: goal.updated_at };
   };
+  const stageNodeId = stageKey => `stage-${stageKey}`;
+  function ensureGoalFlowRun(goal) {
+    if (!goal || goal.kind !== 'function') return null;
+    if (goal.flow_run_id) return goal.flow_run_id;
+    const current = stagesFor(goal.kind)[goal.stage]?.key || 'scope';
+    const created = triggerFlow.createGoalFlowRun({
+      triggerId: 'goal-created',
+      triggerNodeId: 'trigger-goal-created',
+      source: goal.source || 'm3ntor',
+      correlationId: goal.id,
+      sourceRef: goal.id,
+      payload: { goal_id: goal.id, title: goal.title, outcome: goal.outcome, source: goal.source || 'm3ntor', backfilled: true },
+      stageNodeId: stageNodeId(current),
+      stageStatus: goal.status === 'active' ? 'started' : 'waiting',
+      reason: 'Goal lifecycle trace initialized',
+    });
+    updateGoal(goal.id, { flow_run_id: created.flow_run_id });
+    return created.flow_run_id;
+  }
   // The working environment goal exists from install and always comes first.
   if (!db.prepare("SELECT id FROM goals WHERE kind = 'environment'").get()) {
     db.prepare('INSERT INTO goals (id, title, kind, outcome, source, position, stage, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?)')
@@ -821,7 +873,16 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     let goal = db.prepare("SELECT * FROM goals WHERE status = 'active' ORDER BY position LIMIT 1").get();
     if (!goal) {
       goal = db.prepare("SELECT * FROM goals WHERE status = 'waiting' ORDER BY position, created_at LIMIT 1").get();
-      if (goal) { updateGoal(goal.id, { status: 'active', stage: 0 }); goal = getGoal(goal.id); }
+      if (goal) {
+        updateGoal(goal.id, { status: 'active', stage: 0 });
+        goal = getGoal(goal.id);
+        if (goal.kind === 'function' && goal.flow_run_id) {
+          triggerFlow.recordFlowNode(goal.flow_run_id, {
+            node_id: 'stage-scope', node_type: 'process', status: 'started',
+            input: { goal_id: goal.id, title: goal.title }, started_at: now(),
+          }, { flowStatus: 'running' });
+        }
+      }
     }
     return goal || null;
   }
@@ -877,6 +938,34 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const goalCompleted = !nextStage || nextStage.key === 'improve';
     // A function goal stays at its Improve stage, which the service runs as a weekly comparison.
     updateGoal(goal.id, { stage: nextStage ? nextIndex : goal.stage, completed: JSON.stringify(completed), status: goalCompleted ? 'inactive' : 'active' });
+    if (goal.kind === 'function') {
+      const flowRunId = ensureGoalFlowRun(getGoal(goal.id));
+      const completedNode = stageNodeId(stage.key);
+      triggerFlow.recordFlowNode(flowRunId, {
+        node_id: completedNode, node_type: 'process', status: 'completed',
+        output: { stage: stage.key, evidence: evidence.trim(), completed_at: completedAt },
+        finished_at: completedAt,
+      });
+      if (goalCompleted) {
+        triggerFlow.recordFlowNode(flowRunId, {
+          node_id: 'terminal-completed', node_type: 'terminal', status: 'completed',
+          output: { goal_id: goal.id, title: goal.title, completed_at: completedAt },
+          started_at: completedAt, finished_at: completedAt,
+        }, { flowStatus: 'completed', terminalNodeId: 'terminal-completed', finishedAt: completedAt, edge: `${completedNode}--terminal-completed` });
+        if (nextStage?.key === 'improve') {
+          triggerFlow.recordFlowNode(flowRunId, {
+            node_id: 'stage-improve', node_type: 'process', status: 'waiting',
+            input: { goal_id: goal.id, recurring: 'weekly' }, started_at: completedAt,
+          }, { edge: 'terminal-completed--stage-improve' });
+        }
+      } else if (nextStage) {
+        const nextNode = stageNodeId(nextStage.key);
+        triggerFlow.recordFlowNode(flowRunId, {
+          node_id: nextNode, node_type: 'process', status: 'started',
+          input: { goal_id: goal.id, stage: nextStage.key }, started_at: completedAt,
+        }, { flowStatus: 'running', edge: `${completedNode}--${nextNode}` });
+      }
+    }
     // A stage reached with no work planned for it gets a review now, whatever the pace.
     const nextGoal = activeGoal();
     if (nextGoal && !stageTasks(nextGoal.id, stagesFor(nextGoal.kind)[nextGoal.stage].key).length) setSetting('goal_next_review_at', now());
@@ -901,6 +990,26 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     const pass = { id: randomUUID(), started_at: now(), reason: evidence.trim(), failure_ref: failureRef.trim(),
       from_stage: stagesFor(goal.kind)[goal.stage].key, completed: JSON.parse(goal.completed) };
     updateGoal(goal.id, { stage: 0, completed: '[]', review_passes: JSON.stringify([...passes, pass]) });
+    const flowRunId = ensureGoalFlowRun(getGoal(goal.id));
+    if (flowRunId) {
+      const restartedAt = pass.started_at;
+      const eventId = triggerFlow.recordTriggerEvent({
+        triggerId: 'goal-review-restarted', flowId: GOAL_IMPLEMENTATION_PROCESS_ID,
+        correlationId: goal.id, sourceRef: pass.failure_ref,
+        payload: { goal_id: goal.id, review_pass_id: pass.id, failure_ref: pass.failure_ref, from_stage: pass.from_stage, reason: pass.reason },
+        reason: 'Readiness review restarted at Scope', flowRunId, receivedAt: restartedAt,
+      });
+      triggerFlow.recordFlowNode(flowRunId, {
+        node_id: 'trigger-review-restarted', node_type: 'trigger', status: 'completed',
+        input: { event_id: eventId, review_pass_id: pass.id, failure_ref: pass.failure_ref, reason: pass.reason },
+        started_at: restartedAt, finished_at: restartedAt,
+      });
+      triggerFlow.recordFlowNode(flowRunId, {
+        node_id: 'stage-scope', node_type: 'process', status: 'started',
+        input: { goal_id: goal.id, review_pass_id: pass.id, failure_ref: pass.failure_ref },
+        started_at: restartedAt,
+      }, { flowStatus: 'running', terminalNodeId: null, finishedAt: null, edge: 'trigger-review-restarted--stage-scope' });
+    }
     await journalOnce(cwd, `goal-review-pass-${goal.id}-${pass.id}`, { kind: 'activity', source: 'goals',
       content: `Goal "${goal.title}": readiness review restarted at Scope.\n${pass.reason}\nReference: ${pass.failure_ref}`,
       metadata: { goal_id: goal.id, review_pass_id: pass.id, failure_ref: pass.failure_ref } });
@@ -928,6 +1037,31 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       db.prepare(`UPDATE tasks SET status = 'done', next_run_at = NULL, updated_at = ? WHERE goal_id = ? AND stage IN (${marks}) AND status NOT IN ('completed', 'done', 'delivered', 'executing', 'finalizing', 'clearing')`).run(now(), goal.id, 'improve', ...reopened);
       db.prepare(`UPDATE tasks SET stage = stage || '-before-reopen', updated_at = ? WHERE goal_id = ? AND stage IN (${setAside})`).run(now(), goal.id, ...reopened);
     });
+    const flowRunId = ensureGoalFlowRun(getGoal(goal.id));
+    if (flowRunId) {
+      const reopenedAt = now();
+      const eventId = triggerFlow.recordTriggerEvent({
+        triggerId: 'goal-reopened', flowId: GOAL_IMPLEMENTATION_PROCESS_ID,
+        correlationId: goal.id, sourceRef: goal.id,
+        payload: { goal_id: goal.id, evidence: String(evidence || '').trim() },
+        reason: 'Process stage reopened from weekly Improve', flowRunId, receivedAt: reopenedAt,
+      });
+      triggerFlow.recordFlowNode(flowRunId, {
+        node_id: 'stage-improve', node_type: 'process', status: 'completed',
+        output: { reopened: true, evidence: String(evidence || '').trim() },
+        finished_at: reopenedAt,
+      });
+      triggerFlow.recordFlowNode(flowRunId, {
+        node_id: 'trigger-stage-reopened', node_type: 'trigger', status: 'completed',
+        input: { event_id: eventId, goal_id: goal.id, evidence: String(evidence || '').trim() },
+        started_at: reopenedAt, finished_at: reopenedAt,
+      }, { edge: 'stage-improve--trigger-stage-reopened' });
+      triggerFlow.recordFlowNode(flowRunId, {
+        node_id: 'stage-process', node_type: 'process', status: 'started',
+        input: { goal_id: goal.id, reopened_at: reopenedAt },
+        started_at: reopenedAt,
+      }, { flowStatus: 'running', terminalNodeId: null, finishedAt: null, edge: 'trigger-stage-reopened--stage-process' });
+    }
     await journalOnce(cwd, `goal-reopen-${goal.id}-${Date.now()}`, { kind: 'activity', source: 'goals', content: `Goal "${goal.title}": Process stage reopened.\n${evidence}`, metadata: { goal_id: goal.id } });
     schedule();
     return goalView(getGoal(goal.id));
@@ -945,8 +1079,95 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       for (const task of db.prepare('SELECT id FROM tasks WHERE goal_id = ?').all(goal.id)) closeTaskContinuation(task.id);
       updateGoal(goal.id, { status: 'stopped', stop_reason: reason.trim() });
     });
+    if (goal.kind === 'function') {
+      const flowRunId = ensureGoalFlowRun(getGoal(goal.id));
+      if (flowRunId) {
+        const stoppedAt = now();
+        const currentKey = stagesFor(goal.kind)[goal.stage]?.key || 'scope';
+        const fromNode = currentKey === 'scope' ? 'stage-scope' : stageNodeId(currentKey);
+        triggerFlow.recordFlowNode(flowRunId, {
+          node_id: 'terminal-stopped', node_type: 'terminal', status: 'completed',
+          output: { goal_id: goal.id, title: goal.title, reason: reason.trim(), stopped_at: stoppedAt },
+          started_at: stoppedAt, finished_at: stoppedAt,
+        }, { flowStatus: 'completed', terminalNodeId: 'terminal-stopped', finishedAt: stoppedAt, edge: `${fromNode}--terminal-stopped` });
+      }
+    }
     activeGoal(); schedule();
     return goalView(getGoal(goal.id));
+  }
+
+  function createFunctionGoalSync(input) {
+    if (!input?.title?.trim() || !input?.outcome?.trim()) throw new Error('Give the goal a title and its outcome.');
+    const title = input.title.trim();
+    const outcome = input.outcome.trim();
+    const source = input.source || 'owner_approval';
+    const encodedPids = input.process_ids !== undefined ? encodeProcessIds(input.process_ids) : null;
+    const position = input.position || (db.prepare('SELECT MAX(position) AS p FROM goals').get().p || 0) + 1;
+    const id = randomUUID();
+    const createdAt = now();
+    const triggerSource = input.triggerSource || source;
+    const { flow_run_id: flowRunId, event_id: eventId } = transaction(() => {
+      db.prepare('INSERT INTO goals (id, title, kind, outcome, source, position, stage, status, created_at, updated_at, process_ids) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)')
+        .run(id, title, 'function', outcome, source, position, 'waiting', createdAt, createdAt, encodedPids);
+      const hasActive = Boolean(db.prepare("SELECT id FROM goals WHERE status = 'active' LIMIT 1").get());
+      const run = triggerFlow.createGoalFlowRun({
+        triggerId: 'goal-created',
+        triggerNodeId: 'trigger-goal-created',
+        source: triggerSource,
+        correlationId: input.correlation_id || id,
+        dedupeKey: input.dedupe_key || null,
+        sourceRef: input.source_ref || id,
+        synthetic: input.synthetic === true,
+        payload: {
+          goal_id: id, title, outcome, source,
+          ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
+        },
+        stageNodeId: 'stage-scope',
+        stageStatus: hasActive ? 'waiting' : 'started',
+        reason: source === 'owner_approval' ? 'Owner approved goal' : 'Goal created',
+      });
+      updateGoal(id, { flow_run_id: run.flow_run_id });
+      return run;
+    });
+    activeGoal();
+    schedule();
+    const goal = goalView(getGoal(id));
+    const journalPromise = source === 'owner_approval'
+      ? journalOnce(cwd, `goal-approved-${id}`, {
+          kind: 'user_request', source: 'owner_decision',
+          content: `Owner approved goal: ${title}\nOutcome: ${outcome}${input.notes?.trim() ? `\nNotes: ${input.notes.trim()}` : ''}`,
+          metadata: { goal_id: id, flow_run_id: flowRunId, event_id: eventId, source_ref: input.source_ref || null },
+        })
+      : Promise.resolve(null);
+    return { goal, flow_run_id: flowRunId, event_id: eventId, journalPromise };
+  }
+
+  async function approveGoal(input = {}) {
+    const dedupeKey = input?.dedupe_key ? String(input.dedupe_key).trim() : null;
+    if (dedupeKey) {
+      const prior = triggerFlow.findDuplicateTriggerEvent('goal-created', dedupeKey);
+      if (prior) {
+        const dupEventId = triggerFlow.recordTriggerEvent({
+          triggerId: 'goal-created', flowId: GOAL_IMPLEMENTATION_PROCESS_ID,
+          correlationId: input.correlation_id || null, dedupeKey, sourceRef: input.source_ref || null,
+          payload: { title: input.title, outcome: input.outcome },
+          disposition: 'duplicate', reason: `Duplicate dedupe_key "${dedupeKey}" (original event ${prior.id})`,
+          flowRunId: prior.flow_run_id,
+        });
+        const existingGoal = prior.flow_run_id ? db.prepare('SELECT * FROM goals WHERE flow_run_id = ? LIMIT 1').get(prior.flow_run_id) : null;
+        return {
+          created: false,
+          duplicate: true,
+          goal: goalView(existingGoal),
+          flow_run_id: prior.flow_run_id,
+          event_id: dupEventId,
+          original_event_id: prior.id,
+        };
+      }
+    }
+    const created = createFunctionGoalSync({ ...input, source: input.source || 'owner_approval', triggerSource: 'owner_approval' });
+    await created.journalPromise;
+    return { created: true, duplicate: false, goal: created.goal, flow_run_id: created.flow_run_id, event_id: created.event_id };
   }
 
   function setGoal(input) {
@@ -957,13 +1178,8 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       updateGoal(goal.id, { ...(input.title ? { title: input.title } : {}), ...(input.outcome ? { outcome: input.outcome } : {}), ...(input.position ? { position: input.position } : {}), ...(input.process_ids !== undefined ? { process_ids: encodeProcessIds(input.process_ids) } : {}) });
       return goalView(getGoal(goal.id));
     }
-    if (!input.title?.trim() || !input.outcome?.trim()) throw new Error('Give the goal a title and its outcome.');
-    const position = input.position || (db.prepare('SELECT MAX(position) AS p FROM goals').get().p || 0) + 1;
-    const id = randomUUID();
-    db.prepare('INSERT INTO goals (id, title, kind, outcome, source, position, stage, status, created_at, updated_at, process_ids) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)')
-      .run(id, input.title.trim(), 'function', input.outcome.trim(), input.source || 'owner_request', position, 'waiting', now(), now(), input.process_ids !== undefined ? encodeProcessIds(input.process_ids) : null);
-    activeGoal(); schedule();
-    return goalView(getGoal(id));
+    const created = createFunctionGoalSync({ ...input, source: input.source || 'owner_request', triggerSource: input.source || 'm3ntor' });
+    return created.goal;
   }
 
   // ---- The agent's goal review ---------------------------------------------------
@@ -1662,6 +1878,7 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       return reviewConfig();
     },
     goals: () => ({ goals: listGoals(), pace: pace(), review_error: setting('goal_review_error'), full_access: setting('full_access') === 'true', agent_harness: setting('agent_harness') || 'codex' }),
+    approveGoal,
     // Task with its runs, lineage, and flow run, for the owner UI and get_task.
     detail(taskId) {
       const task = view(get(taskId));

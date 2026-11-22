@@ -136,6 +136,10 @@ button.primary:disabled, button.secondary:disabled { opacity: 0.5; cursor: defau
 .records th { color: var(--muted); font-weight: 500; font-size: 12px; }
 .goal details { margin-top: 12px; }
 .goal summary { cursor: pointer; color: var(--accent-strong); }
+.approve-goal summary { cursor: pointer; color: var(--accent-strong); font-weight: 600; }
+.approve-goal-form { display: grid; gap: 10px; margin-top: 12px; }
+.approve-goal-form input[type="text"] { width: 100%; font: inherit; padding: 8px 12px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; }
+.approve-goal-form input[type="text"]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .settings h2 { margin-top: 0; }
 .settings h2 + .row, .settings .toggle { margin-top: 8px; }
 .settings .row { display: flex; align-items: center; gap: 12px; }

@@ -508,6 +508,11 @@ async function ownerApi(req, res, url) {
     try { return json(res, 200, await revokeUtility(parts[2])); }
     catch (error) { return json(res, /HTTP 403/.test(error.message) ? 403 : 502, { error: /HTTP 403/.test(error.message) ? 'Only use cases your business submitted can be revoked.' : error.message }); }
   }
+  if (req.method === 'POST' && url.pathname === '/api/goals/approve') {
+    const input = await body(req);
+    const result = await taskQueue.approveGoal(input);
+    return json(res, 200, { ...result, ...(await overview()) });
+  }
   if (req.method === 'POST' && parts[1] === 'goals' && parts[2] && parts[3] === 'stop') {
     const input = await body(req);
     await taskQueue.call('stop_goal', { goal_id: parts[2], reason: input.reason });
