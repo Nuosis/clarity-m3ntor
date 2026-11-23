@@ -1,12 +1,13 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { GOAL_REVIEW_INSTRUCTION } from './goals.mjs';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, existsSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { finished } from 'node:stream/promises';
-import { storeJson } from './m3ntor-jobs.mjs';
+import { jobRoot, storeJson } from './m3ntor-jobs.mjs';
 import { clarityRequest } from './clarity-client.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -31,7 +32,32 @@ const COACH_BUILTIN_TOOLS = 'Read,Grep,Glob,WebSearch,WebFetch';
 const COACH_MCP_TOOLS = ['search_utility', 'read_journal', 'get_coaching_context', 'user_question_read', 'list_tasks', 'get_task', 'list_assessments', 'read_answered_questions', 'list_goals', 'read_environment', 'set_goal'];
 const COACH_TOOLS = [COACH_BUILTIN_TOOLS, ...COACH_MCP_TOOLS.map(name => `mcp__clarity_m3ntor__${name}`)].join(',');
 
-const A2A_INSTRUCTION = `You are the business owner's local AI agent, connected to Clarity M3NT0R. M-CODEX, Clarity's operator agent, sent the request below through Clarity A2A. Perform it read-only: look things up, but do not create, change, send or delete anything, and do not start other work. Your final response is sent back to M-CODEX as the reply. Never include sensitive data in it: no credentials, tokens or keys; no personal names, contact details or other identifiers of people; no customer, employee or supplier records; no financial figures, prices or account details; no file paths, hostnames or private message content. Answer with non-sensitive summaries, counts, categories or yes/no findings, and say plainly when the request can only be answered with sensitive data.`;
+const A2A_CLAUDE_TOOLS = 'Read,Grep,Glob';
+const A2A_INSTRUCTION = `You are the business owner's local AI agent, connected to Clarity M3NT0R. M-CODEX, Clarity's operator agent, sent the request below through Clarity A2A. Perform it read-only: you may read workspace records, M3NT0R state/job logs, and local harness sessions (Claude projects, Codex sessions, Antigravity transcripts) to answer support or review questions, but do not create, change, send or delete anything, and do not start other work. Your final response is sent back to M-CODEX as the reply. Never include sensitive data in it: no credentials, tokens or keys; no personal names, contact details or other identifiers of people; no customer, employee or supplier records; no financial figures, prices or account details; no file paths, hostnames or private message content. Answer with non-sensitive summaries, counts, categories or yes/no findings, and say plainly when the request can only be answered with sensitive data.`;
+
+// Session and M3NT0R runtime directories Claude's read-only A2A sandbox may read
+// even when M3NTOR_WORKSPACE is a project directory outside $HOME. Auth/credential
+// parent directories (~/.claude, ~/.codex) are intentionally excluded.
+function a2aReadableDirs(cwd) {
+  const home = os.homedir();
+  const codexHome = process.env.CODEX_HOME ? path.resolve(process.env.CODEX_HOME) : path.join(home, '.codex');
+  const claudeHome = process.env.CLAUDE_CONFIG_DIR ? path.resolve(process.env.CLAUDE_CONFIG_DIR) : path.join(home, '.claude');
+  const resolvedCwd = path.resolve(cwd);
+  const seen = new Set();
+  return [
+    path.join(claudeHome, 'projects'),
+    path.join(codexHome, 'sessions'),
+    path.join(codexHome, 'archived_sessions'),
+    path.join(home, '.gemini', 'antigravity-cli', 'brain'),
+    jobRoot,
+    path.join(home, '.clarity_coach'),
+  ].filter(dir => {
+    const abs = path.resolve(dir);
+    if (seen.has(abs) || abs === resolvedCwd || !existsSync(abs)) return false;
+    seen.add(abs);
+    return true;
+  });
+}
 
 async function fetchPrompt(source) {
   if (source.local === 'a2a_message') return A2A_INSTRUCTION;
@@ -93,7 +119,7 @@ async function runHarness(request, prompt) {
         ? ['-c', `mcp_servers.clarity_m3ntor.url=${JSON.stringify(request.mcp_url)}`, ...codexApprove('clarity_m3ntor', LOCAL_TOOLS), 'exec', '--dangerously-bypass-approvals-and-sandbox', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
         : ['-c', `mcp_servers.clarity_m3ntor.url=${JSON.stringify(request.mcp_url)}`, ...codexApprove('clarity_m3ntor', LOCAL_TOOLS), '-c', 'sandbox_workspace_write.network_access=true', 'exec', '--sandbox', 'workspace-write', '--json', '--skip-git-repo-check', '-o', outputFile, '-'])
     : (readOnly
-      ? ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: {} }), '--permission-mode', 'plan', '--disallowedTools', 'Edit,Write,NotebookEdit']
+      ? ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: {} }), '--tools', A2A_CLAUDE_TOOLS, '--permission-mode', 'dontAsk', '--allowedTools', A2A_CLAUDE_TOOLS, ...a2aReadableDirs(request.cwd).flatMap(dir => ['--add-dir', dir])]
       : request.full_access
         ? ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } }), '--permission-mode', 'bypassPermissions']
         // Like Codex's workspace sandbox with network: shell, files and web, so tasks can reach the owner's sources.
