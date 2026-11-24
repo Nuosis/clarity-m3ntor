@@ -1316,7 +1316,9 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
       model: 'Inherited from the selected CLI configuration', full_access: run.fullAccess,
       permission_mode: run.agentHarness === 'claude'
         ? (run.fullAccess ? 'bypassPermissions' : 'acceptEdits')
-        : (run.fullAccess ? 'dangerously-bypass-approvals-and-sandbox' : 'workspace-write'),
+        : run.agentHarness === 'antigravity'
+          ? (run.fullAccess ? 'dangerously-skip-permissions' : 'accept-edits')
+          : (run.fullAccess ? 'dangerously-bypass-approvals-and-sandbox' : 'workspace-write'),
     };
   }
   function traceDecision(origin, decision, reason, goal, { jobId, config = reviewConfig(), semantic } = {}) {
@@ -1397,8 +1399,9 @@ export function startTaskQueue({ cwd, harness, mcpUrl, latestAssessment = async 
     return pace();
   }
   function setAgentHarness(runner) {
-    if (!['codex', 'claude'].includes(runner)) throw new Error('The agent runner is codex or claude.');
-    setSetting('agent_harness', runner);
+    const normalized = runner === 'agy' ? 'antigravity' : runner;
+    if (!['codex', 'claude', 'antigravity'].includes(normalized)) throw new Error('The agent runner is codex, claude, or antigravity.');
+    setSetting('agent_harness', normalized);
     return agentRun();
   }
   // ask_m3ntor during a review: the service waits for that job before deciding the stage is stuck.

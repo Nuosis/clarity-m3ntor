@@ -213,7 +213,7 @@ function renderSettings() {
       <p class="meta">YOLO reviews as soon as the current stage's tasks are done or blocked.</p>
       <h2>Agent runner</h2>
       <div class="row">
-        <select name="agent_harness" aria-label="Agent runner">${[['codex', 'Codex'], ['claude', 'Claude']].map(([value, label]) => `<option value="${value}"${(data.agent_harness || 'codex') === value ? ' selected' : ''}>${label}</option>`).join('')}</select>
+        <select name="agent_harness" aria-label="Agent runner">${[['codex', 'Codex'], ['claude', 'Claude'], ['antigravity', 'Antigravity']].map(([value, label]) => `<option value="${value}"${(data.agent_harness || 'codex') === value ? ' selected' : ''}>${label}</option>`).join('')}</select>
       </div>
       <p class="meta">Runs tasks and inov8. M3NT0R's coaching and assessments keep their own harness.</p>
       <h2>Full access</h2>

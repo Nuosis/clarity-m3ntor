@@ -100,16 +100,42 @@ async function codexMcpOff(cwd) {
 
 async function runHarness(request, prompt) {
   const outputFile = path.join(directory, 'output.txt');
+  const isAntigravity = request.harness === 'antigravity' || request.harness === 'agy';
+  const harnessBin = isAntigravity ? 'agy' : request.harness;
   // A2A requests run read-only with NO MCP servers: the harness would otherwise
   // inherit every configured server (clarity_m3ntor and others), several of which write.
   const readOnly = request.task === 'a2a_message';
   // M3NT0R coaching runs locally with the owner's full context: it may read files,
   // search the web and the shared utility library, and read the journal; it sets the
   // goals and otherwise changes nothing; the owner's agent carries out what it recommends.
-  const coachArgs = request.task !== 'coaching' ? null : request.harness === 'codex'
+  const agyArgs = !isAntigravity ? null : request.task === 'coaching'
+    ? ['--input-format', 'stream-json', '--output-format', 'stream-json', '--disable-slash-commands', '--settings', JSON.stringify({
+      toolPermission: 'request-review',
+      permissions: {
+        deny: ['command(*)', 'write_file(*)', 'execute_url(*)', 'download_url(*)'],
+        allow: ['read_file(*)', 'read_url(*)', ...COACH_MCP_TOOLS.map(name => `mcp(clarity_m3ntor/${name})`)],
+      },
+    })]
+    : readOnly
+      ? ['--input-format', 'stream-json', '--output-format', 'stream-json', '--disable-slash-commands', '--settings', JSON.stringify({
+        toolPermission: 'request-review',
+        permissions: {
+          deny: ['command(*)', 'write_file(*)', 'mcp(*)', 'read_url(*)', 'execute_url(*)', 'download_url(*)'],
+          allow: ['read_file(*)'],
+        },
+      }), ...a2aReadableDirs(request.cwd).flatMap(dir => ['--add-dir', dir])]
+      : request.full_access
+        ? ['--input-format', 'stream-json', '--output-format', 'stream-json', '--dangerously-skip-permissions']
+        : ['--input-format', 'stream-json', '--output-format', 'stream-json', '--mode', 'accept-edits', '--settings', JSON.stringify({
+          toolPermission: 'request-review',
+          permissions: {
+            allow: ['mcp(clarity_m3ntor/*)', 'read_file(*)', 'write_file(*)', 'command(*)', 'read_url(*)'],
+          },
+        })];
+  const coachArgs = isAntigravity || request.task !== 'coaching' ? null : request.harness === 'codex'
     ? [...(await codexMcpOff(request.cwd)), '-c', `mcp_servers.m3ntor_coach={url=${JSON.stringify(request.mcp_url)}}`, ...codexApprove('m3ntor_coach', COACH_MCP_TOOLS), 'exec', ...CODEX_FEATURES_OFF, '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
     : ['--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: { clarity_m3ntor: { type: 'http', url: request.mcp_url } } }), '--tools', COACH_BUILTIN_TOOLS, '--permission-mode', 'dontAsk', '--allowedTools', COACH_TOOLS];
-  const args = coachArgs || (request.harness === 'codex'
+  const args = agyArgs || coachArgs || (request.harness === 'codex'
     ? (readOnly
       ? [...(await codexMcpOff(request.cwd)), 'exec', ...CODEX_FEATURES_OFF, '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '-o', outputFile, '-']
       // Tasks and goal reviews read the owner's sources over their established routes
@@ -134,12 +160,12 @@ async function runHarness(request, prompt) {
     : '';
   const input = `${prompt}\n\n## ${heading}\n\n${request.question}\n${answers}\n## Supplied context\n\n${context}\n${persistence}`;
   await writeFile(path.join(directory, 'harness-input.md'), input, { mode: 0o600 });
-  await storeJson(path.join(directory, 'command.json'), { command: request.harness, args, cwd: request.cwd, model: 'Inherited from the existing harness configuration', authentication: 'Inherited; no credential or account override' });
+  await storeJson(path.join(directory, 'command.json'), { command: harnessBin, args, cwd: request.cwd, model: 'Inherited from the existing harness configuration', authentication: 'Inherited; no credential or account override' });
   const stdoutLog = createWriteStream(path.join(directory, 'harness.stdout.jsonl'), { mode: 0o600 });
   const stderrLog = createWriteStream(path.join(directory, 'harness.stderr.log'), { mode: 0o600 });
   const recoveryLog = createWriteStream(path.join(directory, 'harness.recovery.jsonl'), { mode: 0o600 });
   // M3NTOR_JOB_ID marks the service's own harness runs, so the owner's session-start hook stays quiet in them.
-  const child = spawn(request.harness, args, { cwd: request.cwd, env: { ...process.env, M3NTOR_JOB_ID: request.job_id }, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(harnessBin, args, { cwd: request.cwd, env: { ...process.env, M3NTOR_JOB_ID: request.job_id }, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   let buffer = '', stderrBuffer = '', stderr = '', output = '', harnessError = '', stoppedFor = '', spawnError;
   let progressVersion = 0, retryProgressVersion = -1, lastRetry;
@@ -242,8 +268,25 @@ async function runHarness(request, prompt) {
       output = typeof incoming.result === 'string' ? incoming.result : output;
       if (incoming.is_error || (incoming.subtype && incoming.subtype !== 'success')) harnessError = incoming.result || incoming.subtype;
     }
+    if (incoming.event === 'init' && incoming.conversation_id) state.harness_session_id = incoming.conversation_id;
+    if (incoming.event === 'step_update' && incoming.step_update) {
+      const step = incoming.step_update;
+      if (step.conversation_id) state.harness_session_id ||= step.conversation_id;
+      if (step.step_type === 'agent_response' && typeof step.text_delta === 'string') {
+        streamedText.set(step.step_index, (streamedText.get(step.step_index) || '') + step.text_delta);
+        modelText([...streamedText].sort(([left], [right]) => left - right).map(([, text]) => text).join(''));
+      }
+      if (step.state === 'DONE' && step.step_type === 'tool' && step.tool_info) {
+        progress('work_item', { type: 'tool', name: step.tool_info.name || step.tool_name, parameters: step.tool_info.parameters, output: step.tool_info.output, error: errorContent(step.tool_info.error) });
+      }
+    }
+    if (incoming.event === 'result' && incoming.result) {
+      if (incoming.result.conversation_id) state.harness_session_id = incoming.result.conversation_id;
+      if (typeof incoming.result.response === 'string') output = incoming.result.response;
+      if (incoming.result.status && incoming.result.status !== 'SUCCESS') harnessError = incoming.result.error || incoming.result.status;
+    }
     if (incoming.type === 'turn.failed') harnessError = incoming.error?.message || JSON.stringify(incoming.error || incoming);
-    const isError = incoming.type === 'error' || incoming.type === 'turn.failed' || incoming.is_error;
+    const isError = incoming.type === 'error' || incoming.type === 'turn.failed' || incoming.is_error || (incoming.event === 'result' && incoming.result?.status && incoming.result.status !== 'SUCCESS');
     const isRetry = incoming.type === 'system' && incoming.subtype === 'api_retry';
     const evidence = JSON.stringify(incoming);
     if ((isError || isRetry) && hardRejection(evidence)) {
@@ -283,7 +326,7 @@ async function runHarness(request, prompt) {
   });
   child.stdin.on('error', error => { harnessError ||= `Harness stdin failed: ${error.message}`; });
   await save({ status: 'running', stage: 'harness', harness_pid: child.pid, harness_started_at: new Date().toISOString() });
-  child.stdin.end(input);
+  child.stdin.end(isAntigravity ? `${JSON.stringify({ event: 'user', message: { content: input } })}\n` : input);
   const outcome = await result;
   if (killTimer) clearTimeout(killTimer);
   if (buffer.trim()) consumeLine(buffer);

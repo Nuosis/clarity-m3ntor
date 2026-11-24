@@ -12,14 +12,14 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const platform = process.platform;
 const defaultLabel = platform === 'darwin' ? 'com.clarity.m3ntor' : 'clarity-m3ntor';
 
-const USAGE = `Usage: node install-service.mjs --workspace <dir> --harness codex|claude --port <n>
+const USAGE = `Usage: node install-service.mjs --workspace <dir> --harness codex|claude|antigravity --port <n>
                                 [--source <dir>] [--label <name>] [--replace]
 
 Installs the M3NT0R service (macOS LaunchAgent, Linux systemd --user unit, Windows
 logon task) so it starts at login, restarts after a crash and keeps its port.
 
   --workspace  business workspace (M3NTOR_WORKSPACE)
-  --harness    codex or claude (M3NTOR_HARNESS)
+  --harness    codex, claude, or antigravity (M3NTOR_HARNESS; agy alias accepted)
   --port       fixed loopback port
   --source     M3NT0R checkout (default: this file's directory)
   --label      service name (default: ${defaultLabel})
@@ -118,7 +118,7 @@ async function m3ntorAnswers(port) {
 
 const source = path.resolve(opts.source || here);
 const workspace = opts.workspace ? path.resolve(opts.workspace) : null;
-const harness = opts.harness;
+const harness = opts.harness === 'agy' ? 'antigravity' : opts.harness;
 const label = opts.label || defaultLabel;
 // Prefer the PATH entry (for example /opt/homebrew/bin/node) so a node upgrade keeps working.
 const node = which('node') || process.execPath;
@@ -180,7 +180,7 @@ let env = null;
 if (!keep) {
   const missing = [];
   if (!workspace) missing.push('--workspace');
-  if (!['codex', 'claude'].includes(harness)) missing.push('--harness codex|claude');
+  if (!['codex', 'claude', 'antigravity'].includes(harness)) missing.push('--harness codex|claude|antigravity');
   if (!Number.isInteger(port) || port < 1024 || port > 65535) missing.push('--port');
   if (missing.length) finish({ ...status, status: 'missing_input', missing });
   if (!existsSync(path.join(source, 'server.mjs'))) finish({ ...status, status: 'error', error: `server.mjs not found in ${source}` });
@@ -189,12 +189,13 @@ if (!keep) {
   if (holder && !replacingOwnListener) finish({ ...status, status: 'port_in_use', holder });
 
   // The service runs the harness CLI, so its PATH must reach node and the harness.
-  const harnessPath = which(harness);
+  const harnessBin = harness === 'antigravity' ? 'agy' : harness;
+  const harnessPath = which(harnessBin);
   const servicePath = [path.dirname(node), harnessPath && path.dirname(harnessPath), ...(process.env.PATH || '').split(path.delimiter)]
     .filter(Boolean).filter((d, i, all) => all.indexOf(d) === i).join(path.delimiter);
   env = { HOME: home, PATH: servicePath, PORT: String(port), M3NTOR_WORKSPACE: workspace, M3NTOR_HARNESS: harness };
   // Non-secret selectors read by the service or its harness; the service manager does not inherit the shell.
-  for (const key of ['M3NTOR_CONFIG', 'M3NTOR_JOB_DIR', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR']) {
+  for (const key of ['M3NTOR_CONFIG', 'M3NTOR_JOB_DIR', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'ANTIGRAVITY_CONFIG_DIR']) {
     if (process.env[key]) env[key] = path.resolve(process.env[key]);
   }
   status.environment = Object.keys(env);

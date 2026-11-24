@@ -1,10 +1,10 @@
 Status: account signup/registration, identity, prompt delivery, assessment summary submission, utility cases and A2A messages use a registered Clarity `clrtok_` token over HTTPS (`register.mjs`). M3NT0R coaching and assessment run as local background jobs returned through the MCP tools; the service receives A2A requests (from M-CODEX only) over Clarity's push stream (`a2a-receiver.mjs`). There is no UI.
 
 Local HTTP MCP for an owner's agent to ask M3NT0R for coaching using the owner's
-Codex or Claude Code harness. It extends the Clarity Coach service and retains
+Codex, Claude Code, or Antigravity harness. It extends the Clarity Coach service and retains
 its POMA (Process, Observability, Measurement and Agency) assessment, journal and question
 tools. No dependency install is needed; use Node.js 22 or newer, an installed
-Codex or Claude Code CLI with its existing login. User-facing server access must
+Codex, Claude Code, or Antigravity (`agy`) CLI with its existing login. User-facing server access must
 use a registered Clarity token over HTTPS, shared by the local MCP and A2A client.
 Users need no SSH access or operator secret.
 
@@ -225,7 +225,7 @@ Environment variables are read from the process; `.env` files are not loaded.
 | --- | --- | --- |
 | `PORT` | `4317` | HTTP service port; choose an unused port for a second copy. |
 | `M3NTOR_WORKSPACE` | Owner's home directory | Local business context and harness working directory. |
-| `M3NTOR_HARNESS` | Assessment harness, then `codex` | Existing CLI to run; `codex` or `claude`. |
+| `M3NTOR_HARNESS` | Assessment harness, then `codex` | Existing CLI to run; `codex`, `claude`, or `antigravity` (`agy` alias accepted). |
 | `M3NTOR_CONFIG` | `~/.config/clarity_m3ntor/config.json` | Clarity connection profile written by `register.mjs`. |
 | `M3NTOR_JOB_DIR` | `.m3ntor-runtime/jobs` beside the source | Private durable job directory. Use an ignored or external location. |
 | `M3NTOR_WAIT_MS` | `1500` | Brief ask response wait; does not terminate a running job. |

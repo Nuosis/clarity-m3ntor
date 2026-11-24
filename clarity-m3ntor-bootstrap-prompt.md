@@ -6,17 +6,17 @@ Keep detailed business records, email, sessions, tool output, identities, financ
 
 ## 0. Starting from a browser session (or without a local CLI)
 
-If you are running in a **web browser chat** (ChatGPT web, Claude web, etc.) with no access to the owner's local terminal/filesystem, **stop before Step 1 and guide the owner to install and sign into a local CLI first.** Do not pretend to run local commands or connect to `127.0.0.1` from a browser session.
+If you are running in a **web browser or mobile chat** (ChatGPT web, Claude web, Gemini web, etc.) — or any cloud/sandboxed environment without a local shell running directly on the owner's own computer — **stop before Step 1 and guide the owner to install and sign into a local CLI first.** Do not pretend to run local commands, treat a cloud container as the owner's machine, or try to connect to `127.0.0.1` from a browser session.
 
 **Why a local CLI is required:** Clarity M3NT0R runs as a local background service on the owner's computer so private business records, sessions, journals and credentials never leave their machine, the local Owner View (`http://127.0.0.1:<port>/`) stays reachable, and the local A2A listener can respond to Clarity (`M-CODEX`) while keeping sensitive data local. A browser chat cannot access local files, install a local service or reach `127.0.0.1`.
 
-Walk the owner through these steps on their computer (matching their OS and existing paid account):
+Walk the owner through these steps on their computer (matching their OS and existing account):
 
 1. **Install prerequisites — Node.js 22+ and Git:**
    - Check in Terminal (macOS/Linux) or PowerShell (Windows): `node -v` (must be `v22` or newer) and `git --version`.
    - If missing or older: install Node.js 22 LTS from `https://nodejs.org` (or `brew install node` on macOS, `winget install OpenJS.NodeJS.LTS` on Windows) and Git from `https://git-scm.com` (macOS will also prompt for Xcode Command Line Tools on first `git` run).
-2. **Install and sign into ONE local AI CLI** (pick the one that matches the owner's paid subscription or API key):
-   - **OpenAI Codex CLI** *(requires ChatGPT Plus/Pro/Business/Enterprise or an OpenAI API key — ChatGPT Free does not include Codex CLI)*:
+2. **Install and sign into a local AI CLI** (pick the one that matches the owner's subscription/account):
+   - **OpenAI Codex CLI** *(requires ChatGPT Plus/Pro/Business/Enterprise or an OpenAI API key; ChatGPT Free does not include Codex CLI)*:
      ```sh
      # macOS (Homebrew) or cross-platform (npm)
      brew install --cask codex
@@ -34,11 +34,22 @@ Walk the owner through these steps on their computer (matching their OS and exis
      npm install -g @anthropic-ai/claude-code
      ```
      Then open a new terminal, verify with `claude --version`, run `claude`, and complete sign-in with their Claude account.
+   - **Google Antigravity CLI (`agy`)** *(uses a Google account — personal Google account or Google Workspace / Gemini Enterprise / Google Cloud)*:
+     ```sh
+     # macOS / Linux
+     curl -fsSL https://antigravity.google/cli/install.sh | bash
+     # Windows PowerShell
+     irm https://antigravity.google/cli/install.ps1 | iex
+     # Windows CMD
+     curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd
+     ```
+     *(Alternatively, download the Antigravity desktop App from `https://antigravity.google/download`.)*
+     Then open a new terminal, verify with `agy --version`, run `agy`, and complete the interactive sign-in and workspace trust prompts.
 3. **Start the bootstrap locally:**
    - In Terminal/PowerShell, `cd` into the owner's business workspace folder (or their home folder if they do not have a dedicated workspace folder yet).
-   - Launch `codex` or `claude` there and paste this same bootstrap prompt so the local AI can run Steps 1–6 directly.
+   - Launch `codex`, `claude`, or `agy` there and paste this same bootstrap prompt so the local AI can run Steps 1–6 directly.
 
-*(If you are already running in a local GUI harness such as Antigravity that has shell access, check `command -v codex` / `command -v claude` before Step 1's `install-service.mjs`; if neither worker CLI is installed and signed in yet, guide the owner through Step 2 above first.)*
+*(If you are running locally in the Antigravity desktop App or IDE, verify `command -v agy` — or `codex` / `claude` — before Step 1's `install-service.mjs`; if no local worker CLI is installed and signed in yet, guide the owner through installing `agy`, `codex`, or `claude` from Step 2 above first.)*
 
 ## 1. Establish local persistence, MCP and A2A access
 
@@ -58,11 +69,11 @@ git clone https://github.com/Nuosis/clarity-m3ntor.git "$M3NTOR_SOURCE"
 
 Resolve `M3NTOR_SOURCE` to the actual installation directory before running the command. For an existing checkout inspect its branch and local edits before updating; preserve and finish unrelated work rather than resetting it. Read that checkout's README and `ACCESS-PATTERN.md`; use its supported Node.js version (currently Node.js 22 or newer). The current package has no dependency-install step.
 
-Determine the current business workspace and interactive harness (`codex`, `claude`, or `antigravity`). For the background service worker, pass an installed worker CLI (`codex` or `claude`) to `install-service.mjs`. Reuse a matching running service; otherwise choose an unused loopback port and install the package under the operating system's service manager (macOS LaunchAgent, Linux `systemd --user`, Windows current-user logon task), so it starts at login, restarts after a crash and keeps that port:
+Determine the current business workspace and harness (`codex`, `claude`, or `antigravity`). Pass that installed harness CLI (`codex`, `claude`, or `antigravity`) to `install-service.mjs`. Reuse a matching running service; otherwise choose an unused loopback port and install the package under the operating system's service manager (macOS LaunchAgent, Linux `systemd --user`, Windows current-user logon task), so it starts at login, restarts after a crash and keeps that port:
 
 ```sh
 node "$M3NTOR_SOURCE/install-service.mjs" --workspace "$M3NTOR_WORKSPACE" \
-  --harness "$M3NTOR_WORKER_HARNESS" --port "$M3NTOR_PORT"
+  --harness "$M3NTOR_HARNESS" --port "$M3NTOR_PORT"
 ```
 
 It prints one JSON status with the label, definition file, port, URL, whether it is loaded and whether the service is responding. An existing service with that label is kept with its port and settings; pass `--replace` only when it points at the wrong source, workspace or harness. `port_in_use` names the program already on that port; choose another port. Stop any shell-started copy on the same port first. Read back that the service is responding, then end the service's node process and confirm the service manager brings it back on the same port (allow up to 30 seconds). Record the definition file, port and URL `http://127.0.0.1:<port>/mcp/local`, and both read-backs. Bind only to loopback. On Linux, report the returned `linger` value: without it the service runs only while the owner is logged in.
@@ -80,7 +91,9 @@ codex mcp add clarity_m3ntor --url http://127.0.0.1:<port>/mcp/local
 # Claude Code (choose the current workspace's appropriate existing scope)
 claude mcp add --transport http --scope local clarity_m3ntor http://127.0.0.1:<port>/mcp/local
 
-# Antigravity (Streamable HTTP in ~/.gemini/config/mcp_config.json)
+# Antigravity CLI (Streamable HTTP; or merge into ~/.gemini/config/mcp_config.json for App/IDE)
+agy mcp add clarity_m3ntor http://127.0.0.1:<port>/mcp/local
+# Manual config (~/.gemini/config/mcp_config.json):
 # Merge under "mcpServers": { "clarity_m3ntor": { "url": "http://127.0.0.1:<port>/mcp/local" } }
 ```
 

@@ -11,7 +11,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const terminal = new Set(['complete', 'failed', 'interrupted']);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 export const jobRoot = path.resolve(process.env.M3NTOR_JOB_DIR || path.join(root, '.m3ntor-runtime', 'jobs'));
-const harnessInput = { type: 'string', enum: ['codex', 'claude'], description: 'Optional: which installed harness runs the job; omit to use the service\'s selection.' };
+const harnessInput = { type: 'string', enum: ['codex', 'claude', 'antigravity'], description: 'Optional: which installed harness runs the job; omit to use the service\'s selection.' };
 const assessmentInput = { type: 'object', properties: { context: { type: ['string', 'object'], description: 'Optional existing business assessment context or local source references, as text or structured JSON.' }, harness: harnessInput }, additionalProperties: false };
 
 export const m3ntorTools = [
@@ -113,14 +113,17 @@ export async function startTaskJob(task, environment) {
     return { process_id: id, kind: internalMap.has(id) ? 'internal' : 'business', version: definition.version || contentSha256, content_sha256: contentSha256, updated_at: definition.updated_at || null, definition };
   });
   const triggerInput = typeof task.trigger_input === 'string' ? JSON.parse(task.trigger_input) : task.trigger_input || null;
-  const harness = environment.agentHarness || process.env.M3NTOR_HARNESS || environment.harness || 'codex';
+  const rawHarness = environment.agentHarness || process.env.M3NTOR_HARNESS || environment.harness || 'codex';
+  const harness = rawHarness === 'agy' ? 'antigravity' : rawHarness;
   const fullAccess = environment.fullAccess === true;
   const executionEnvironment = {
     harness,
     full_access: fullAccess,
     permission_mode: harness === 'claude'
       ? (fullAccess ? 'bypassPermissions' : 'acceptEdits')
-      : (fullAccess ? 'dangerously-bypass-approvals-and-sandbox' : 'workspace-write'),
+      : harness === 'antigravity'
+        ? (fullAccess ? 'dangerously-skip-permissions' : 'accept-edits')
+        : (fullAccess ? 'dangerously-bypass-approvals-and-sandbox' : 'workspace-write'),
     network_access: true,
   };
   const context = {
@@ -161,8 +164,9 @@ async function answeredQuestions(cwd) {
 }
 
 async function createJob(input, { cwd, harness, mcpUrl, fullAccess = false }, task) {
-  const selected = input.harness || process.env.M3NTOR_HARNESS || harness || 'codex';
-  if (!['codex', 'claude'].includes(selected)) throw new Error('Select an existing codex or claude harness.');
+  const rawSelected = input.harness || process.env.M3NTOR_HARNESS || harness || 'codex';
+  const selected = rawSelected === 'agy' ? 'antigravity' : rawSelected;
+  if (!['codex', 'claude', 'antigravity'].includes(selected)) throw new Error('Select an existing codex, claude, or antigravity harness.');
   const waitMs = Number(process.env.M3NTOR_WAIT_MS ?? 1500);
   if (!Number.isFinite(waitMs) || waitMs < 0) throw new Error('M3NTOR_WAIT_MS must be a non-negative number.');
   const id = task.jobId || randomUUID(); // a caller may persist the id before launch

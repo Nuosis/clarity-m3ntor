@@ -423,9 +423,9 @@ function configurationFields(node, config, editable) {
       <label data-daily-time${config.pace === 'daily' ? '' : ' hidden'}>Daily time <input name="time" type="time" value="${processText(config.time)}"></label>`;
   }
   const runner = config.agent_harness || config.harness;
-  const name = runner === 'codex' ? 'Codex' : runner === 'claude' ? 'Claude' : 'Not recorded';
+  const name = runner === 'codex' ? 'Codex' : runner === 'claude' ? 'Claude' : runner === 'antigravity' ? 'Antigravity' : 'Not recorded';
   const permission = config.full_access == null ? 'Not recorded' : config.full_access ? 'Full access' : 'Standard access';
-  return `${editable ? `<label>Agent runner <select name="agent_harness"><option value="codex"${runner === 'codex' ? ' selected' : ''}>Codex</option><option value="claude"${runner === 'claude' ? ' selected' : ''}>Claude</option></select></label>` : `<p>${name}</p>`}
+  return `${editable ? `<label>Agent runner <select name="agent_harness"><option value="codex"${runner === 'codex' ? ' selected' : ''}>Codex</option><option value="claude"${runner === 'claude' ? ' selected' : ''}>Claude</option><option value="antigravity"${runner === 'antigravity' ? ' selected' : ''}>Antigravity</option></select></label>` : `<p>${name}</p>`}
     <p class="meta">${processText(config.model || 'Model not recorded')} · ${processText(permission)}${config.permission_mode ? ' · ' + processText(config.permission_mode) : ''}</p>`;
 }
 function evidenceFields(evidence) {
