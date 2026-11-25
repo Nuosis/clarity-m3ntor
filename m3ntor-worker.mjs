@@ -108,8 +108,10 @@ async function runHarness(request, prompt) {
   // M3NT0R coaching runs locally with the owner's full context: it may read files,
   // search the web and the shared utility library, and read the journal; it sets the
   // goals and otherwise changes nothing; the owner's agent carries out what it recommends.
+  const agyModel = request.model || process.env.M3NTOR_AGY_MODEL || 'gemini-4-neon-high';
+  const agyBase = ['--model', agyModel, '--input-format', 'stream-json', '--output-format', 'stream-json'];
   const agyArgs = !isAntigravity ? null : request.task === 'coaching'
-    ? ['--input-format', 'stream-json', '--output-format', 'stream-json', '--disable-slash-commands', '--settings', JSON.stringify({
+    ? [...agyBase, '--disable-slash-commands', '--settings', JSON.stringify({
       toolPermission: 'request-review',
       permissions: {
         deny: ['command(*)', 'write_file(*)', 'execute_url(*)', 'download_url(*)'],
@@ -117,7 +119,7 @@ async function runHarness(request, prompt) {
       },
     })]
     : readOnly
-      ? ['--input-format', 'stream-json', '--output-format', 'stream-json', '--disable-slash-commands', '--settings', JSON.stringify({
+      ? [...agyBase, '--disable-slash-commands', '--settings', JSON.stringify({
         toolPermission: 'request-review',
         permissions: {
           deny: ['command(*)', 'write_file(*)', 'mcp(*)', 'read_url(*)', 'execute_url(*)', 'download_url(*)'],
@@ -125,8 +127,8 @@ async function runHarness(request, prompt) {
         },
       }), ...a2aReadableDirs(request.cwd).flatMap(dir => ['--add-dir', dir])]
       : request.full_access
-        ? ['--input-format', 'stream-json', '--output-format', 'stream-json', '--dangerously-skip-permissions']
-        : ['--input-format', 'stream-json', '--output-format', 'stream-json', '--mode', 'accept-edits', '--settings', JSON.stringify({
+        ? [...agyBase, '--dangerously-skip-permissions']
+        : [...agyBase, '--mode', 'accept-edits', '--settings', JSON.stringify({
           toolPermission: 'request-review',
           permissions: {
             allow: ['mcp(clarity_m3ntor/*)', 'read_file(*)', 'write_file(*)', 'command(*)', 'read_url(*)'],
