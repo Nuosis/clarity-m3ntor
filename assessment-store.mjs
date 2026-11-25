@@ -23,6 +23,34 @@ async function writePrivate(file, content) {
 }
 const writeJson = (file, value) => writePrivate(file, JSON.stringify(value, null, 2) + '\n');
 
+export const OPERATING_CONTEXT_START = '<!-- clarity_m3ntor:operating_context:start -->';
+export const OPERATING_CONTEXT_END = '<!-- clarity_m3ntor:operating_context:end -->';
+
+export function extractOperatingContext(content) {
+  if (typeof content !== 'string' || !content) return null;
+  const start = content.indexOf(OPERATING_CONTEXT_START);
+  if (start < 0) return null;
+  const bodyStart = start + OPERATING_CONTEXT_START.length;
+  const end = content.indexOf(OPERATING_CONTEXT_END, bodyStart);
+  if (end < 0) return null;
+  const body = content.slice(bodyStart, end).trim();
+  return body || null;
+}
+
+export function upsertOperatingContext(content, operatingContext) {
+  const trimmed = String(operatingContext || '').trim();
+  if (!trimmed) return content;
+  const block = `${OPERATING_CONTEXT_START}\n${trimmed}\n${OPERATING_CONTEXT_END}`;
+  const current = String(content || '');
+  const start = current.indexOf(OPERATING_CONTEXT_START);
+  const end = start < 0 ? -1 : current.indexOf(OPERATING_CONTEXT_END, start + OPERATING_CONTEXT_START.length);
+  if (start >= 0 && end >= 0) {
+    return current.slice(0, start) + block + current.slice(end + OPERATING_CONTEXT_END.length);
+  }
+  const rest = current.replace(/^\s+/, '');
+  return rest ? `${block}\n\n${rest}` : `${block}\n`;
+}
+
 export function reconcileReassessmentContext(current, proposed) {
   const sections = /<!-- clarity_m3ntor:poma:([0-9a-f-]{36}):start -->[\s\S]*?<!-- clarity_m3ntor:poma:\1:end -->/gi;
   const latest = new Map([...current.matchAll(sections)].map(match => [match[1].toLowerCase(), match[0]]));
@@ -36,6 +64,8 @@ export function reconcileReassessmentContext(current, proposed) {
     retained.add(key);
     return latest.get(key);
   });
+  const currentOperating = extractOperatingContext(current);
+  if (currentOperating && !extractOperatingContext(merged)) merged = upsertOperatingContext(merged, currentOperating);
   for (const [id, section] of latest) if (!retained.has(id)) merged += `${merged && !merged.endsWith('\n') ? '\n' : ''}\n${section}\n`;
   return merged;
 }
@@ -91,6 +121,9 @@ export function savePomaReassessment(cwd, input, { assessmentId, harness } = {})
       const contextPath = path.join(root, 'CONTEXT.md');
       let context = '';
       try { context = await readFile(contextPath, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (typeof input.operating_context === 'string' && input.operating_context.trim()) {
+        context = upsertOperatingContext(context, input.operating_context);
+      }
       const start = `<!-- clarity_m3ntor:poma:${revisionId}:start -->`;
       const end = `<!-- clarity_m3ntor:poma:${revisionId}:end -->`;
       const section = `${start}\n## Business POMA reassessment — ${assessedAt}\n\nStatus: ${revision.status}\n\n${input.context_update.trim()}\n${end}`;
