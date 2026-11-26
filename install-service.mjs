@@ -195,7 +195,7 @@ if (!keep) {
     .filter(Boolean).filter((d, i, all) => all.indexOf(d) === i).join(path.delimiter);
   env = { HOME: home, PATH: servicePath, PORT: String(port), M3NTOR_WORKSPACE: workspace, M3NTOR_HARNESS: harness };
   // Non-secret selectors read by the service or its harness; the service manager does not inherit the shell.
-  for (const key of ['M3NTOR_CONFIG', 'M3NTOR_JOB_DIR', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'ANTIGRAVITY_CONFIG_DIR']) {
+  for (const key of ['M3NTOR_CONFIG', 'M3NTOR_JOB_DIR', 'M3NTOR_A2A_URL', 'M3NTOR_A2A_MODE', 'M3NTOR_LEGACY_A2A', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'ANTIGRAVITY_CONFIG_DIR']) {
     if (process.env[key]) env[key] = path.resolve(process.env[key]);
   }
   status.environment = Object.keys(env);

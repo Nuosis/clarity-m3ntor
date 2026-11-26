@@ -11,7 +11,8 @@ import { coachIdentity } from './coach-identity.mjs';
 import { m3ntorTools, askM3ntor, assessPoma, getM3ntorResult, jobDirectory, jobRoot } from './m3ntor-jobs.mjs';
 import { utilityTools, reportUtility, searchUtility, revokeUtility, boostUtility, resolveUtility } from './clarity-utility.mjs';
 import { clarityRequest } from './clarity-client.mjs';
-import { startA2AReceiver } from './a2a-receiver.mjs';
+import { startA2AReceiver, drainLegacyA2ALedger } from './a2a-receiver.mjs';
+import { a2aTools, A2A_TOOL_NAMES, createA2AClient } from './a2a-client.mjs';
 import { startClarifyBridge } from './clarify-bridge.mjs';
 import { taskTools, startTaskQueue } from './task-queue.mjs';
 import { REVIEW_PROCESS_ID } from './inov8-review-process.mjs';
@@ -34,7 +35,6 @@ const mcpSessions = new Map();
 const mcpStreams = new Set();
 const contextPath = path.join(cwd, '.clarity_coach', 'CONTEXT.md');
 
-const a2aStatusTool = { name: 'a2a_status', description: 'Use when checking whether other agents can reach the owner\'s agent, or when an expected agent-to-agent message has not arrived: returns this installation\'s Clarity A2A receiver state: stream connection (connecting, connected, ready, reconnecting, rejected, not_registered), agent handle, pending messages replayed on connect, last message and last error. Each received message is run in the owner\'s harness and answered with an A2A reply; per-message records are in .clarity_coach/a2a/messages.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } };
 const clarifyBridgeStatusTool = { name: 'clarify_bridge_status', description: 'Returns the live WebSocket delegation bridge status between local M3NT0R and Clarify (connection state, advertised local flows, waiting event tasks, and last delegated task).', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } };
 
 // Every saved assessment revision leaves one pending question in which the agent
@@ -224,7 +224,7 @@ async function mcp(req, res, coach = false) {
   if (call.method !== 'ping' && !session) return json(res,404,{error:'MCP session is missing or expired; initialize again.'});
   if (call.method === 'ping') result = {};
   else if (call.method === 'tools/list') {
-    const all = [...m3ntorTools, ...utilityTools, a2aStatusTool, clarifyBridgeStatusTool, ...taskTools, ...goalTools, ...triggerFlowTools, ...environmentTools, ...tools, ...businessTools(await questionState(cwd))];
+    const all = [...m3ntorTools, ...utilityTools, ...a2aTools, clarifyBridgeStatusTool, ...taskTools, ...goalTools, ...triggerFlowTools, ...environmentTools, ...tools, ...businessTools(await questionState(cwd))];
     result = { tools: all.filter(tool => coach ? COACH_TOOLS.has(tool.name) : !COACH_ONLY_TOOLS.has(tool.name)) };
   }
   else if (call.method === 'tools/call') {
@@ -253,8 +253,11 @@ async function mcp(req, res, coach = false) {
         const resValue = await taskQueue.call(name, input);
         if (name === 'register_trigger') clarifyBridge.syncManifest().catch(() => {});
         result = { content: [{ type: 'text', text: JSON.stringify(resValue) }] };
-      } else if (name === 'a2a_status') {
-        result = { content: [{ type: 'text', text: JSON.stringify(a2aReceiver.status()) }] };
+      } else if (A2A_TOOL_NAMES.has(name)) {
+        const resValue = name === 'a2a_status' && legacyA2AReceiver
+          ? legacyA2AReceiver.status()
+          : await a2aClient.call(name, input);
+        result = { content: [{ type: 'text', text: JSON.stringify(resValue) }] };
       } else if (name === 'clarify_bridge_status') {
         result = { content: [{ type: 'text', text: JSON.stringify(clarifyBridge.status()) }] };
       } else if (['report_utility', 'search_utility', 'boost_utility', 'resolve_utility'].includes(name)) {
@@ -394,7 +397,7 @@ async function overview() {
   const questions = await questionState(cwd);
   const journal = await journalDays();
   return {
-    worker, tasks, a2a: a2aReceiver.status(), clarify_bridge: clarifyBridge.status(), running: await runningJobs(),
+    worker, tasks, a2a: legacyA2AReceiver ? legacyA2AReceiver.status() : await a2aClient.status(), clarify_bridge: clarifyBridge.status(), running: await runningJobs(),
     context: await readFile(contextPath, 'utf8').catch(() => ''),
     questions: { pending: questions.pending, answered: questions.questions.filter(q => q.status !== 'pending').slice(-20).reverse(), deferred_until: questions.deferred ? questions.deferUntil : null },
     assessments: await assessments(),
@@ -480,16 +483,31 @@ async function ownerApi(req, res, url) {
     const state = await questionState(cwd);
     return json(res, 200, { pending: state.pending.map(q => ({ id: q.id, question: q.question, source: q.source, created_at: q.createdAt })), deferred_until: state.deferred ? state.deferUntil : null });
   }
-  // Combined session-start payload: concise operating context from CONTEXT.md plus pending Coach questions.
+  if (req.method === 'GET' && url.pathname === '/api/a2a/inbox') {
+    try {
+      const data = await a2aClient.inbox({
+        status: url.searchParams.get('status') || 'unread',
+        limit: Number(url.searchParams.get('limit') || 25),
+        from_agent: url.searchParams.get('from_agent') || undefined,
+        thread_id: url.searchParams.get('thread_id') || undefined,
+      });
+      return json(res, 200, data);
+    } catch (error) {
+      return json(res, 503, { error: error.message });
+    }
+  }
+  // Combined session-start payload: concise operating context from CONTEXT.md, pending Coach questions, and unread A2A messages.
   if (req.method === 'GET' && url.pathname === '/api/session-start') {
     const state = await questionState(cwd);
     let rawContext = '';
     try { rawContext = await readFile(contextPath, 'utf8'); } catch {}
+    const a2aUnread = legacyA2AReceiver ? { count: 0, messages: [] } : await a2aClient.unreadSummary();
     return json(res, 200, {
       context_path: contextPath,
       operating_context: extractOperatingContext(rawContext),
       pending: state.pending.map(q => ({ id: q.id, question: q.question, source: q.source, created_at: q.createdAt })),
       deferred_until: state.deferred ? state.deferUntil : null,
+      a2a_unread: a2aUnread,
     });
   }
   if (req.method === 'GET' && parts[1] === 'tasks' && parts[2]) {
@@ -566,8 +584,30 @@ const server = http.createServer(async (req, res) => {
     return json(res, 404, { error: 'Not found.' });
   } catch (e) { if (!res.headersSent) json(res, 400, { error: e.message }); }
 });
-// This service holds the installation's A2A stream for as long as it runs.
-const a2aReceiver = startA2AReceiver({ cwd, harness, mcpUrl });
+// A2A delegation with safe migration:
+// - If M3NTOR_LEGACY_A2A=1, stay on the embedded receiver.
+// - If M3NTOR_A2A_MODE=standalone, M3NTOR_A2A_URL is explicitly configured, or an
+//   identity-matched standalone `a2a-connect` daemon is already reachable, delegate to
+//   `a2a-connect`, relay its pushed MCP notifications to connected harnesses/UI, and drain
+//   any in-flight legacy embedded jobs without opening a competing SSE stream.
+// - Otherwise (existing installation that has not provisioned `a2a-connect` yet), keep
+//   the embedded receiver active so A2A reception never breaks on upgrade.
+const a2aClient = createA2AClient();
+const forceLegacyA2A = process.env.M3NTOR_LEGACY_A2A === '1';
+const forceStandaloneA2A = process.env.M3NTOR_A2A_MODE === 'standalone' || Boolean(process.env.M3NTOR_A2A_URL);
+const startupA2AStatus = forceLegacyA2A ? null : await a2aClient.status();
+const useStandaloneA2A = !forceLegacyA2A && (forceStandaloneA2A || startupA2AStatus?.online === true);
+const legacyA2AReceiver = useStandaloneA2A ? null : startA2AReceiver({ cwd, harness, mcpUrl });
+const legacyA2ADrainer = useStandaloneA2A ? drainLegacyA2ALedger({ cwd }) : null;
+const a2aNotificationRelay = useStandaloneA2A
+  ? a2aClient.startNotificationRelay(notif => {
+      const payload = `event: message\ndata: ${JSON.stringify(notif)}\n\n`;
+      for (const stream of mcpStreams) {
+        try { stream.res.write(payload); } catch {}
+      }
+      notifyUi();
+    })
+  : null;
 // The owner's action queue runs due tasks for as long as this service runs.
 await seedSources(cwd).catch(error => console.error('Seeding the source list failed:', error.message));
 const taskQueue = startTaskQueue({ cwd, harness, mcpUrl, latestAssessment: async () => (await assessments())[0] || null });
@@ -586,6 +626,8 @@ retryPendingSubmissions().then(left => { if (left) scheduleSubmissionRetry(); },
 server.listen(port, '127.0.0.1', () => console.log(`Clarity M3NT0R MCP → ${mcpUrl} · owner view → ${base}/`));
 for (const signal of ['SIGTERM','SIGINT']) process.on(signal, () => {
   const observerStopped = Promise.resolve(agencyPilotObserver.stop()).catch(error => console.error('Agency pilot observer shutdown failed:', error.message));
+  a2aNotificationRelay?.stop();
+  legacyA2ADrainer?.stop();
   clarifyBridge.close();
   taskQueue.close();
   for (const stream of mcpStreams) stream.res.end();

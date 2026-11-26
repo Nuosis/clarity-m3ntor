@@ -230,3 +230,91 @@ export function startA2AReceiver({ cwd, harness, mcpUrl }) {
 
   return { status: () => status };
 }
+
+// Finishes replying to any in-flight embedded A2A jobs recorded in .clarity_coach/a2a/messages
+// before switching an installation to standalone `a2a-connect`, without opening a new SSE stream.
+export function drainLegacyA2ALedger({ cwd }) {
+  const ledgerDir = path.join(cwd, '.clarity_coach', 'a2a', 'messages');
+  const watchers = new Map();
+  const retryTimers = new Map();
+  const retryDelays = new Map();
+  let stopped = false;
+
+  const ledgerFile = id => path.join(ledgerDir, `${id}.json`);
+  const readLedger = async id => { try { return JSON.parse(await readFile(ledgerFile(id), 'utf8')); } catch { return null; } };
+  const writeLedger = (id, value) => storeJson(ledgerFile(id), { ...value, updated_at: new Date().toISOString() });
+
+  async function deliver(entry, profile) {
+    const job = await getM3ntorResult(entry.job_id);
+    if (!terminal.has(job.status)) return 'pending';
+    const ok = job.status === 'complete';
+    const text = ok ? job.output : `The owner's agent could not complete this request: ${job.error || job.status}`;
+    try {
+      const sent = await clarityRequest('POST', '/agent/agent_messages/reply', {
+        id: entry.message_id, from_agent: profile.agent_handle, message: text,
+        metadata: { m3ntor_job_id: entry.job_id, job_status: job.status }, idempotency_key: `m3ntor-reply-${entry.message_id}`,
+      });
+      await clarityRequest('POST', '/agent/agent_messages/id/status', {
+        id: entry.message_id, status: ok ? 'completed' : 'failed', delivery_status: ok ? 'completed' : 'failed',
+        ...(ok ? {} : { last_error: text.slice(0, 2000) }),
+      });
+      await writeLedger(entry.message_id, { ...entry, status: ok ? 'replied' : 'replied_failure', job_status: job.status, reply_id: sent.id, replied_at: new Date().toISOString() });
+      return 'done';
+    } catch (error) {
+      await writeLedger(entry.message_id, { ...entry, status: 'reply_failed', reply_error: error.message });
+      return /request failed|HTTP 5\d\d/.test(error.message) ? 'retry' : 'done';
+    }
+  }
+
+  function follow(entry, profile) {
+    if (stopped || watchers.has(entry.message_id)) return;
+    let busy = false, again = false;
+    const finish = () => { watchers.get(entry.message_id)?.close(); watchers.delete(entry.message_id); };
+    const check = async () => {
+      if (stopped) { finish(); return; }
+      if (busy) { again = true; return; }
+      busy = true;
+      try {
+        let outcome;
+        do { again = false; outcome = await deliver(entry, profile); } while (outcome === 'pending' && again && !stopped);
+        if (outcome === 'done') { finish(); clearTimeout(retryTimers.get(entry.message_id)); retryTimers.delete(entry.message_id); }
+        if (outcome === 'retry' && !stopped && !retryTimers.has(entry.message_id)) {
+          finish();
+          const wait = Math.min((retryDelays.get(entry.message_id) || 2500) * 2, 300000);
+          retryDelays.set(entry.message_id, wait);
+          retryTimers.set(entry.message_id, setTimeout(async () => {
+            retryTimers.delete(entry.message_id);
+            const current = (await readLedger(entry.message_id)) || entry;
+            if (!stopped && !String(current.status).startsWith('replied')) follow(current, profile);
+          }, wait));
+        }
+      } finally { busy = false; }
+    };
+    try { watchers.set(entry.message_id, watch(jobDirectory(entry.job_id), () => { check(); })); } catch {}
+    check();
+  }
+
+  (async () => {
+    let files = [];
+    try { files = await readdir(ledgerDir); } catch { return; }
+    const pending = [];
+    for (const file of files.filter(name => name.endsWith('.json'))) {
+      const entry = await readLedger(file.slice(0, -5));
+      if (entry?.job_id && !String(entry.status).startsWith('replied')) pending.push(entry);
+    }
+    if (!pending.length) return;
+    let profile;
+    try { profile = await loadProfile(); } catch { return; }
+    for (const entry of pending) follow(entry, profile);
+  })().catch(() => {});
+
+  return {
+    stop() {
+      stopped = true;
+      for (const w of watchers.values()) w.close();
+      watchers.clear();
+      for (const t of retryTimers.values()) clearTimeout(t);
+      retryTimers.clear();
+    },
+  };
+}

@@ -41,6 +41,13 @@ At the start of this session, before other work: read today's business journal w
 ${list}`);
 }
 
+if (data.a2a_unread?.count > 0 && data.a2a_unread.messages?.length) {
+  const n = data.a2a_unread.count;
+  const latest = data.a2a_unread.messages[0];
+  const noun = n === 1 ? 'message is' : 'messages are';
+  parts.push(`Clarity A2A: ${n} unread ${noun} waiting (latest from ${latest.from_agent}, id: ${latest.id}): "${latest.preview}" — call a2a_read to inspect and a2a_reply to respond.`);
+}
+
 if (!parts.length) done();
 const context = parts.join('\n\n---\n\n');
 done(antigravity
