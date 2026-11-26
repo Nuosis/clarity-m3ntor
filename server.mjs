@@ -596,7 +596,10 @@ const a2aClient = createA2AClient();
 const forceLegacyA2A = process.env.M3NTOR_LEGACY_A2A === '1';
 const forceStandaloneA2A = process.env.M3NTOR_A2A_MODE === 'standalone' || Boolean(process.env.M3NTOR_A2A_URL);
 const startupA2AStatus = forceLegacyA2A ? null : await a2aClient.status();
-const useStandaloneA2A = !forceLegacyA2A && (forceStandaloneA2A || startupA2AStatus?.online === true);
+const autoCutoverReady = startupA2AStatus?.online === true
+  && startupA2AStatus?.upstream_ready === true
+  && startupA2AStatus?.sender_policy_compatible === true;
+const useStandaloneA2A = !forceLegacyA2A && (forceStandaloneA2A || autoCutoverReady);
 const legacyA2AReceiver = useStandaloneA2A ? null : startA2AReceiver({ cwd, harness, mcpUrl });
 const legacyA2ADrainer = useStandaloneA2A ? drainLegacyA2ALedger({ cwd }) : null;
 const a2aNotificationRelay = useStandaloneA2A

@@ -6,8 +6,20 @@
 import { loadProfile } from './clarity-client.mjs';
 
 const DEFAULT_A2A_URL = 'http://127.0.0.1:4318';
+const CLARITY_OPERATOR_ORGANIZATION_ID = '9816c057-b5d3-43a2-848f-99365ee6255e';
+const ACCEPTED_SENDER = 'm-codex';
 const INSTALL_HINT = 'pipx install "git+https://github.com/Nuosis/a2a-connect.git" && a2a-connect init --handle <handle> --api-key <clrtok_...> && a2a-connect install-service';
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+function senderPolicyCompatible(health) {
+  const rules = health?.allowed_senders;
+  if (!Array.isArray(rules) || rules.length === 0) return false;
+  return rules.every(rule => {
+    const handle = String(rule?.handle || '').trim().toLowerCase();
+    const orgId = String(rule?.org_id || '').trim().toLowerCase();
+    return handle === ACCEPTED_SENDER && orgId === CLARITY_OPERATOR_ORGANIZATION_ID;
+  });
+}
 
 function normalizeUrl(raw) {
   return String(raw || '').trim().replace(/\/+$/, '').toLowerCase();
@@ -111,7 +123,6 @@ export const A2A_TOOL_NAMES = new Set(a2aTools.map(tool => tool.name));
 
 export function createA2AClient({ baseUrl } = {}) {
   const a2aUrl = resolveBaseUrl(baseUrl);
-  const explicitUrl = Boolean(baseUrl || process.env.M3NTOR_A2A_URL);
 
   async function readLocalProfile() {
     try { return await loadProfile(); }
@@ -142,7 +153,6 @@ export function createA2AClient({ baseUrl } = {}) {
   async function verifyIdentity(health) {
     const profile = await readLocalProfile();
     if (!profile) {
-      if (explicitUrl) return { ok: true, profile: null };
       return { ok: false, reason: 'not_registered', message: 'M3NT0R installation is not registered with Clarity; cannot verify a2a-connect identity.' };
     }
     const expectedHandle = String(profile.agent_handle || '').trim();
@@ -233,10 +243,14 @@ export function createA2AClient({ baseUrl } = {}) {
         last_error: check.message,
       };
     }
+    const upstreamReady = health.stream?.state === 'ready';
+    const policyOk = senderPolicyCompatible(health);
     return {
       delegated: true,
       a2a_url: a2aUrl,
       online: true,
+      upstream_ready: upstreamReady,
+      sender_policy_compatible: policyOk,
       state: health.stream?.state || 'ready',
       ...health,
     };
